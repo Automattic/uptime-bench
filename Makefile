@@ -83,8 +83,8 @@ dev-fleet-reset:
 	docker compose --profile fleet up -d --build
 
 # Run a single scenario via the harness container.
-# Prerequisites: `make dev-fleet` must be running; JETMON_BRIDGE_URL and
-# JETMON_BRIDGE_TOKEN must be set in .env or the environment.
+# Prerequisites: `make dev-fleet` must be running; services.toml must exist
+# and have at least one service enabled that matches the scenario's monitors list.
 # Usage: make run-scenario SCENARIO=scenarios/http-503.toml
 SCENARIO ?= scenarios/http-503.toml
 

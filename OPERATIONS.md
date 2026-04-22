@@ -332,6 +332,26 @@ ttl         = 30
 
 ---
 
+## Step 7b — Create services.toml on the harness VM
+
+`services.toml` declares which monitoring services to evaluate and their credentials. It is never committed — it contains secrets and is specific to your deployment.
+
+Edit `services.example.toml` locally, then copy it to the harness VM:
+
+```sh
+cp services.example.toml services.toml
+# Edit services.toml: set enabled = true and fill in url and auth for each service
+scp services.toml ubuntu@203.0.113.5:/tmp/services.toml
+ssh ubuntu@203.0.113.5 'sudo mv /tmp/services.toml /etc/uptime-bench/services.toml && \
+  sudo chmod 640 /etc/uptime-bench/services.toml && \
+  sudo chown root:uptime-bench /etc/uptime-bench/services.toml'
+rm services.toml
+```
+
+See `services.example.toml` for the format and the required `auth` keys for each service type. The `id` field in each block must match the IDs used in scenario `monitors` lists.
+
+---
+
 ## Step 8 — Deploy binaries
 
 Build and push all three binaries from your local machine. The `deploy-*` targets cross-compile for `linux/amd64`:
@@ -404,11 +424,14 @@ dig A bench-a.bench-example.com | grep -i ttl
 
 ## Step 11 — Run a scenario
 
-**[Pending implementation]** The harness binary does not yet execute scenarios. Once implemented, scenarios will be run via the CLI:
+Run a scenario on the harness VM:
 
 ```sh
-# On the harness VM, or from your local machine pointing at the harness API
-uptime-bench-harness run scenarios/http-503.toml
+ssh ubuntu@203.0.113.5
+uptime-bench-harness \
+  -fleet=/etc/uptime-bench/fleet.toml \
+  -services=/etc/uptime-bench/services.toml \
+  -scenario=/path/to/scenarios/http-503.toml
 ```
 
 The harness will:

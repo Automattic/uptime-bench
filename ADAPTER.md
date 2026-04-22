@@ -25,8 +25,9 @@ import (
 // Adapter is implemented by each monitoring service under evaluation.
 // All methods receive a context; adapters must respect cancellation.
 type Adapter interface {
-    // ServiceID returns the stable identifier for this service, matching
-    // the IDs used in scenario TOML files (e.g. "pingdom", "datadog-synthetics").
+    // ServiceID returns the instance identifier configured in services.toml.
+    // Scenario TOML files reference services by this ID in their monitors list.
+    // Must be stable for the lifetime of the adapter instance.
     ServiceID() string
 
     // Capabilities returns what this service supports. Called by the harness
@@ -287,8 +288,8 @@ var NormalizedClassification = map[string]map[string]string{
     },
 }
 
-func Normalize(serviceID, raw string) string {
-    if table, ok := NormalizedClassification[serviceID]; ok {
+func Normalize(serviceType, raw string) string {
+    if table, ok := NormalizedClassification[serviceType]; ok {
         if normalized, ok := table[raw]; ok {
             return normalized
         }
@@ -316,7 +317,8 @@ The harness must distinguish these outcomes and never conflate them:
 - `Retrieve` must return `RetrieveUnknown` — not a Go error — when the service API is unavailable. Reserve Go errors for adapter bugs and misconfiguration.
 - `Retrieve` must respect context cancellation promptly. When `ctx` is cancelled mid-poll, return whatever has been retrieved so far with `Status: RetrieveUnknown` and `Reason: ctx.Err().Error()`.
 - `MonitorHandle.Fields` values must be safe to serialize to strings. The harness persists handles between Provision and Retrieve; complex types do not survive.
-- `ServiceID()` must return the same value on every call and must match the IDs used in scenario TOML files exactly.
+- `ServiceID()` must return the same value on every call. It must match the `id` field in `services.toml` and the IDs in scenario `monitors` lists.
+- `Provision` must store `"service_type"` in `MonitorHandle.Fields` set to the adapter's type string (e.g. `"jetmon"`). The harness uses this for normalization — it must match a key in `NormalizedClassification`.
 
 ---
 

@@ -8,6 +8,10 @@
 #   url     — API root URL; omit to use the service's default public endpoint
 #   auth    — credential key=value pairs; required keys vary by type (see below)
 #   enabled — set false to skip this service without removing its config
+#
+# The id is arbitrary. If you run multiple accounts of the same service, give
+# each a distinct id (e.g. "pingdom-prod", "pingdom-staging") and reference
+# those ids in your scenario monitor lists.
 
 # -----------------------------------------------------------------------------
 # Jetmon 1
@@ -15,7 +19,7 @@
 # Auth keys: token
 # -----------------------------------------------------------------------------
 [[services]]
-id      = "jetmon-1"
+id      = "jetmon"
 type    = "jetmon"
 url     = "http://localhost:9200"
 enabled = false
@@ -27,7 +31,7 @@ auth    = { token = "replace-with-your-token" }
 # Auth keys: token
 # -----------------------------------------------------------------------------
 [[services]]
-id      = "pingdom-1"
+id      = "pingdom"
 type    = "pingdom"
 enabled = false
 auth    = { token = "replace-with-your-token" }
@@ -38,7 +42,7 @@ auth    = { token = "replace-with-your-token" }
 # Auth keys: api_key
 # -----------------------------------------------------------------------------
 [[services]]
-id      = "uptimerobot-1"
+id      = "uptimerobot"
 type    = "uptimerobot"
 enabled = false
 auth    = { api_key = "replace-with-your-key" }
@@ -49,7 +53,7 @@ auth    = { api_key = "replace-with-your-key" }
 # Auth keys: api_key, app_key
 # -----------------------------------------------------------------------------
 [[services]]
-id      = "datadog-1"
+id      = "datadog-synthetics"
 type    = "datadog-synthetics"
 enabled = false
 auth    = { api_key = "replace-with-your-key", app_key = "replace-with-your-key" }
@@ -60,7 +64,7 @@ auth    = { api_key = "replace-with-your-key", app_key = "replace-with-your-key"
 # Auth keys: token
 # -----------------------------------------------------------------------------
 [[services]]
-id      = "betteruptime-1"
+id      = "better-uptime"
 type    = "better-uptime"
 enabled = false
 auth    = { token = "replace-with-your-token" }

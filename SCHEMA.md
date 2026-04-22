@@ -16,7 +16,7 @@ All duration fields use Go's `time.ParseDuration` format: a number followed by a
 | `version` | string | yes | — | Version of this scenario definition. Increment when fields change in a way that affects results. |
 | `description` | string | no | — | Human-readable summary of what the scenario tests. |
 | `target` | string | yes | — | ID of the target endpoint to inject failures against. |
-| `monitors` | array of strings | yes | — | Monitor service IDs to evaluate. Use `["all"]` to run against all configured services. |
+| `monitors` | array of strings | yes | — | Service instance IDs to evaluate, matching the `id` fields in `services.toml` (e.g. `["jetmon", "pingdom"]`). Only enabled services are used; disabled services with a matching ID are skipped. |
 | `check_frequency` | duration string | yes | — | Check interval configured for all monitors during this run. |
 | `grace_period` | duration string | yes | — | Time allowed after failure injection ends for monitors to resolve the incident. |
 | `duration` | duration string | yes | — | How long failure injection is active. All `[[failures]]` blocks run for this duration. |
