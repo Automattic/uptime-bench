@@ -240,10 +240,13 @@ sudo chown root:uptime-bench /etc/uptime-bench/control-token
 
 ### On each DNS VM
 
+`MEMBER_ID` must match the `id` field of this VM's `[[nameservers]]` entry in `fleet.toml` — the DNS binary uses it to find its own zone records in the fleet config.
+
 ```sh
-ssh ubuntu@203.0.113.10  # repeat for 203.0.113.11
+ssh ubuntu@203.0.113.10
 sudo bash -c 'cat > /etc/uptime-bench/dns.env' <<'EOF'
 CONTROL_TOKEN=YOUR_GENERATED_TOKEN_HERE
+MEMBER_ID=ns-01
 EOF
 sudo chmod 640 /etc/uptime-bench/dns.env
 sudo chown root:uptime-bench /etc/uptime-bench/dns.env
@@ -253,23 +256,39 @@ sudo chmod 640 /etc/uptime-bench/control-token
 sudo chown root:uptime-bench /etc/uptime-bench/control-token
 ```
 
+Repeat for ns-02, setting `MEMBER_ID=ns-02`.
+
 The `CONTROL_TOKEN` value must be identical on every VM.
 
 ---
 
-## Step 7 — Create fleet.toml on the harness VM
+## Step 7 — Deploy fleet.toml
 
-`fleet.toml` is never committed. Create it directly on the harness VM at `/etc/uptime-bench/fleet.toml` (or a path of your choosing, referenced by the `--fleet` flag).
+`fleet.toml` is never committed. The harness reads it to orchestrate runs; each DNS VM also reads it at startup to derive the A records it serves. Copy it to all three roles.
 
 The simplest approach: edit `fleet.example.toml` locally, then copy it:
 
 ```sh
 cp fleet.example.toml fleet.toml
 # edit fleet.toml with your real IPs and hostnames
+
+# Harness VM
 scp fleet.toml ubuntu@203.0.113.5:/tmp/fleet.toml
 ssh ubuntu@203.0.113.5 'sudo mv /tmp/fleet.toml /etc/uptime-bench/fleet.toml && \
   sudo chmod 640 /etc/uptime-bench/fleet.toml && \
   sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml'
+
+# DNS VMs
+scp fleet.toml ubuntu@203.0.113.10:/tmp/fleet.toml
+ssh ubuntu@203.0.113.10 'sudo mv /tmp/fleet.toml /etc/uptime-bench/fleet.toml && \
+  sudo chmod 640 /etc/uptime-bench/fleet.toml && \
+  sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml'
+
+scp fleet.toml ubuntu@203.0.113.11:/tmp/fleet.toml
+ssh ubuntu@203.0.113.11 'sudo mv /tmp/fleet.toml /etc/uptime-bench/fleet.toml && \
+  sudo chmod 640 /etc/uptime-bench/fleet.toml && \
+  sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml'
+
 rm fleet.toml  # remove from local machine; it is git-ignored but clean up anyway
 ```
 
@@ -418,7 +437,7 @@ dig A bench-a.bench-example.com
 dig A bench-a.bench-example.com | grep -i ttl
 ```
 
-**[Pending implementation]** The DNS VM binary does not yet serve DNS records — it is currently a stub. Once implemented, it will serve A records for all site hostnames configured in `fleet.toml`, pointing to the appropriate target VM IPs, with the TTL specified in the `[[domains]]` block.
+The DNS binary loads A records from `fleet.toml` at startup — it serves every site hostname from its configured domains, pointing to the corresponding target VM IP, using the TTL from the `[[domains]]` block.
 
 ---
 
