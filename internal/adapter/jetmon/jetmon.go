@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -32,12 +33,11 @@ type Adapter struct {
 	client *http.Client
 }
 
-// New creates a Jetmon adapter. apiURL is the root URL of the Jetmon API
-// (e.g. "http://localhost:9200"). token is the shared bearer token.
-func New(apiURL, token string) *Adapter {
+// New creates a Jetmon adapter, reading JETMON_URL and JETMON_TOKEN from the environment.
+func New() *Adapter {
 	return &Adapter{
-		apiURL: apiURL,
-		token:  token,
+		apiURL: os.Getenv("JETMON_URL"),
+		token:  os.Getenv("JETMON_TOKEN"),
 		client: &http.Client{Timeout: 15 * time.Second},
 	}
 }

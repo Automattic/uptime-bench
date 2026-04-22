@@ -58,7 +58,7 @@ func main() {
 	log.Println("harness: database connected")
 
 	allAdapters := map[string]adapter.Adapter{
-		"jetmon": jetmon.New(os.Getenv("JETMON_URL"), os.Getenv("JETMON_TOKEN")),
+		"jetmon": jetmon.New(),
 	}
 	var adapters []adapter.Adapter
 	for _, monitorID := range sc.Monitors {
