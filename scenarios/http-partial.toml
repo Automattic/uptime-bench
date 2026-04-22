@@ -1,0 +1,13 @@
+id          = "http-partial"
+version     = "1"
+description = "HTTP response truncated after 100 bytes — tests incomplete response detection"
+target      = "bench-a"
+monitors    = ["jetmon"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1004
+
+[[failures]]
+type                 = "http_partial"
+truncate_after_bytes = 100

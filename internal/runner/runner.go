@@ -112,7 +112,14 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			continue
 		}
 
-		tgt := adapter.Target{ID: sc.Target, URL: fmt.Sprintf("http://%s", target.Address)}
+		// Use the first site's hostname as the monitor URL so adapters register
+		// against the domain name (e.g. http://bench.local/) rather than the
+		// infrastructure address. Monitoring services check by domain, not by IP.
+		targetURL := fmt.Sprintf("http://%s", target.Address)
+		if len(target.Sites) > 0 {
+			targetURL = fmt.Sprintf("http://%s/", target.Sites[0].Host)
+		}
+		tgt := adapter.Target{ID: sc.Target, URL: targetURL}
 		cfg := adapter.ProvisionConfig{CheckFrequency: sc.CheckFrequency}
 		handle, err := a.Provision(ctx, tgt, cfg)
 		if err != nil {

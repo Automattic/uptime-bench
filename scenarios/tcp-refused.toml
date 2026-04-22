@@ -1,0 +1,12 @@
+id          = "tcp-refused"
+version     = "1"
+description = "TCP connection refused — tests reachability detection at the network layer"
+target      = "bench-a"
+monitors    = ["jetmon"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1002
+
+[[failures]]
+type = "tcp_refused"

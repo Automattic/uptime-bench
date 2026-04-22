@@ -82,6 +82,41 @@ dev-fleet-reset:
 	docker compose --profile fleet down -v
 	docker compose --profile fleet up -d --build
 
+.PHONY: dev-poc
+dev-poc:
+	docker compose --profile fleet --profile poc up -d --build
+	@echo ""
+	@echo "  MySQL (uptime-bench): localhost:$${MYSQL_PORT:-3306}"
+	@echo "  MySQL (jetmon):       localhost:$${JETMON_MYSQL_PORT:-3307}"
+	@echo "  Adminer:              http://localhost:$${ADMINER_PORT:-8081}"
+	@echo "  Target:               http://localhost:8080"
+	@echo "  Jetmon dashboard:     http://localhost:$${JETMON_DASHBOARD_PORT:-8082}"
+	@echo "  jetmon-bridge:        http://localhost:$${JETMON_BRIDGE_PORT:-9200}"
+	@echo ""
+	@echo "  Run a scenario:       make run-scenario SCENARIO=scenarios/http-503.toml"
+	@echo ""
+
+.PHONY: dev-poc-down
+dev-poc-down:
+	docker compose --profile fleet --profile poc down
+
+.PHONY: dev-poc-reset
+dev-poc-reset:
+	docker compose --profile fleet --profile poc down -v
+	docker compose --profile fleet --profile poc up -d --build
+
+# Run a single scenario via the harness container.
+# Prerequisites: `make dev-poc` (or `make dev-fleet`) must be running.
+# Usage: make run-scenario SCENARIO=scenarios/http-503.toml
+SCENARIO ?= scenarios/http-503.toml
+
+.PHONY: run-scenario
+run-scenario:
+	docker compose run --rm harness \
+	  uptime-bench-harness \
+	    -fleet=/etc/uptime-bench/fleet.toml \
+	    -scenario=/scenarios/$(notdir $(SCENARIO))
+
 .PHONY: logs
 logs:
 	docker compose logs -f
@@ -157,6 +192,13 @@ help:
 	@echo "  make dev-fleet-down   Stop all fleet services"
 	@echo "  make dev-fleet-reset  Wipe volumes, rebuild images, restart full fleet"
 	@echo "  make logs             Tail Docker Compose logs"
+	@echo ""
+	@echo "POC (fleet + Jetmon + jetmon-bridge):"
+	@echo "  make dev-poc          Build and start full POC stack (fleet + Jetmon)"
+	@echo "  make dev-poc-down     Stop POC stack"
+	@echo "  make dev-poc-reset    Wipe volumes and restart POC stack"
+	@echo "  make run-scenario     Run a scenario (requires dev-poc running)"
+	@echo "    SCENARIO=scenarios/http-503.toml (default)"
 	@echo ""
 	@echo "Provision (first-time host setup — run before deploy):"
 	@echo "  make provision-harness HARNESS_HOST=host [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"

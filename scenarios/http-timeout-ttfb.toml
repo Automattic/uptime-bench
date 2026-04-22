@@ -1,0 +1,14 @@
+id          = "http-timeout-ttfb"
+version     = "1"
+description = "HTTP response stalls before first byte — tests timeout detection at TTFB phase"
+target      = "bench-a"
+monitors    = ["jetmon"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1003
+
+[[failures]]
+type  = "http_timeout"
+phase = "ttfb"
+delay = "35s"

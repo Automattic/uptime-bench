@@ -58,8 +58,9 @@ func main() {
 	log.Println("harness: database connected")
 
 	// Registry of all available adapters.
+	// Jetmon reads bridge connection from env: JETMON_BRIDGE_URL, JETMON_BRIDGE_TOKEN.
 	allAdapters := map[string]adapter.Adapter{
-		"jetmon": jetmon.New("", ""),
+		"jetmon": jetmon.New(os.Getenv("JETMON_BRIDGE_URL"), os.Getenv("JETMON_BRIDGE_TOKEN")),
 	}
 	var adapters []adapter.Adapter
 	for _, monitorID := range sc.Monitors {

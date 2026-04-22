@@ -3,6 +3,10 @@ networks:
     driver: bridge
 
 services:
+  # ---------------------------------------------------------------------------
+  # Core infrastructure (always started)
+  # ---------------------------------------------------------------------------
+
   mysql:
     image: mysql:8.4
     restart: unless-stopped
@@ -35,11 +39,23 @@ services:
       mysql:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # Fleet services (profile: fleet)
+  # target-01 has Docker network aliases for bench.local and probe.local so
+  # that services on the fleet network can resolve those names without an
+  # external DNS server. This is a local-dev convenience; in production the
+  # bench DNS servers are authoritative for these domains.
+  # ---------------------------------------------------------------------------
+
   target-01:
     build: .
-    profiles: [fleet]
+    profiles: [fleet, poc]
     restart: unless-stopped
-    networks: [fleet]
+    networks:
+      fleet:
+        aliases:
+          - bench.local
+          - probe.local
     command: ["uptime-bench-target", "-http-port=80", "-https-port=443", "-control-port=9000"]
     ports:
       - "8080:80"
@@ -49,34 +65,50 @@ services:
 
   dns-01:
     build: .
-    profiles: [fleet]
+    profiles: [fleet, poc]
     restart: unless-stopped
     networks: [fleet]
-    command: ["uptime-bench-dns", "-dns-port=53", "-control-port=9100"]
+    command: [
+      "uptime-bench-dns",
+      "-dns-port=53",
+      "-control-port=9100",
+      "-zone=bench.local:target-01",
+      "-zone=probe.local:target-01"
+    ]
     environment:
       CONTROL_TOKEN: ${CONTROL_TOKEN:-devtoken}
 
   dns-02:
     build: .
-    profiles: [fleet]
+    profiles: [fleet, poc]
     restart: unless-stopped
     networks: [fleet]
-    command: ["uptime-bench-dns", "-dns-port=53", "-control-port=9100"]
+    command: [
+      "uptime-bench-dns",
+      "-dns-port=53",
+      "-control-port=9100",
+      "-zone=bench.local:target-01",
+      "-zone=probe.local:target-01"
+    ]
     environment:
       CONTROL_TOKEN: ${CONTROL_TOKEN:-devtoken}
 
+  # harness is intentionally NOT in any auto-started profile.
+  # Use `make run-scenario` (or `docker compose run harness`) to invoke it.
+  # docker compose run always starts the specified service regardless of profiles.
   harness:
     build: .
-    profiles: [fleet]
-    restart: unless-stopped
+    profiles: [harness]
+    restart: "no"
     networks: [fleet]
-    command: ["uptime-bench-harness", "-fleet=/etc/uptime-bench/fleet.toml"]
     volumes:
       - ./docker/fleet.local.toml:/etc/uptime-bench/fleet.toml:ro
       - ./scenarios:/scenarios:ro
     environment:
       CONTROL_TOKEN: ${CONTROL_TOKEN:-devtoken}
       DB_DSN: "uptime_bench:${MYSQL_PASSWORD:-devpassword}@tcp(mysql:3306)/uptime_bench?parseTime=true"
+      JETMON_BRIDGE_URL: "http://jetmon-bridge:9200"
+      JETMON_BRIDGE_TOKEN: ${JETMON_BRIDGE_TOKEN:-devbridgetoken}
     depends_on:
       mysql:
         condition: service_healthy
@@ -87,5 +119,85 @@ services:
       dns-02:
         condition: service_started
 
+  # ---------------------------------------------------------------------------
+  # POC services (profile: poc)
+  # Runs Jetmon alongside the fleet so the jetmon adapter can be exercised
+  # end-to-end against a real monitoring service instance.
+  # ---------------------------------------------------------------------------
+
+  jetmon-mysql:
+    image: mysql:8.0
+    profiles: [poc]
+    restart: unless-stopped
+    networks: [fleet]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${JETMON_MYSQL_PASSWORD:-devpassword}
+      MYSQL_DATABASE: jetmon_db
+    ports:
+      - "${JETMON_MYSQL_PORT:-3307}:3306"
+    volumes:
+      - jetmon_mysql_data:/var/lib/mysql
+      - ./docker/jetmon/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root",
+             "--password=${JETMON_MYSQL_PASSWORD:-devpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  jetmon-bridge:
+    build:
+      context: ../jetmon
+      dockerfile: docker/Dockerfile_bridge
+    profiles: [poc]
+    restart: unless-stopped
+    networks: [fleet]
+    ports:
+      - "${JETMON_BRIDGE_PORT:-9200}:9200"
+    environment:
+      BRIDGE_TOKEN: ${JETMON_BRIDGE_TOKEN:-devbridgetoken}
+      DB_HOST: jetmon-mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${JETMON_MYSQL_PASSWORD:-devpassword}
+      DB_NAME: jetmon_db
+    depends_on:
+      jetmon-mysql:
+        condition: service_healthy
+
+  jetmon:
+    build:
+      context: ../jetmon
+      dockerfile: docker/Dockerfile_jetmon
+    profiles: [poc]
+    restart: unless-stopped
+    networks:
+      fleet:
+        aliases:
+          - docker.jetmon.dev.com
+    volumes:
+      - ./docker/jetmon/config.json:/jetmon/config/config.json:ro
+      - jetmon_logs:/jetmon/logs
+      - jetmon_stats:/jetmon/stats
+    environment:
+      DB_HOST: jetmon-mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${JETMON_MYSQL_PASSWORD:-devpassword}
+      DB_NAME: jetmon_db
+      WPCOM_JETMON_AUTH_TOKEN: poc-unused
+      VERIFLIER_AUTH_TOKEN: poc-unused
+      VERIFLIER_GRPC_PORT: "50051"
+      DASHBOARD_PORT: "8080"
+    ports:
+      - "${JETMON_DASHBOARD_PORT:-8082}:8080"
+    depends_on:
+      jetmon-mysql:
+        condition: service_healthy
+
 volumes:
   mysql_data:
+  jetmon_mysql_data:
+  jetmon_logs:
+  jetmon_stats:
