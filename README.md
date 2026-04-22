@@ -27,9 +27,9 @@ Uptime monitoring services are hard to compare. Vendors publish their own uptime
 
 ## Status
 
-Early development. Core design is complete — scenario schema, adapter interface, fleet architecture, and database schema are all defined. Implementation of the target server, harness, and first adapter (Jetmon) is in progress.
+Active development. The end-to-end pipeline is working: target server, DNS server, harness, runner, database layer, and Jetmon adapter are all implemented. Scenarios covering HTTP, TCP, DNS, TLS, and content failures are defined and runnable.
 
-Not yet usable as a drop-in tool.
+Remaining work: implementing adapters for UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. See [`ROADMAP.md`](ROADMAP.md) for deferred features.
 
 ## Architecture
 
@@ -46,10 +46,11 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full system design. Key documen
 Requires: Go 1.22+, Docker
 
 ```sh
-cp .env.example .env          # configure local credentials
-make dev                      # start MySQL + Adminer
-cp fleet.example.toml fleet.toml  # configure fleet (edit for your environment)
-make build                    # build all binaries
+cp .env.example .env                      # configure local credentials
+make dev                                  # start MySQL + Adminer
+cp fleet.example.toml fleet.toml          # configure fleet (edit for your environment)
+cp services.example.toml services.toml   # configure monitoring services (edit for your environment)
+make build                                # build all binaries
 ```
 
 Adminer (database UI) is available at `http://localhost:8081` after `make dev`.

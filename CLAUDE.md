@@ -13,7 +13,6 @@ Key documents:
 - [`ADAPTER.md`](ADAPTER.md) — monitor adapter interface, types, and harness responsibilities
 - [`EVENTS.md`](EVENTS.md) — ground-truth event log and output schema
 - [`ROADMAP.md`](ROADMAP.md) — deferred features and future work
-- [`jetmon/TAXONOMY.md`](../jetmon/TAXONOMY.md) — Jetmon-specific design reference; useful when building the Jetmon adapter
 
 ## Coding conventions
 

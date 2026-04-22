@@ -2,7 +2,7 @@
 
 uptime-bench evaluates uptime monitoring services by running controlled failure scenarios against target endpoints and measuring how each service under test detects, classifies, and reports each failure.
 
-This document covers uptime-bench's own system architecture. For the library of failure scenarios the benchmark covers, see [`SCENARIOS.md`](SCENARIOS.md). For the scenario file format and field reference, see [`SCHEMA.md`](SCHEMA.md). For the monitor adapter interface, see [`ADAPTER.md`](ADAPTER.md). For the event log and output schema, see [`EVENTS.md`](EVENTS.md). For known future work, see [`ROADMAP.md`](ROADMAP.md). For Jetmon-specific design reference, see [`jetmon/TAXONOMY.md`](../jetmon/TAXONOMY.md).
+This document covers uptime-bench's own system architecture. For the library of failure scenarios the benchmark covers, see [`SCENARIOS.md`](SCENARIOS.md). For the scenario file format and field reference, see [`SCHEMA.md`](SCHEMA.md). For the monitor adapter interface, see [`ADAPTER.md`](ADAPTER.md). For the event log and output schema, see [`EVENTS.md`](EVENTS.md). For known future work, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
