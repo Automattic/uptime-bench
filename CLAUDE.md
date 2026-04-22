@@ -1,104 +1,80 @@
-# Jetmon — Project Guide for Claude
+# uptime-bench — Project Guide for Claude
 
-This file gives Claude Code the architectural context and conventions for the Jetmon project. Read this before making changes.
+## What uptime-bench is
 
-## What Jetmon is
+uptime-bench is a benchmark suite for evaluating uptime monitoring services. It runs controlled failure scenarios against target endpoints, measures how each service under test detects and reports each failure, and produces structured comparison data.
 
-Jetmon monitors sites and detects outages. It runs probes against sites, records results, and surfaces state transitions (up → seems down → down → resolved) with appropriate severity.
+It is **not** a monitoring service. It does not monitor real sites or run probes in production. It exists to answer: "How well does service X actually detect failure type Y?"
 
-## Core architectural decisions
-
-### Events are the source of truth
-
-Site status is **event-sourced**. An event has:
-
-- `start_timestamp` — when the condition began
-- `end_timestamp` — when it resolved (nullable while active)
-- `severity` — numeric, allows ordering and threshold logic
-- `state` — human-readable label derived from the event lifecycle
-
-Do **not** treat `state` as a standalone column that gets mutated in place on the site row as the primary record. The event log is canonical.
-
-### Site row holds a denormalized projection
-
-The site row stores the current derived state (for fast reads, dashboards, queries). This denormalized field is updated **transactionally** alongside the event write — they must not drift. If you're updating one, you're updating the other in the same transaction.
-
-### Severity and state are separate concerns
-
-- **Severity** is numeric — use it for ordering, thresholds, escalation rules.
-- **State** is a human-readable label — use it for display and lifecycle transitions.
-
-Don't collapse them into one field. A single event can have its severity updated in place (e.g., a degradation worsens) without changing its state.
-
-### "Seems Down" is the key transient state
-
-Between the first probe failure and verifier confirmation, a site is in **Seems Down**. This is a real, named state — not an implementation detail. Treat it as a first-class lifecycle stage:
-
-```
-Up → Seems Down → Down → Resolved
-         ↓
-         Up (false alarm, verifier disagrees)
-```
-
-### Events update in place; identity is idempotent
-
-When severity changes mid-event, update the existing event row rather than closing and opening a new one. Event identity must be idempotent so that retries and duplicate probe results don't create duplicate events.
-
-### Record resolution reason
-
-When an event ends, record **why** it ended (verifier cleared, manual override, auto-timeout, etc.). Don't just null out `end_timestamp`'s counterpart — capture the cause.
-
-### Causal links are separate from rollup
-
-If event B was caused by event A (e.g., a DNS failure cascading into HTTP failures), store that causal link in a dedicated structure. Do **not** conflate causal links with rollup/aggregation logic — those are different concerns with different query patterns.
-
-### Deduplication lives in the shared probe runner
-
-All probe types share a single runner that handles deduplication. Don't reimplement dedup per probe type — if you're adding a new probe, plug it into the runner.
+Key documents:
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — system components and design principles
+- [`SCENARIOS.md`](SCENARIOS.md) — the library of failure modes the benchmark covers
+- [`SCHEMA.md`](SCHEMA.md) — scenario file format and field reference (TOML)
+- [`ADAPTER.md`](ADAPTER.md) — monitor adapter interface, types, and harness responsibilities
+- [`EVENTS.md`](EVENTS.md) — ground-truth event log and output schema
+- [`ROADMAP.md`](ROADMAP.md) — deferred features and future work
+- [`jetmon/TAXONOMY.md`](../jetmon/TAXONOMY.md) — Jetmon-specific design reference; useful when building the Jetmon adapter
 
 ## Coding conventions
 
 ### General
 
-- Match existing style in the file you're editing. Don't introduce a new pattern just because you prefer it.
-- No drive-by refactors. If you spot something worth fixing outside the current task, flag it separately.
+- Match existing style in the file you're editing. No drive-by refactors.
 - Comments explain *why*, not *what*. The code shows what.
+- No features beyond what the current task requires.
 
-### Go (primary backend language)
+### Go (primary language)
 
-- Follow standard Go idioms: `gofmt`, short variable names in small scopes, errors as values, no panics in library code.
-- Error wrapping with `fmt.Errorf("context: %w", err)` — preserve the chain.
+- Standard Go idioms: `gofmt`, short variable names in small scopes, errors as values, no panics in library code.
+- Error wrapping: `fmt.Errorf("context: %w", err)` — preserve the chain.
 - Context is the first parameter on any function that does I/O or might be cancelled.
 - Prefer small interfaces defined at the consumer, not the producer.
 - Table-driven tests where it fits.
 
-### C++ (legacy components)
-
-- Match the existing style of the file — indentation, brace placement, naming.
-- Prefer RAII; avoid raw `new`/`delete` in new code.
-
-### SQL / MySQL
+### SQL / database
 
 - Schema changes are migrations, never edits to prior migrations.
-- Every event-writing code path must update the site row projection in the same transaction.
-- Index for the read patterns the dashboard actually uses, not hypothetical ones.
+- Metric rows are derived — never write them in the same path as raw event writes. Keep derivation separate and rerunnable.
+
+## Architectural principles
+
+### Event-sourced ground truth
+
+The benchmark's record of what each scenario did is an append-only event log. Derived metrics (detection latency, accuracy, classification fidelity) are computed from the log. If a metric calculation needs to change or is found to be wrong, recompute from the log — never patch stored metric values.
+
+### Adapters absorb service-specific complexity
+
+Monitor adapters are the only place service-specific behavior lives: rate limits, API quirks, polling patterns, proprietary terminology. The core harness never branches on which service is under test. Adding a new service means writing a new adapter, not touching the harness.
+
+### Unknown is not a detection failure
+
+If an adapter cannot reach a monitoring service's API, the result is Unknown — not a false negative. Never count Unknown as a missed detection. Record why the adapter failed and propagate Unknown to derived metrics correctly.
+
+### Reproducibility is non-negotiable
+
+Every scenario run must be deterministic given the same inputs. Randomized injection must be seeded and the seed recorded. Scenario definitions, target implementations, and adapter versions must all be pinned in the run record.
+
+### Raw classification separate from normalized scores
+
+Preserve each service's raw incident classification alongside any normalized score uptime-bench applies. The raw output is the audit record; the normalized score is for comparison. Never overwrite raw with normalized.
 
 ## What to check before shipping
 
-- Event writes and site-row updates are in one transaction.
-- New probe types register with the shared runner (and its dedup).
-- Severity changes update events in place — no spurious close/open.
-- Resolution reason is recorded on every event close.
-- State transitions through "Seems Down" correctly, including the false-alarm path back to Up.
+- Every scenario run records a `resolution_reason` on close — no run ends without one.
+- Adapters produce Unknown (not false negative) when they cannot reach a service.
+- Adapter deprovision runs even when a scenario aborts midway — no state leaks between runs.
+- The seed is recorded in the run record for every run.
+- No service-specific logic in the core harness — adapter only.
+- Derived metric rows are never written in the same transaction as raw event rows.
+
+## Decided
+
+- **Language:** Go.
+- **Scenario format:** TOML. Failure params are flattened into each `[[failures]]` block; the `type` field is the discriminator. No nested `params` sub-objects.
+- **Initial services:** Jetmon, UptimeRobot, Pingdom, Datadog Synthetics, Better Uptime.
 
 ## Things to ask about, not assume
 
-- Retention policy for closed events.
-- Who consumes the causal link graph and what shape they need it in.
-- Whether a new probe type should contribute to rollup severity or stand alone.
-
-## Testing
-
-- Unit tests for the state machine transitions — especially the Seems Down → Up false-alarm path.
-- Integration tests that exercise the transactional write (event + site-row projection) and verify they stay in sync under concurrent probe results.
-- Idempotency tests: replay the same probe result twice, assert no duplicate event.
+- Whether a new scenario requires changes to the target fleet or only to the scenario runner.
+- Whether a new adapter should participate in all scenario types or only a subset.
+- Rate limit and cost budget for adapter calls in the scenario under development.

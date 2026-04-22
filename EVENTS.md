@@ -1,128 +1,127 @@
-# Jetmon Event Model
+# uptime-bench — Event Log and Output Schema
 
-This document describes the event-sourced architecture that underlies site state in Jetmon.
+This document defines the event formats uptime-bench uses for its ground-truth log and for recording what each monitoring service reports during a scenario run.
 
-## Why event-sourced
+## Why an event log
 
-Early designs used a mutable `state` column on the site row as the primary record of truth. That approach loses history, makes retries ambiguous, and couples severity changes to state changes in ways that don't reflect reality (a worsening degradation isn't a new outage). Moving to an event log fixes this:
+uptime-bench's source of truth is an append-only event log. Derived metrics — detection latency, accuracy, classification fidelity — are computed from the log, not stored alongside it. If a metric calculation changes or turns out to be wrong, it can be recomputed from the raw events without re-running scenarios.
 
-- Full history is preserved for free.
-- Severity can evolve within a single event without inventing artificial state transitions.
-- Retries and duplicate probe results become idempotent rather than destructive.
-- Derived/denormalized fields on the site row can be rebuilt from the log if they ever drift.
+---
 
-## The event
+## Scenario run record
 
-An event represents a condition affecting a site over a time range.
+Each scenario run produces one top-level record.
 
-| Field                | Type            | Notes                                                      |
-|----------------------|-----------------|------------------------------------------------------------|
-| `id`                 | identifier      | Idempotent — see "Identity" below.                         |
-| `site_id`            | FK              | The site this event is about.                              |
-| `start_timestamp`    | timestamp       | When the condition began.                                  |
-| `end_timestamp`      | timestamp, null | When the condition resolved. Null while active.            |
-| `severity`           | numeric         | Ordered, suitable for thresholds and escalation.           |
-| `state`              | enum/string     | Human-readable lifecycle label.                            |
-| `resolution_reason`  | enum, null      | Why the event ended. Null while active.                    |
-| `probe_type`         | enum            | Which probe observed this (HTTP, DNS, TCP, etc.).          |
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | identifier | Stable, deterministic — see Identity below. |
+| `scenario_id` | string | Scenario definition identifier. |
+| `scenario_version` | string | Version of the scenario definition. |
+| `seed` | integer | Random seed used for this run. |
+| `target_id` | FK | Target endpoint used. |
+| `target_version` | string | Version of the target implementation. |
+| `monitor_services` | JSON array | Monitor service IDs and adapter versions in scope for this run. |
+| `check_frequency_seconds` | integer | Check interval configured for all monitors in this run. |
+| `started_at` | timestamp | When the run began. |
+| `failure_started_at` | timestamp | When failure injection began. |
+| `failure_ended_at` | timestamp | When failure injection stopped. |
+| `ended_at` | timestamp | When the run ended (including grace period). |
+| `resolution_reason` | enum | Why the run ended — see Resolution reasons below. |
+| `metadata` | JSON | Run-level annotations. |
 
-### Severity vs. state
+---
 
-**Severity** is numeric. It orders events and drives thresholds. It can be updated on a live event without changing `state` — if a degradation worsens, bump severity, leave state alone.
+## Ground-truth events
 
-**State** is a human-readable label tied to the lifecycle. It changes at lifecycle boundaries: `Up → Seems Down → Down → Resolved`.
+Ground-truth events record what the target fleet actually did. Written by the scenario runner; these are the authoritative record of when failures were active.
 
-Keeping these separate avoids conflating "this got worse" with "this is a different kind of problem."
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | identifier | Stable, deterministic — see Identity below. |
+| `run_id` | FK | The scenario run this event belongs to. |
+| `target_id` | FK | Which target endpoint was affected. |
+| `event_type` | enum | `failure_start`, `failure_end`, `run_start`, `run_end` |
+| `failure_mode` | string | What kind of failure was injected (e.g., `http_5xx`, `dns_nxdomain`, `tcp_timeout`). |
+| `failure_params` | JSON | Injection parameters: rate, region, status code, duration, etc. |
+| `timestamp` | timestamp | When this event occurred. |
+| `notes` | string, null | Free-text for out-of-band conditions (e.g., "target failed to start injection on schedule"). |
 
-### Identity and idempotency
+---
 
-Event `id` is derived from a stable set of inputs — typically `(site_id, probe_type, start_timestamp_bucket)` or equivalent — so that repeated probe results for the same underlying condition resolve to the same event row. This makes writes idempotent: a retried probe result updates the existing event rather than creating a new one.
+## Monitor report events
 
-## Lifecycle
+Monitor report events record what each monitoring service under test reported. Written by monitor adapters after a scenario run completes.
 
-```
-          first failure                verifier confirms
-    Up ─────────────────▶ Seems Down ───────────────────▶ Down
-                              │                            │
-                              │  verifier disagrees        │  condition clears
-                              │  (false alarm)             │
-                              ▼                            ▼
-                              Up                        Resolved
-```
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | identifier | Stable, deterministic — see Identity below. |
+| `run_id` | FK | The scenario run this event belongs to. |
+| `monitor_service_id` | FK | Which monitoring service reported this. |
+| `target_id` | FK | Which target endpoint was involved. |
+| `event_type` | enum | `alert_fired`, `alert_resolved`, `status_change`, `unknown` |
+| `raw_classification` | string | The service's own label, unmodified. |
+| `normalized_classification` | string, null | uptime-bench's normalized label, for cross-service comparison. |
+| `reported_at` | timestamp | When the service recorded this event (service's own clock, if available). |
+| `retrieved_at` | timestamp | When the adapter retrieved this event from the service's API. |
+| `metadata` | JSON | Adapter-specific fields: HTTP code reported, probe location, alert channel, etc. |
 
-### Up
+---
 
-No active event. Probes are succeeding.
+## Derived metrics
 
-### Seems Down (transient)
+Metrics are computed from the event log. They are never stored in the primary event tables — they are outputs of the measurement engine, regenerable from the log at any time.
 
-A probe has failed but the verifier has not yet confirmed. This is a **real state**, not an implementation detail — dashboards show it, alert rules can key off it, and it has its own severity range.
+One row per monitor service per metric per run.
 
-The verifier path has two outcomes:
-- **Confirmed** → transition to `Down`.
-- **Disagreed** → event ends with `resolution_reason = false_alarm`, site returns to `Up`.
+| Metric | Definition |
+|--------|-----------|
+| `detection_latency_seconds` | `alert_fired.reported_at` − `failure_start.timestamp`. Null if no alert fired. |
+| `true_positive` | Alert fired while a ground-truth failure was active. |
+| `false_positive` | Alert fired when no ground-truth failure was active. |
+| `false_negative` | No alert fired during a ground-truth failure window. |
+| `unknown` | Adapter could not retrieve the service's state for this period. |
+| `classification_match` | Boolean: the service's normalized classification matches the injected failure mode. |
 
-### Down
-
-Outage confirmed. Severity may continue to evolve in place as additional probes report.
-
-### Resolved
-
-Condition has cleared. `end_timestamp` is set, `resolution_reason` is recorded. The event row is now historical — it is not deleted or mutated further.
-
-## The site row projection
-
-For read performance (dashboards, API queries, bulk lists), the current derived state is denormalized onto the site row:
-
-- `current_state`
-- `current_severity`
-- `active_event_id` (null when Up)
-
-**This projection is updated in the same transaction as the event write.** Always. There is no eventual consistency here — if they drift, we have a bug.
-
-The projection is rebuildable from the event log. If it's ever suspected to be wrong, rebuild it; don't patch it.
-
-## Causal links
-
-Events can reference other events as causes. A DNS failure cascading into HTTP failures creates multiple events with causal links from the HTTP events back to the DNS event.
-
-Causal links are stored as a separate structure (e.g., `event_causes`) with `(effect_event_id, cause_event_id)`. They are **not** the same as rollup.
-
-### Why not rollup?
-
-Rollup aggregates events for display ("this site had 3 events in the last hour"). Causal linking explains relationships ("the HTTP outage was caused by the DNS outage"). They have different query patterns, different retention needs, and different consumers. Keep them separate.
-
-## Deduplication
-
-All probe types share a single runner. The runner is responsible for:
-
-- Applying idempotent event identity so duplicate results collapse into one event.
-- Batching and rate-limiting probe dispatch.
-- Feeding results into the event writer with the correct ordering guarantees.
-
-New probe types plug into this runner. They do not implement their own dedup.
+---
 
 ## Resolution reasons
 
-Every event close records why. Current reasons:
+Every scenario run records why it ended. This affects whether results are usable for comparison.
 
-- `verifier_cleared` — verifier confirms the site is back up.
-- `false_alarm` — verifier disagreed with the initial failure signal.
-- `manual_override` — an operator closed the event.
-- `auto_timeout` — event aged out per retention/timeout policy.
+- `planned_completion` — scenario ran to its defined end time normally.
+- `aborted` — run was interrupted before completion (operator action or harness error).
+- `target_independent_failure` — the target failed in a way not caused by the scenario's own injection (e.g., underlying infrastructure issue).
+- `adapter_error` — one or more adapters failed to deprovision or retrieve data, potentially corrupting results for those services.
 
-New reasons should be added as explicit enum values, not free-text.
+---
 
-## Open questions
+## Unknown vs. missed detection
 
-- **Retention**: how long do we keep closed events at full fidelity before rolling them up?
-- **Causal graph consumers**: who reads the causal links and what query shapes do they need? That dictates indexing.
-- **Cross-probe severity**: when multiple probe types fire on the same site, does the site-row `current_severity` take the max, a weighted sum, or something else?
+These are distinct outcomes and must never be conflated:
+
+- **Missed detection (false negative):** the adapter successfully retrieved the service's state and confirmed it did not alert during an active failure window.
+- **Unknown:** the adapter could not retrieve data — API outage, rate limit, authentication failure. The service may or may not have detected the failure; we do not know.
+
+Record Unknown in the monitor report event with `event_type = unknown` and capture the reason in `metadata`. Never count Unknown as a false negative in accuracy calculations.
+
+---
+
+## Identity and idempotency
+
+Event IDs are derived from stable inputs so that adapter retries and scenario replays do not produce duplicate rows.
+
+- Scenario runs: keyed by `(scenario_id, scenario_version, target_id, seed, started_at_bucket)`
+- Ground-truth events: keyed by `(run_id, target_id, event_type, timestamp_bucket)`
+- Monitor report events: keyed by `(run_id, monitor_service_id, target_id, event_type, reported_at)`
+
+If the same event is written twice, the second write updates the existing row rather than creating a new one.
+
+---
 
 ## Invariants worth testing
 
-1. Event write and site-row projection update are atomic.
-2. Replaying the same probe result twice produces the same single event.
-3. `Seems Down → Up` (false alarm) correctly closes the event with `resolution_reason = false_alarm`.
-4. Severity updates on a live event do not create a new event row.
-5. Closed events are never mutated (except possibly by a backfill/migration, which should be audited).
+1. Every scenario run has a `resolution_reason` on close — no run ends without one.
+2. Replaying the same scenario with the same seed produces the same ground-truth event sequence.
+3. Unknown adapter results never appear as false negatives in derived metric rows.
+4. `detection_latency_seconds` is null when no `alert_fired` event exists for that run × service pair — never zero or negative.
+5. Adapter deprovision runs and is recorded even when a scenario aborts midway.
