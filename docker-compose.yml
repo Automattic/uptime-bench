@@ -107,8 +107,8 @@ services:
     environment:
       CONTROL_TOKEN: ${CONTROL_TOKEN:-devtoken}
       DB_DSN: "uptime_bench:${MYSQL_PASSWORD:-devpassword}@tcp(mysql:3306)/uptime_bench?parseTime=true"
-      JETMON_BRIDGE_URL: ${JETMON_BRIDGE_URL:-}
-      JETMON_BRIDGE_TOKEN: ${JETMON_BRIDGE_TOKEN:-}
+      JETMON_URL: ${JETMON_URL:-}
+      JETMON_TOKEN: ${JETMON_TOKEN:-}
     depends_on:
       mysql:
         condition: service_healthy

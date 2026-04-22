@@ -1,12 +1,10 @@
-// Package jetmon implements the uptime-bench adapter for Jetmon via jetmon-bridge.
+// Package jetmon implements the uptime-bench adapter for Jetmon 1.
 //
-// Jetmon 1 has no public API. This adapter calls the jetmon-bridge HTTP service,
-// which provides read-only access to Jetmon's MySQL database.
+// Jetmon monitors are always-on and must be pre-seeded before a run.
+// Provision looks up the existing monitor by URL; it does not create one.
+// Deprovision is a no-op.
 //
-// Monitors must be pre-seeded in jetpack_monitor_sites before a run. Provision
-// looks up the existing monitor; it does not create one. Deprovision is a no-op.
-//
-// Configure with JETMON_BRIDGE_URL and JETMON_BRIDGE_TOKEN environment variables,
+// Configure with JETMON_URL and JETMON_TOKEN environment variables,
 // or pass them directly to New.
 package jetmon
 
@@ -27,20 +25,20 @@ const serviceID = "jetmon"
 // statusConfirmedDown is Jetmon's site_status value for a confirmed outage.
 const statusConfirmedDown = 2
 
-// Adapter implements adapter.Adapter for Jetmon via jetmon-bridge.
+// Adapter implements adapter.Adapter for Jetmon 1.
 type Adapter struct {
-	bridgeURL string
-	token     string
-	client    *http.Client
+	apiURL string
+	token  string
+	client *http.Client
 }
 
-// New creates a Jetmon adapter. bridgeURL is the root URL of the jetmon-bridge
-// service (e.g. "http://jetmon-bridge:9200"). token is the shared bearer token.
-func New(bridgeURL, token string) *Adapter {
+// New creates a Jetmon adapter. apiURL is the root URL of the Jetmon API
+// (e.g. "http://localhost:9200"). token is the shared bearer token.
+func New(apiURL, token string) *Adapter {
 	return &Adapter{
-		bridgeURL: bridgeURL,
-		token:     token,
-		client:    &http.Client{Timeout: 15 * time.Second},
+		apiURL: apiURL,
+		token:  token,
+		client: &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
@@ -55,7 +53,6 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 	}
 }
 
-// monitorResponse is the /monitors endpoint response from jetmon-bridge.
 type monitorResponse struct {
 	BlogID        int64  `json:"blog_id"`
 	MonitorURL    string `json:"monitor_url"`
@@ -63,7 +60,6 @@ type monitorResponse struct {
 	SiteStatus    int    `json:"site_status"`
 }
 
-// eventResponse is one entry from the /events endpoint response.
 type eventResponse struct {
 	ID        int64   `json:"id"`
 	BlogID    int64   `json:"blog_id"`
@@ -77,20 +73,20 @@ type eventResponse struct {
 }
 
 // Provision looks up the pre-seeded monitor for target.URL.
-// Returns an error if the bridge is unreachable or no monitor is registered
+// Returns an error if the API is unreachable or no monitor is registered
 // for this URL — pre-seeding is required for the always-on Jetmon model.
 func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
-	if a.bridgeURL == "" {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: JETMON_BRIDGE_URL is not configured")
+	if a.apiURL == "" {
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: JETMON_URL is not configured")
 	}
 
-	endpoint := a.bridgeURL + "/monitors?url=" + url.QueryEscape(target.URL)
+	endpoint := a.apiURL + "/monitors?url=" + url.QueryEscape(target.URL)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	req.Header.Set("Authorization", "Bearer "+a.token)
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: bridge /monitors: %w", err)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: /monitors: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -98,12 +94,12 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: no monitor pre-seeded for %s — add it to jetpack_monitor_sites", target.URL)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: bridge /monitors: status %d", resp.StatusCode)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: /monitors: status %d", resp.StatusCode)
 	}
 
 	var m monitorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: bridge /monitors: decode: %w", err)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: /monitors: decode: %w", err)
 	}
 
 	return adapter.MonitorHandle{
@@ -116,13 +112,13 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	}, nil
 }
 
-// Retrieve fetches status_transition events from jetmon-bridge for the run window.
+// Retrieve fetches status_transition events from the Jetmon API for the run window.
 // It maps Jetmon's site_status values to normalized MonitorReport events.
 func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, window adapter.RunWindow) (adapter.RetrieveResult, error) {
-	if a.bridgeURL == "" {
+	if a.apiURL == "" {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: "jetmon: JETMON_BRIDGE_URL is not configured",
+			Reason: "jetmon: JETMON_URL is not configured",
 		}, nil
 	}
 
@@ -138,7 +134,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	until := window.GracePeriodEnd.UTC().Format(time.RFC3339)
 
 	endpoint := fmt.Sprintf("%s/events?blog_id=%s&since=%s&until=%s",
-		a.bridgeURL, url.QueryEscape(blogID),
+		a.apiURL, url.QueryEscape(blogID),
 		url.QueryEscape(since), url.QueryEscape(until),
 	)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -148,7 +144,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	if err != nil {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: fmt.Sprintf("jetmon: bridge /events unreachable: %v", err),
+			Reason: fmt.Sprintf("jetmon: /events unreachable: %v", err),
 		}, nil
 	}
 	defer resp.Body.Close()
@@ -156,7 +152,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	if resp.StatusCode != http.StatusOK {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: fmt.Sprintf("jetmon: bridge /events: status %d", resp.StatusCode),
+			Reason: fmt.Sprintf("jetmon: /events: status %d", resp.StatusCode),
 		}, nil
 	}
 
@@ -164,7 +160,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: fmt.Sprintf("jetmon: bridge /events: decode: %v", err),
+			Reason: fmt.Sprintf("jetmon: /events: decode: %v", err),
 		}, nil
 	}
 

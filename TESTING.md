@@ -17,8 +17,7 @@ cp .env.example .env
 ```
 
 Edit `.env` and fill in the connection details for the monitoring service(s) you want to test.
-For example, to test the Jetmon adapter, set `JETMON_BRIDGE_URL` and `JETMON_BRIDGE_TOKEN`
-to point at a running jetmon-bridge instance (see the jetmon repo for setup instructions).
+For example, to test the Jetmon adapter, set `JETMON_URL` and `JETMON_TOKEN`.
 
 Generate secure tokens for any environment that matters:
 
@@ -51,7 +50,7 @@ docker compose logs -f
 Point your monitoring service at `http://bench.local/` (and optionally `http://probe.local/health`).
 Both names resolve to `target-01` on the fleet Docker network.
 
-For services that need pre-seeded monitors (e.g. Jetmon via jetmon-bridge), set them up now
+For services that require pre-seeded monitors (e.g. Jetmon), set them up now
 and verify the adapter can reach them before running a scenario.
 
 ## 4. Run a Scenario
