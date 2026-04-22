@@ -1,0 +1,82 @@
+# Claude Code local settings
+.claude/
+
+# Go build output
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go test coverage and profiling output
+coverage.out
+coverage.html
+*.coverprofile
+*.prof
+cpu.prof
+mem.prof
+
+# Dependency vendoring (if not committed)
+# vendor/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Fleet configuration — contains IP addresses and credentials
+fleet.toml
+
+# Private keys — TLS certs, SSH keys, ACME account keys
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+id_ecdsa
+id_ecdsa.pub
+
+# Control plane token files (referenced in systemd EnvironmentFiles)
+control-token
+*-token
+
+# Service environment files (DB credentials, tokens — live in /etc on hosts)
+harness.env
+target.env
+dns.env
+
+# ACME / Let's Encrypt account state (contains account private key)
+acme.json
+accounts/
+
+# Any local secrets directory
+secrets/
+
+# Certificate library — built at runtime from Let's Encrypt issuance schedule;
+# contains private keys and must never be committed
+certs/
+
+# Temporary working directories
+tmp/
+temp/
+
+# Log files that may be written locally during development
+*.log
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

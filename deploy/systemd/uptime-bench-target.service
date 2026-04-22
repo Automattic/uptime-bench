@@ -1,0 +1,31 @@
+[Unit]
+Description=uptime-bench target server
+Documentation=https://github.com/uptime-bench/uptime-bench
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=uptime-bench
+Group=uptime-bench
+
+# Needs to bind ports 80, 443, and the control port.
+# If running as a non-root user, grant the binary the net_bind_service capability:
+#   setcap 'cap_net_bind_service=+ep' /usr/local/bin/uptime-bench-target
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+ExecStart=/usr/local/bin/uptime-bench-target \
+    --http-port  80  \
+    --https-port 443 \
+    --control-port 9000
+
+EnvironmentFile=/etc/uptime-bench/target.env
+
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=uptime-bench-target
+
+[Install]
+WantedBy=multi-user.target

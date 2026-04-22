@@ -1,0 +1,30 @@
+[Unit]
+Description=uptime-bench authoritative nameserver
+Documentation=https://github.com/uptime-bench/uptime-bench
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=uptime-bench
+Group=uptime-bench
+
+# Needs to bind port 53 (UDP+TCP) and the control port.
+# If running as a non-root user, grant the net_bind_service capability:
+#   setcap 'cap_net_bind_service=+ep' /usr/local/bin/uptime-bench-dns
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+ExecStart=/usr/local/bin/uptime-bench-dns \
+    --dns-port     53   \
+    --control-port 9100
+
+EnvironmentFile=/etc/uptime-bench/dns.env
+
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=uptime-bench-dns
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+id          = "http-503"
+version     = "1"
+description = "Origin returns 503 for all requests — baseline downtime detection"
+target      = "bench-a"
+monitors    = ["jetmon"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1001
+
+[[failures]]
+type        = "http_status"
+status_code = 503

@@ -1,0 +1,26 @@
+[Unit]
+Description=uptime-bench scenario harness
+Documentation=https://github.com/uptime-bench/uptime-bench
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=uptime-bench
+Group=uptime-bench
+
+ExecStart=/usr/local/bin/uptime-bench-harness \
+    --fleet /etc/uptime-bench/fleet.toml
+
+# Credentials. DB_DSN and CONTROL_TOKEN must be set here.
+# DB_DSN format: user:password@tcp(host:3306)/uptime_bench?parseTime=true
+EnvironmentFile=/etc/uptime-bench/harness.env
+
+Restart=on-failure
+RestartSec=15s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=uptime-bench-harness
+
+[Install]
+WantedBy=multi-user.target

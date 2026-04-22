@@ -83,6 +83,13 @@ type Capabilities struct {
     // capable of running reverse-check scenarios (heartbeat, wp-cron, etc.).
     // Probe-only services must set this to false.
     SupportsAgentChecks bool
+
+    // DefaultMaxCallsPerRun is the adapter's own default API call budget per
+    // run. The harness uses this when no per-adapter limit is set in fleet.toml.
+    // 0 means unlimited — appropriate for self-hosted services with no API cost
+    // (e.g. Jetmon). The fleet.toml value always takes precedence over this
+    // default when present.
+    DefaultMaxCallsPerRun int
 }
 ```
 

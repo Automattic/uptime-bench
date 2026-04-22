@@ -139,8 +139,12 @@ Service differences — rate limits, API quality, polling requirements, propriet
 ## Decided
 
 - **Language:** Go.
+- **Repository layout:** Single repo. Harness, target VM binary, DNS VM binary, and all adapters live together. Go module rooted at the repo root. Three commands under `cmd/`: `cmd/harness`, `cmd/target`, `cmd/dns`.
+- **Event log storage:** MySQL. Schema lives in `schema/` as numbered migration files. Local development uses `docker compose up` (MySQL + Adminer). Production uses dedicated MySQL. The measurement engine reads from and writes to the same MySQL instance; derived metrics are written in a separate pass, never in the same transaction as raw event rows.
 - **Scenario authoring format:** TOML. Failure params are flattened directly into each `[[failures]]` block (no nested `params` sub-object) to keep the format clean. The `type` field is the discriminator; all other fields in the block are type-specific.
 - **Initial services under evaluation:** Jetmon, UptimeRobot, Pingdom, Datadog Synthetics, Better Uptime. These span the full range from simple/free (UptimeRobot) to enterprise (Datadog), and include the only agent-based service in the set (Jetmon), which is required to benchmark reverse-check scenarios.
+- **Fleet configuration:** TOML file (`fleet.toml`, not committed). Defines nameserver VMs, target VMs (with their virtual hosts and paths), and domain-level settings. See `fleet.example.toml` for the reference format.
+- **MVP proof-of-concept scope:** `http_status` (503) against one target VM, Jetmon adapter as the first implementation. Proves the end-to-end pipeline — provision, inject, retrieve, record — before building out additional scenario types and adapters.
 - **Target hosting model:** Always-on dedicated VMs. The harness can provision new VMs when needed, but the normal operating mode is a persistent fleet. Always-on VMs make false-positive detection passive — a monitor alerting on a healthy site is captured automatically.
 - **TCP-level failure injection:** TCP proxy layer within the target VM binary. Sits between the network and the HTTP server; no iptables or root required.
 - **Control plane isolation:** Dedicated port on each fleet member (target VM and DNS VM), separate from data-plane ports 80/443. SSH tunnel available as a fallback transport but not the primary.
@@ -148,8 +152,5 @@ Service differences — rate limits, API quality, polling requirements, propriet
 - **TLS cert strategy (interim):** Let's Encrypt classic (90-day) and shortlived (160-hour) profiles used on a staggered issuance schedule to build a library of certs at varying ages — from newly issued through fully expired. The harness selects the cert whose remaining lifetime best matches the scenario's `days_remaining` target.
 - **TLS cert strategy (long-term):** Self-generated certs signed by a fleet CA, with the CA root installed in Jetmon's trust store. Enables precise expiry control and tests classification fidelity in the Jetmon adapter specifically. Other services classify these as "untrusted CA" rather than "expired" — tiered scoring accounts for this.
 - **TLS classification scoring:** Tiered. Full credit for correct classification (e.g., "expiring cert" vs. "expired cert"). Partial credit for detecting a TLS problem without correctly classifying it. Zero for missing the failure entirely.
-
-## Open design decisions
-
-- **Rate limit and cost budgeting:** the harness should fail loudly when adapter call budgets are exceeded, never silently.
-- **Run output retention:** decide early whether old runs are kept at full fidelity or summarized and pruned.
+- **Adapter call budgeting:** Per-adapter call limits configured in `fleet.toml` under `[adapters.<service_id>]`. Each adapter declares a default `MaxCallsPerRun` in `Capabilities` as a fallback when no config entry exists. The harness aborts a run and records `resolution_reason = "budget_exceeded"` if any adapter reaches its limit — never silently continues. Zero means unlimited (used for self-hosted services like Jetmon with no API cost).
+- **Run output retention:** Full fidelity forever. Raw events, monitor reports, and derived metrics are never deleted or summarized. Preserves the ability to recompute metrics from the log if a calculation is found to be wrong. Storage can be monitored and a time-based deletion policy added later if needed.

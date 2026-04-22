@@ -1,0 +1,132 @@
+# uptime-bench fleet configuration
+#
+# Copy to fleet.toml and edit for your environment.
+# fleet.toml is NOT committed — it contains hostnames, IPs, and credentials.
+# This example file IS committed and serves as the reference format.
+
+# ---------------------------------------------------------------------------
+# Control plane
+# ---------------------------------------------------------------------------
+
+[control]
+# Timeout for control plane requests to any fleet member.
+timeout = "10s"
+
+# Shared token for authenticating harness requests to fleet member control APIs.
+# All fleet members must be configured with this same token.
+# In production, point this at a file with restricted permissions (0600).
+# Locally, set CONTROL_TOKEN in .env instead.
+auth_token_file = "/etc/uptime-bench/control-token"
+
+# ---------------------------------------------------------------------------
+# Adapter call budgets
+# ---------------------------------------------------------------------------
+# Per-adapter API call limits. The harness aborts a run with
+# resolution_reason = "budget_exceeded" if any adapter reaches its limit.
+# If an adapter is not listed here, the adapter's own default (MaxCallsPerRun
+# in Capabilities) applies. Set to 0 for unlimited (self-hosted services).
+#
+# How to estimate: (run_duration + grace_period) / check_frequency * 2
+# gives a rough upper bound for Retrieve polling calls per run.
+
+[adapters.jetmon]
+max_calls_per_run = 0          # self-hosted, no API cost
+
+[adapters.uptimerobot]
+max_calls_per_run = 100
+
+[adapters.pingdom]
+max_calls_per_run = 100
+
+[adapters.datadog-synthetics]
+max_calls_per_run = 200
+
+[adapters.better-uptime]
+max_calls_per_run = 100
+
+# ---------------------------------------------------------------------------
+# Nameservers
+# ---------------------------------------------------------------------------
+# The fleet's authoritative DNS nameservers. At least two entries are required
+# to use dns_ns_unavailable scenarios. All nameservers in this list serve as
+# NS records for every domain listed in their [[nameservers.domains]] array.
+#
+# The nameserver binary listens on dns_port for DNS traffic and on
+# control_port for harness control commands. Both are required.
+
+[[nameservers]]
+id           = "ns-01"
+address      = "203.0.113.10"
+control_port = 9100
+dns_port     = 53
+domains      = ["bench.example.com", "probe.example.net"]
+
+[[nameservers]]
+id           = "ns-02"
+address      = "203.0.113.11"
+control_port = 9100
+dns_port     = 53
+domains      = ["bench.example.com", "probe.example.net"]
+
+# ---------------------------------------------------------------------------
+# Target VMs
+# ---------------------------------------------------------------------------
+# Each [[targets]] entry is one VM running the uptime-bench target binary.
+# A single VM hosts multiple virtual hosts (sites). Sites are distinguished
+# by Host header (HTTP) and SNI (TLS). Failure state is tracked per
+# (host, path) pair — multiple failures can be active simultaneously
+# across sites and paths on the same VM.
+#
+# The target binary listens on ports 80 and 443 for monitor traffic and on
+# control_port for harness control commands.
+
+[[targets]]
+id           = "target-01"
+address      = "203.0.113.20"
+control_port = 9000
+
+  [[targets.sites]]
+  id    = "bench-a"
+  host  = "bench-a.bench.example.com"
+  paths = ["/", "/api/health", "/shop"]
+
+  [[targets.sites]]
+  id    = "bench-b"
+  host  = "bench-b.bench.example.com"
+  paths = ["/", "/blog"]
+
+[[targets]]
+id           = "target-02"
+address      = "203.0.113.21"
+control_port = 9000
+
+  [[targets.sites]]
+  id    = "probe-a"
+  host  = "probe-a.probe.example.net"
+  paths = ["/", "/api"]
+
+  [[targets.sites]]
+  id    = "probe-b"
+  host  = "probe-b.probe.example.net"
+  paths = ["/"]
+
+# ---------------------------------------------------------------------------
+# Domains
+# ---------------------------------------------------------------------------
+# Domain-level configuration. Links each domain to its registered nameservers
+# and sets the TTL for all records under the domain. Keep TTL low (≤30s) so
+# failure injection and recovery propagate quickly to resolvers.
+#
+# nameservers must match [[nameservers]] ids defined above.
+
+[[domains]]
+name        = "bench.example.com"
+registrar   = "Namecheap"
+nameservers = ["ns-01", "ns-02"]
+ttl         = 30
+
+[[domains]]
+name        = "probe.example.net"
+registrar   = "Namecheap"
+nameservers = ["ns-01", "ns-02"]
+ttl         = 30
