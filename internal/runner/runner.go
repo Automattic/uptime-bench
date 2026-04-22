@@ -105,7 +105,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		caps := a.Capabilities()
 		if sc.CheckFrequency < caps.MinCheckFrequency {
 			log.Printf("runner: skip %s: check_frequency %v < min %v", a.ServiceID(), sc.CheckFrequency, caps.MinCheckFrequency)
-			logMonitorReport(ctx, database, runID, a.ServiceID(), adapter.RetrieveResult{
+			logMonitorReport(ctx, database, runID, a.ServiceID(), "", adapter.RetrieveResult{
 				Status: adapter.RetrieveUnknown,
 				Reason: fmt.Sprintf("capability_mismatch: check_frequency %v < min %v", sc.CheckFrequency, caps.MinCheckFrequency),
 			})
@@ -217,7 +217,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		if budget > 0 && callsMade[svcID] >= budget {
 			log.Printf("runner: %s: budget exceeded (%d calls limit)", svcID, budget)
 			resolutionReason = "budget_exceeded"
-			logMonitorReport(ctx, database, runID, svcID, adapter.RetrieveResult{
+			logMonitorReport(ctx, database, runID, svcID, "", adapter.RetrieveResult{
 				Status: adapter.RetrieveUnknown,
 				Reason: fmt.Sprintf("budget_exceeded: limit %d", budget),
 			})
@@ -231,7 +231,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			resolutionReason = "adapter_error"
 			continue
 		}
-		logMonitorReport(ctx, database, runID, p.a.ServiceID(), result)
+		logMonitorReport(ctx, database, runID, p.a.ServiceID(), p.handle.Fields["service_type"], result)
 		log.Printf("runner: retrieved %s: status=%s reports=%d", p.a.ServiceID(), result.Status, len(result.Reports))
 	}
 
@@ -271,7 +271,10 @@ func logEvent(ctx context.Context, database *db.DB, runID, targetID, eventType, 
 	}
 }
 
-func logMonitorReport(ctx context.Context, database *db.DB, runID, serviceID string, result adapter.RetrieveResult) {
+// logMonitorReport writes retrieve results to the database. serviceType is the
+// adapter type string (e.g. "jetmon") used for classification normalization;
+// it may be empty for Unknown results that carry no reports.
+func logMonitorReport(ctx context.Context, database *db.DB, runID, serviceID, serviceType string, result adapter.RetrieveResult) {
 	now := time.Now()
 	if result.Status == adapter.RetrieveUnknown && len(result.Reports) == 0 {
 		database.InsertMonitorReport(ctx, db.MonitorReportRow{
@@ -284,7 +287,7 @@ func logMonitorReport(ctx context.Context, database *db.DB, runID, serviceID str
 		return
 	}
 	for _, r := range result.Reports {
-		normalized := adapter.Normalize(serviceID, r.RawClassification)
+		normalized := adapter.Normalize(serviceType, r.RawClassification)
 		var reportedAt *time.Time
 		if !r.ReportedAt.IsZero() {
 			t := r.ReportedAt

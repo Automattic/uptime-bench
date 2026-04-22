@@ -4,8 +4,10 @@
 // Provision looks up the existing monitor by URL; it does not create one.
 // Deprovision is a no-op.
 //
-// Configure with JETMON_URL and JETMON_TOKEN environment variables,
-// or pass them directly to New.
+// Required services.toml fields:
+//
+//	url  — root URL of the Jetmon API (no public endpoint; must be configured)
+//	auth = { token = "..." }
 package jetmon
 
 import (
@@ -14,35 +16,38 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
 )
 
-const serviceID = "jetmon"
+// adapterType is the key used in adapter.NormalizedClassification.
+const adapterType = "jetmon"
 
 // statusConfirmedDown is Jetmon's site_status value for a confirmed outage.
 const statusConfirmedDown = 2
 
 // Adapter implements adapter.Adapter for Jetmon 1.
 type Adapter struct {
+	id     string
 	apiURL string
 	token  string
 	client *http.Client
 }
 
-// New creates a Jetmon adapter, reading JETMON_URL and JETMON_TOKEN from the environment.
-func New() *Adapter {
+// New creates a Jetmon adapter. id is the configured service instance ID,
+// apiURL is the root URL of the Jetmon API, and token is the bearer token.
+func New(id, apiURL, token string) *Adapter {
 	return &Adapter{
-		apiURL: os.Getenv("JETMON_URL"),
-		token:  os.Getenv("JETMON_TOKEN"),
+		id:     id,
+		apiURL: apiURL,
+		token:  token,
 		client: &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
-func (a *Adapter) ServiceID() string { return serviceID }
+func (a *Adapter) ServiceID() string { return a.id }
 
 func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
@@ -77,7 +82,7 @@ type eventResponse struct {
 // for this URL — pre-seeding is required for the always-on Jetmon model.
 func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
 	if a.apiURL == "" {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: JETMON_URL is not configured")
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: url is not configured")
 	}
 
 	endpoint := a.apiURL + "/monitors?url=" + url.QueryEscape(target.URL)
@@ -103,11 +108,12 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	}
 
 	return adapter.MonitorHandle{
-		ServiceID: serviceID,
+		ServiceID: a.id,
 		MonitorID: strconv.FormatInt(m.BlogID, 10),
 		Fields: map[string]string{
-			"blog_id":     strconv.FormatInt(m.BlogID, 10),
-			"monitor_url": m.MonitorURL,
+			"service_type": adapterType,
+			"blog_id":      strconv.FormatInt(m.BlogID, 10),
+			"monitor_url":  m.MonitorURL,
 		},
 	}, nil
 }
@@ -118,7 +124,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	if a.apiURL == "" {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: "jetmon: JETMON_URL is not configured",
+			Reason: "jetmon: url is not configured",
 		}, nil
 	}
 

@@ -103,10 +103,10 @@ services:
     networks: [fleet]
     volumes:
       - ./docker/fleet.local.toml:/etc/uptime-bench/fleet.toml:ro
+      - ./services.toml:/etc/uptime-bench/services.toml:ro
       - ./scenarios:/scenarios:ro
-    env_file: .env
     environment:
-      # Override DSN to use the in-compose MySQL service name, not 127.0.0.1.
+      CONTROL_TOKEN: ${CONTROL_TOKEN:-devtoken}
       DB_DSN: "uptime_bench:${MYSQL_PASSWORD:-devpassword}@tcp(mysql:3306)/uptime_bench?parseTime=true"
     depends_on:
       mysql:

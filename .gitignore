@@ -28,8 +28,9 @@ mem.prof
 .env.*
 !.env.example
 
-# Fleet configuration — contains IP addresses and credentials
+# Fleet and services configuration — contain addresses and credentials
 fleet.toml
+services.toml
 
 # Private keys — TLS certs, SSH keys, ACME account keys
 *.key

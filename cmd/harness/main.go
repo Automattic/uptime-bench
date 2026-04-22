@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -15,12 +16,28 @@ import (
 	"github.com/Automattic/uptime-bench/internal/measurement"
 	"github.com/Automattic/uptime-bench/internal/runner"
 	"github.com/Automattic/uptime-bench/internal/scenario"
+	"github.com/Automattic/uptime-bench/internal/serviceconfig"
 )
 
+// adapterFactory builds an adapter from a service config entry.
+type adapterFactory func(id, url string, auth map[string]string) (adapter.Adapter, error)
+
+// registry maps service type names to their factory functions.
+// To add a new service: implement its adapter package and add an entry here.
+var registry = map[string]adapterFactory{
+	"jetmon": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
+		if apiURL == "" {
+			return nil, fmt.Errorf("url is required (jetmon has no public API endpoint)")
+		}
+		return jetmon.New(id, apiURL, auth["token"]), nil
+	},
+}
+
 func main() {
-	fleetPath := flag.String("fleet", "fleet.toml", "path to fleet configuration file")
-	scenarioPath := flag.String("scenario", "", "path to scenario TOML file to run")
-	dsnFlag := flag.String("dsn", "", "MySQL DSN (overrides DB_DSN env var)")
+	fleetPath    := flag.String("fleet",    "fleet.toml",    "path to fleet configuration file")
+	servicesPath := flag.String("services", "services.toml", "path to services configuration file")
+	scenarioPath := flag.String("scenario", "",              "path to scenario TOML file to run")
+	dsnFlag      := flag.String("dsn",      "",              "MySQL DSN (overrides DB_DSN env var)")
 	flag.Parse()
 
 	if *scenarioPath == "" {
@@ -43,6 +60,11 @@ func main() {
 	}
 	log.Printf("harness: scenario loaded: %s v%s", sc.ID, sc.Version)
 
+	svcCfg, err := serviceconfig.Load(*servicesPath)
+	if err != nil {
+		log.Fatalf("harness: services: %v", err)
+	}
+
 	dsn := *dsnFlag
 	if dsn == "" {
 		dsn = os.Getenv("DB_DSN")
@@ -57,14 +79,34 @@ func main() {
 	defer database.Close()
 	log.Println("harness: database connected")
 
-	allAdapters := map[string]adapter.Adapter{
-		"jetmon": jetmon.New(),
+	// Build the set of adapter IDs the scenario needs.
+	wantedIDs := make(map[string]bool, len(sc.Monitors))
+	for _, id := range sc.Monitors {
+		wantedIDs[id] = true
 	}
-	var adapters []adapter.Adapter
-	for _, monitorID := range sc.Monitors {
-		a, ok := allAdapters[monitorID]
+
+	// Instantiate enabled services that the scenario references.
+	allAdapters := make(map[string]adapter.Adapter, len(sc.Monitors))
+	for _, svc := range svcCfg.Services {
+		if !svc.Enabled || !wantedIDs[svc.ID] {
+			continue
+		}
+		factory, ok := registry[svc.Type]
 		if !ok {
-			log.Fatalf("harness: unknown monitor %q (no adapter registered)", monitorID)
+			log.Fatalf("harness: service %q: unknown type %q", svc.ID, svc.Type)
+		}
+		a, err := factory(svc.ID, svc.URL, svc.Auth)
+		if err != nil {
+			log.Fatalf("harness: service %q: %v", svc.ID, err)
+		}
+		allAdapters[svc.ID] = a
+	}
+
+	var adapters []adapter.Adapter
+	for _, id := range sc.Monitors {
+		a, ok := allAdapters[id]
+		if !ok {
+			log.Fatalf("harness: scenario monitor %q not found in services config (check id and enabled)", id)
 		}
 		adapters = append(adapters, a)
 	}

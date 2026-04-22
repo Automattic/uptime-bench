@@ -93,6 +93,7 @@ run-scenario:
 	docker compose run --rm harness \
 	  uptime-bench-harness \
 	    -fleet=/etc/uptime-bench/fleet.toml \
+	    -services=/etc/uptime-bench/services.toml \
 	    -scenario=/scenarios/$(notdir $(SCENARIO))
 
 .PHONY: logs

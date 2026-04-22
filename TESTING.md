@@ -10,14 +10,16 @@ This guide gets you from zero to a running end-to-end benchmark against a monito
 
 ## 1. First-time Setup
 
-Copy the example env file:
+Copy the example config files:
 
 ```bash
 cp .env.example .env
+cp services.example.toml services.toml
 ```
 
-Edit `.env` and fill in the connection details for the monitoring service(s) you want to test.
-For example, to test the Jetmon adapter, set `JETMON_URL` and `JETMON_TOKEN`.
+Edit `services.toml` and enable the monitoring service(s) you want to test. Set `enabled = true`
+and fill in the `url` and `auth` fields for each service. See `services.example.toml` for the
+required auth keys for each service type.
 
 Generate secure tokens for any environment that matters:
 
