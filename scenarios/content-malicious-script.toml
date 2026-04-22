@@ -1,0 +1,16 @@
+id          = "content-malicious-script"
+version     = "1"
+description = "Malicious external script injected into otherwise-normal page (200 OK) — tests script-injection and external resource detection"
+target      = "bench-a"
+monitors    = ["jetmon"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 2003
+
+# The page looks normal and returns 200 OK. An injected <script> tag points to
+# an attacker-controlled domain. Monitors that check for unexpected external
+# resources or run script-injection detection should fire.
+[[failures]]
+type    = "http_body"
+content = "malicious_script"

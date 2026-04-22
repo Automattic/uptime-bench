@@ -1,0 +1,117 @@
+package control
+
+import (
+	"math/rand"
+	"sync"
+	"time"
+)
+
+// activeFailure is a failure held in the registry with its expiry and optional RNG.
+type activeFailure struct {
+	spec    FailureSpec
+	expires time.Time
+	rng     *rand.Rand // non-nil when Rate < 1.0; seeded per run for reproducibility
+}
+
+// FailureRegistry is a thread-safe in-memory store of active failures.
+// Each fleet member (target or dns binary) owns one registry.
+type FailureRegistry struct {
+	mu       sync.Mutex
+	failures map[string]activeFailure
+}
+
+// NewRegistry creates an empty FailureRegistry.
+func NewRegistry() *FailureRegistry {
+	return &FailureRegistry{failures: make(map[string]activeFailure)}
+}
+
+// Set registers a failure. It overwrites any existing failure with the same key.
+// seed is the scenario run seed; a per-failure-type derivative is used so each
+// failure type has an independent random stream.
+func (r *FailureRegistry) Set(spec FailureSpec, seed int64) {
+	af := activeFailure{
+		spec:    spec,
+		expires: time.Now().Add(spec.Duration),
+	}
+	rate := spec.Rate
+	if rate <= 0 || rate >= 1.0 {
+		rate = 1.0
+	}
+	if rate < 1.0 {
+		// Derive a per-failure-type seed so concurrent failures don't share a stream.
+		af.rng = rand.New(rand.NewSource(seed ^ strHash(spec.Type)))
+	}
+	r.mu.Lock()
+	r.failures[failureKey(spec)] = af
+	r.mu.Unlock()
+}
+
+// Remove removes a failure by its identifying fields.
+func (r *FailureRegistry) Remove(failureType, host, path string) {
+	r.mu.Lock()
+	delete(r.failures, failureKey(FailureSpec{Type: failureType, Host: host, Path: path}))
+	r.mu.Unlock()
+}
+
+// Active returns all non-expired failures, pruning stale entries.
+func (r *FailureRegistry) Active() []FailureSpec {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	out := make([]FailureSpec, 0, len(r.failures))
+	for k, af := range r.failures {
+		if now.After(af.expires) {
+			delete(r.failures, k)
+			continue
+		}
+		out = append(out, af.spec)
+	}
+	return out
+}
+
+// Lookup returns the active failure for the given (type, host, path), applying
+// the configured rate probabilistically. Returns zero value and false if no
+// matching failure is found or the request is skipped by the rate filter.
+//
+// Match priority: exact (type+host+path) → host wildcard (type+host) → full wildcard (type only).
+func (r *FailureRegistry) Lookup(failureType, host, path string) (FailureSpec, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+
+	candidates := []string{
+		failureKey(FailureSpec{Type: failureType, Host: host, Path: path}),
+		failureKey(FailureSpec{Type: failureType, Host: host}),
+		failureKey(FailureSpec{Type: failureType}),
+	}
+	for _, k := range candidates {
+		af, ok := r.failures[k]
+		if !ok {
+			continue
+		}
+		if now.After(af.expires) {
+			delete(r.failures, k)
+			continue
+		}
+		// Apply rate filter.
+		if af.rng != nil && af.rng.Float64() >= af.spec.Rate {
+			return FailureSpec{}, false
+		}
+		return af.spec, true
+	}
+	return FailureSpec{}, false
+}
+
+func failureKey(s FailureSpec) string {
+	return s.Type + ":" + s.Host + ":" + s.Path
+}
+
+// strHash returns a simple deterministic hash of s, used to derive
+// per-failure-type seeds from the run seed.
+func strHash(s string) int64 {
+	var h int64
+	for _, c := range s {
+		h = h*31 + int64(c)
+	}
+	return h
+}

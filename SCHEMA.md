@@ -112,18 +112,50 @@ variant = "loop"
 
 ### `http_body`
 
-Returns a wrong or empty response body with a 200 OK status, simulating a silent application failure.
+Returns a modified response body with a 200 OK status, simulating silent application failures, content integrity violations, and security compromises. All variants preserve the HTTP status code so that status-only monitors cannot detect them — only monitors that inspect response bodies will fire.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `content` | string | yes | — | `"empty"` (near-empty body), `"error_page"` (CMS fatal error page, e.g. "Error establishing a database connection"), `"keyword_missing"` (otherwise normal body with the expected keyword absent). |
-| `keyword` | string | conditional | — | The keyword that should be present but will not be. Required when `content = "keyword_missing"`. |
+| `content` | string | yes | — | Content variant. See variant table below. |
+| `keyword` | string | conditional | — | Interpretation depends on variant. Required for `"keyword_missing"` and `"keyword_injected"`. |
+
+#### Content variants
+
+| `content` value | Description | Detectable by |
+|-----------------|-------------|---------------|
+| `"empty"` | Near-empty body (`<html></html>`), 200 OK. Simulates white-screen-of-death. | Keyword check, body-size threshold |
+| `"error_page"` | CMS database error page ("Error establishing a database connection"), 200 OK. | Keyword check, error-page pattern |
+| `"keyword_missing"` | Otherwise-normal page body with the expected keyword absent. Use `keyword` to specify which keyword. | Keyword check |
+| `"keyword_injected"` | Otherwise-normal page body with an unexpected keyword injected (e.g., `"HACKED"`, `"BTC"`, `"ENCRYPTED"`). Use `keyword` to specify which keyword is injected. | Keyword check for unexpected term |
+| `"ransomware"` | Complete page replacement with a ransomware/extortion notice. Simulates a full site takeover by malware. | Keyword check, content diff, page-text analysis |
+| `"defacement"` | Complete page replacement with hacktivist defacement content. Simulates a compromised web server. | Keyword check, content diff |
+| `"malicious_script"` | Otherwise-normal page with an injected `<script>` tag pointing to an external malicious-looking domain. Simulates an XSS/supply-chain compromise. | Script-injection check, external resource check |
+| `"spam_links"` | Otherwise-normal page with hidden SEO spam links injected (gambling, pharmacy, etc.). Simulates a blackhat SEO compromise. | Keyword check, link-injection check |
 
 ```toml
 [[failures]]
 type    = "http_body"
 content = "keyword_missing"
 keyword = "Welcome"
+```
+
+```toml
+[[failures]]
+type    = "http_body"
+content = "ransomware"
+```
+
+```toml
+[[failures]]
+type    = "http_body"
+content = "malicious_script"
+```
+
+```toml
+[[failures]]
+type    = "http_body"
+content = "keyword_injected"
+keyword = "HACKED"
 ```
 
 ---
@@ -319,6 +351,26 @@ reason = "no_common_cipher"
 
 ---
 
+### `tls_deprecated`
+
+Serves the HTTPS connection using only a deprecated TLS protocol version (TLS 1.0 or TLS 1.1). The connection succeeds — the monitor is not blocked — but uses a deprecated cipher. Tests whether monitors detect and report advisory-level TLS version warnings separately from hard failures.
+
+This is distinct from `tls_handshake`: the handshake completes and the monitor receives an HTTP response, but via a protocol version that browsers and security scanners flag. Some monitors classify this as a warning rather than a downtime event.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `variant` | string | no | `"TLS11"` | Maximum TLS version the server offers. `"TLS10"` (TLS 1.0 only) or `"TLS11"` (TLS 1.0 and 1.1, but not 1.2 or 1.3). |
+
+```toml
+[[failures]]
+type    = "tls_deprecated"
+variant = "TLS11"
+```
+
+**Note:** Requires TLS support in the target binary. See [ROADMAP.md](ROADMAP.md).
+
+---
+
 ## Validation rules
 
 - `rate` must be in the range (0.0, 1.0]. A value of exactly 0.0 is rejected — use the absence of a failure block instead.
@@ -328,8 +380,9 @@ reason = "no_common_cipher"
 - `status_code` for `http_status` must be a valid three-digit HTTP status code.
 - `days_remaining` for `tls_expiring` must be a positive integer.
 - `chain_length` for `http_redirect` with `variant = "chain"` must exceed the monitor's max-redirect follow limit (typically > 10) to actually trigger the failure.
-- `keyword` is required when `http_body.content = "keyword_missing"`.
+- `keyword` is required when `http_body.content = "keyword_missing"` or `"keyword_injected"`.
 - `mode` for `dns_ns_unavailable` must be `"silent"` or `"servfail"`.
+- `variant` for `tls_deprecated` must be `"TLS10"` or `"TLS11"`. Defaults to `"TLS11"`.
 - `dns_ns_unavailable` requires the fleet to have at least two authoritative nameservers for the target domain. The runner rejects this failure type if the fleet registry does not satisfy this requirement.
 - At least one `[[failures]]` block is required per scenario.
 

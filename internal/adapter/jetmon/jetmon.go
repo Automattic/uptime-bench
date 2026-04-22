@@ -7,7 +7,6 @@ package jetmon
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
@@ -40,22 +39,24 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 }
 
 func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
-	// TODO: POST /api/v1/sites/{blog_id}/checks via Jetmon public API.
-	// Blocked on: jetmon/ROADMAP.md — Public REST API (Manage endpoint).
-	return adapter.MonitorHandle{}, fmt.Errorf("jetmon: Provision not yet implemented — waiting on Jetmon public API")
+	// Jetmon public API not yet available. Return a placeholder handle so the
+	// runner proceeds; Retrieve will return Unknown for this run.
+	return adapter.MonitorHandle{
+		ServiceID: serviceID,
+		MonitorID: "pending",
+		Fields:    map[string]string{"api_status": "unavailable"},
+	}, nil
 }
 
 func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, window adapter.RunWindow) (adapter.RetrieveResult, error) {
-	// TODO: GET /api/v1/sites/{blog_id}/events via Jetmon public API.
-	// Blocked on: jetmon/ROADMAP.md — Public REST API (Query endpoint).
+	// TODO: GET /api/v1/sites/{blog_id}/events — blocked on Jetmon public API.
 	return adapter.RetrieveResult{
 		Status: adapter.RetrieveUnknown,
-		Reason: "jetmon: Retrieve not yet implemented — waiting on Jetmon public API",
+		Reason: "jetmon: public API not yet available",
 	}, nil
 }
 
 func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle) error {
-	// TODO: DELETE /api/v1/sites/{blog_id}/checks/{check_id} via Jetmon public API.
-	// Blocked on: jetmon/ROADMAP.md — Public REST API (Manage endpoint).
-	return fmt.Errorf("jetmon: Deprovision not yet implemented — waiting on Jetmon public API")
+	// Nothing to clean up until the real API is implemented.
+	return nil
 }

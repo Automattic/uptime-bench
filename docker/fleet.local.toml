@@ -1,0 +1,50 @@
+# Fleet configuration for local Docker Compose development.
+# Uses Docker service names as addresses; no sensitive values.
+
+[control]
+timeout        = "10s"
+auth_token_file = "/etc/uptime-bench/control-token"
+
+[adapters.jetmon]
+max_calls_per_run = 0   # unlimited (self-hosted)
+
+[[nameservers]]
+id           = "dns-01"
+address      = "dns-01"
+control_port = 9100
+dns_port     = 53
+domains      = ["bench.local", "probe.local"]
+
+[[nameservers]]
+id           = "dns-02"
+address      = "dns-02"
+control_port = 9100
+dns_port     = 53
+domains      = ["bench.local", "probe.local"]
+
+[[targets]]
+id           = "bench-a"
+address      = "target-01"
+control_port = 9000
+
+  [[targets.sites]]
+  id    = "bench-a-root"
+  host  = "bench.local"
+  paths = ["/"]
+
+  [[targets.sites]]
+  id    = "bench-a-probe"
+  host  = "probe.local"
+  paths = ["/health"]
+
+[[domains]]
+name         = "bench.local"
+registrar    = "local"
+nameservers  = ["dns-01", "dns-02"]
+ttl          = 5
+
+[[domains]]
+name         = "probe.local"
+registrar    = "local"
+nameservers  = ["dns-01", "dns-02"]
+ttl          = 5

@@ -317,3 +317,33 @@ The harness must distinguish these outcomes and never conflate them:
 - `Retrieve` must respect context cancellation promptly. When `ctx` is cancelled mid-poll, return whatever has been retrieved so far with `Status: RetrieveUnknown` and `Reason: ctx.Err().Error()`.
 - `MonitorHandle.Fields` values must be safe to serialize to strings. The harness persists handles between Provision and Retrieve; complex types do not survive.
 - `ServiceID()` must return the same value on every call and must match the IDs used in scenario TOML files exactly.
+
+---
+
+## Implementation notes for common service behaviors
+
+### Alert cooldown / suppression windows
+
+Many monitoring services suppress repeated alerts for the same monitor within a cooldown window (commonly 15–60 minutes). If uptime-bench runs consecutive scenarios against the same provisioned monitor, the second run's alert may be suppressed by the first run's cooldown — producing a result that appears to be a missed detection but is the service working as designed.
+
+**`Deprovision` should clear cooldown state.** If the service API supports resetting alert state (e.g., acknowledging an incident, toggling the monitor off and on), do so in `Deprovision`. If the API does not support this, delete and recreate the monitor — the cost of reprovisioning is acceptable to ensure clean state between runs.
+
+**If neither is possible:** record the monitor's current alert state at the start of `Retrieve`. If the service reports that an alert is currently suppressed, include `"alert_suppressed": true` in `MonitorReport.Metadata`. The measurement engine will distinguish this from a genuine missed detection.
+
+### Per-component timing breakdown
+
+Some services record per-component timings: DNS resolution time, TCP connection time, TLS handshake time, time to first byte. When available, populate the following keys in `MonitorReport.Metadata`:
+
+```
+"dns_ms":  float64  // DNS resolution duration in milliseconds
+"tcp_ms":  float64  // TCP connection duration
+"tls_ms":  float64  // TLS handshake duration
+"ttfb_ms": float64  // Time to first response byte
+"rtt_ms":  float64  // Total round-trip time
+```
+
+This data enables layer-level attribution verification: a `dns_latency` scenario should appear as increased `dns_ms`, not `ttfb_ms`. Adapters that can retrieve this data should always do so.
+
+### Maintenance window provisioning
+
+If the service supports scheduled maintenance windows, expose this via a `ProvisionConfig` extension (a service-specific option passed through `MonitorHandle.Fields`). Do not build maintenance window support into the core `ProvisionConfig` struct — it is a service capability, not a universal one. See ROADMAP.md for the planned maintenance window scenario type.

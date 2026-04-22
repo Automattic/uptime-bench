@@ -1,7 +1,12 @@
+networks:
+  fleet:
+    driver: bridge
+
 services:
   mysql:
     image: mysql:8.4
     restart: unless-stopped
+    networks: [fleet]
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-devpassword}
       MYSQL_DATABASE: uptime_bench
@@ -23,11 +28,64 @@ services:
   adminer:
     image: adminer:latest
     restart: unless-stopped
+    networks: [fleet]
     ports:
       - "${ADMINER_PORT:-8081}:8080"
     depends_on:
       mysql:
         condition: service_healthy
+
+  target-01:
+    build: .
+    profiles: [fleet]
+    restart: unless-stopped
+    networks: [fleet]
+    command: ["uptime-bench-target", "-http-port=80", "-https-port=443", "-control-port=9000"]
+    ports:
+      - "8080:80"
+      - "8443:443"
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:-devtoken}
+
+  dns-01:
+    build: .
+    profiles: [fleet]
+    restart: unless-stopped
+    networks: [fleet]
+    command: ["uptime-bench-dns", "-dns-port=53", "-control-port=9100"]
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:-devtoken}
+
+  dns-02:
+    build: .
+    profiles: [fleet]
+    restart: unless-stopped
+    networks: [fleet]
+    command: ["uptime-bench-dns", "-dns-port=53", "-control-port=9100"]
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:-devtoken}
+
+  harness:
+    build: .
+    profiles: [fleet]
+    restart: unless-stopped
+    networks: [fleet]
+    command: ["uptime-bench-harness", "-fleet=/etc/uptime-bench/fleet.toml"]
+    volumes:
+      - ./docker/fleet.local.toml:/etc/uptime-bench/fleet.toml:ro
+      - ./scenarios:/scenarios:ro
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:-devtoken}
+      DB_DSN: "uptime_bench:${MYSQL_PASSWORD:-devpassword}@tcp(mysql:3306)/uptime_bench?parseTime=true"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      target-01:
+        condition: service_started
+      dns-01:
+        condition: service_started
+      dns-02:
+        condition: service_started
 
 volumes:
   mysql_data:

@@ -232,14 +232,19 @@ The response is valid HTTP — but is the payload actually correct? Layer 5 spli
 - **[v2]** Default server welcome page (nginx, Apache, IIS default)
 
 ### Correctness: security-relevant content
-- **[v2]** Defacement (body diff against baseline exceeds threshold)
-- **[v2]** Injected spam links or SEO spam
-- **[v3]** Injected cryptominer or malicious JavaScript
-- **[v3]** Phishing content replacing legitimate pages
+
+These scenarios inject security-compromise content into an otherwise healthy-looking 200 OK response. Status-only monitors cannot detect them; only monitors that inspect the response body will fire.
+
+- **[v1]** Ransomware/extortion notice replacing site content — `http_body content="ransomware"` — simulates full site takeover by malware (DARKLOCK-style notice, BTC payment demand, 72-hour countdown)
+- **[v1]** Hacktivist defacement replacing site content — `http_body content="defacement"` — simulates web server compromise (H4CK3D branding, ideological message)
+- **[v1]** Malicious script injected into otherwise-normal page — `http_body content="malicious_script"` — simulates XSS or supply-chain compromise (external `<script>` tag pointing to attacker-controlled domain)
+- **[v1]** SEO spam links injected into otherwise-normal page — `http_body content="spam_links"` — simulates blackhat SEO compromise (hidden links to pharmacy, gambling, crypto sites)
+- **[v1]** Unexpected keyword injected (e.g., `"HACKED"`, `"BTC"`, `"ENCRYPTED"`) — `http_body content="keyword_injected"` — tests whether monitors can detect presence of unexpected terms
 - **[v2]** Admin/debug pages exposed publicly (`/wp-admin` accessible without auth, `.env` served)
 
 ### Correctness: content completeness
-- **[v1]** Expected string/marker present (canary text)
+- **[v1]** Expected string/marker present (canary text) — `http_body content="keyword_missing"`
+- **[v1]** Near-empty body with 200 OK (white-screen-of-death) — `http_body content="empty"`
 - **[v2]** Missing critical element (no `<title>`, empty `<body>`)
 - **[v2]** Response body significantly smaller than baseline
 - **[v3]** Broken HTML structure (unclosed tags affecting render)

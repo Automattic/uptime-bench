@@ -64,6 +64,24 @@ dev-reset:
 	docker compose down -v
 	docker compose up -d
 
+.PHONY: dev-fleet
+dev-fleet:
+	docker compose --profile fleet up -d
+	@echo ""
+	@echo "  MySQL:    localhost:$${MYSQL_PORT:-3306}"
+	@echo "  Adminer:  http://localhost:$${ADMINER_PORT:-8081}"
+	@echo "  Target:   http://localhost:8080  /  https://localhost:8443"
+	@echo ""
+
+.PHONY: dev-fleet-down
+dev-fleet-down:
+	docker compose --profile fleet down
+
+.PHONY: dev-fleet-reset
+dev-fleet-reset:
+	docker compose --profile fleet down -v
+	docker compose --profile fleet up -d --build
+
 .PHONY: logs
 logs:
 	docker compose logs -f
@@ -129,10 +147,15 @@ help:
 	@echo "  make test             Run unit tests"
 	@echo "  make test-integration Run integration tests (requires dev services)"
 	@echo ""
-	@echo "Local dev:"
-	@echo "  make dev              Start MySQL + Adminer via Docker Compose"
+	@echo "Local dev (MySQL + Adminer only):"
+	@echo "  make dev              Start MySQL + Adminer"
 	@echo "  make dev-down         Stop dev services"
-	@echo "  make dev-reset        Wipe dev DB and restart services"
+	@echo "  make dev-reset        Wipe dev DB and restart"
+	@echo ""
+	@echo "Local dev (full fleet):"
+	@echo "  make dev-fleet        Build images and start full fleet (MySQL + fleet components)"
+	@echo "  make dev-fleet-down   Stop all fleet services"
+	@echo "  make dev-fleet-reset  Wipe volumes, rebuild images, restart full fleet"
 	@echo "  make logs             Tail Docker Compose logs"
 	@echo ""
 	@echo "Provision (first-time host setup — run before deploy):"

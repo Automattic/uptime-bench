@@ -1,0 +1,13 @@
+id          = "content-spam-links"
+version     = "1"
+description = "Hidden SEO spam links injected into otherwise-normal page (200 OK) — tests link-injection and keyword detection"
+target      = "bench-a"
+monitors    = ["jetmon"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 2004
+
+[[failures]]
+type    = "http_body"
+content = "spam_links"

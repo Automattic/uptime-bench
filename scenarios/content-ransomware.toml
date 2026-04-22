@@ -1,0 +1,15 @@
+id          = "content-ransomware"
+version     = "1"
+description = "Site replaced with ransomware/extortion page (200 OK) — tests content-inspection detection of full takeover"
+target      = "bench-a"
+monitors    = ["jetmon"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 2001
+
+# The site returns 200 OK with ransomware content. Status-only monitors will
+# not fire. Only monitors that inspect the response body can detect this.
+[[failures]]
+type    = "http_body"
+content = "ransomware"

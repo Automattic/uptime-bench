@@ -30,6 +30,11 @@ type FailureSpec struct {
 	// if the harness fails to send a deactivate command.
 	Duration time.Duration `json:"duration"`
 
+	// Rate is the fraction of requests that experience this failure, in (0.0, 1.0].
+	// 1.0 means every request is affected. Applied using seeded randomness so the
+	// statistical distribution is correct and reproducible per run.
+	Rate float64 `json:"rate,omitempty"`
+
 	// Params carries failure-type-specific parameters (status code, delay, etc.).
 	Params map[string]any `json:"params,omitempty"`
 }
@@ -37,6 +42,7 @@ type FailureSpec struct {
 // ActivateRequest is sent by the harness to start a failure on a fleet member.
 type ActivateRequest struct {
 	RunID   string      `json:"run_id"`
+	Seed    int64       `json:"seed"`
 	Failure FailureSpec `json:"failure"`
 }
 
@@ -53,6 +59,3 @@ type StatusResponse struct {
 	MemberID       string        `json:"member_id"`
 	ActiveFailures []FailureSpec `json:"active_failures"`
 }
-
-// TODO: implement Server (HTTP handler for target and dns binaries)
-// TODO: implement Client (HTTP client for the harness)

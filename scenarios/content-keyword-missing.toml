@@ -1,0 +1,16 @@
+id          = "content-keyword-missing"
+version     = "1"
+description = "Expected keyword absent from otherwise-normal page (200 OK) — tests keyword monitoring"
+target      = "bench-a"
+monitors    = ["jetmon"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 2005
+
+# Monitors configured to verify the presence of "uptime-bench-canary" should
+# alert. This keyword is present in all healthy responses from the target.
+[[failures]]
+type    = "http_body"
+content = "keyword_missing"
+keyword = "uptime-bench-canary"

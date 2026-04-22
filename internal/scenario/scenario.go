@@ -247,12 +247,13 @@ func validateFailureType(ctx string, f Failure) error {
 			return fmt.Errorf("%s: content is required for http_body", ctx)
 		}
 		switch f.Content {
-		case "empty", "error_page", "keyword_missing":
+		case "empty", "error_page", "keyword_missing", "keyword_injected",
+			"ransomware", "defacement", "malicious_script", "spam_links":
 		default:
-			return fmt.Errorf("%s: content must be one of: empty, error_page, keyword_missing", ctx)
+			return fmt.Errorf("%s: content must be one of: empty, error_page, keyword_missing, keyword_injected, ransomware, defacement, malicious_script, spam_links", ctx)
 		}
-		if f.Content == "keyword_missing" && f.Keyword == "" {
-			return fmt.Errorf("%s: keyword is required when content = keyword_missing", ctx)
+		if (f.Content == "keyword_missing" || f.Content == "keyword_injected") && f.Keyword == "" {
+			return fmt.Errorf("%s: keyword is required when content = %s", ctx, f.Content)
 		}
 	case "tcp_refused", "tcp_timeout":
 		// no type-specific fields
@@ -296,6 +297,15 @@ func validateFailureType(ctx string, f Failure) error {
 		case "version_mismatch", "no_common_cipher":
 		default:
 			return fmt.Errorf("%s: reason must be one of: version_mismatch, no_common_cipher", ctx)
+		}
+	case "tls_deprecated":
+		if f.Variant == "" {
+			f.Variant = "TLS11"
+		}
+		switch f.Variant {
+		case "TLS10", "TLS11":
+		default:
+			return fmt.Errorf("%s: variant must be one of: TLS10, TLS11", ctx)
 		}
 	default:
 		return fmt.Errorf("%s: unknown failure type %q", ctx, f.Type)
