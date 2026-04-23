@@ -1,0 +1,14 @@
+id          = "http-geo-503"
+version     = "1"
+description = "HTTP 503 for US East probes only — tests regional downtime detection"
+target      = "bench-a"
+monitors    = ["jetmon"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1010
+
+[[failures]]
+type        = "http_status"
+status_code = 503
+regions     = ["us-east"]

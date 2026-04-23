@@ -19,6 +19,7 @@ import (
 	"github.com/Automattic/uptime-bench/internal/db"
 	"github.com/Automattic/uptime-bench/internal/fleet"
 	"github.com/Automattic/uptime-bench/internal/scenario"
+	"github.com/Automattic/uptime-bench/internal/serviceconfig"
 )
 
 // Run executes a scenario end-to-end and returns the run ID.
@@ -31,7 +32,7 @@ import (
 //  6. Retrieve results from each adapter; write monitor_reports.
 //  7. Deprovision all adapters (unconditionally).
 //  8. Close the run with a resolution_reason.
-func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database *db.DB, adapters []adapter.Adapter) (string, error) {
+func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database *db.DB, adapters []adapter.Adapter, svcCfg *serviceconfig.Config) (string, error) {
 	runID := newRunID()
 	startedAt := time.Now()
 
@@ -148,15 +149,20 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	failureDuration := sc.Duration + sc.GracePeriod + 30*time.Second // safety margin for auto-expiry
 	for _, f := range sc.Failures {
 		fp := failureParams(f)
+		sourceCIDRs := collectCIDRs(f.Regions, svcCfg)
+		if len(f.Regions) > 0 && len(sourceCIDRs) == 0 {
+			log.Printf("runner: warning: failure %s has regions %v but no matching probe_ranges found in services.toml", f.Type, f.Regions)
+		}
 		req := control.ActivateRequest{
 			RunID: runID,
 			Seed:  seed,
 			Failure: control.FailureSpec{
-				Type:     f.Type,
-				Host:     targetHostForFailure(target, f),
-				Duration: failureDuration,
-				Rate:     f.Rate,
-				Params:   fp,
+				Type:        f.Type,
+				Host:        targetHostForFailure(target, f),
+				Duration:    failureDuration,
+				Rate:        f.Rate,
+				Params:      fp,
+				SourceCIDRs: sourceCIDRs,
 			},
 		}
 		if err := targetClient.Activate(ctx, req); err != nil {
@@ -349,7 +355,34 @@ func failureParams(f scenario.Failure) map[string]any {
 	if f.Reason != "" {
 		p["reason"] = f.Reason
 	}
+	if len(f.Regions) > 0 {
+		p["regions"] = f.Regions
+	}
 	return p
+}
+
+// collectCIDRs expands region names to a deduplicated list of CIDR strings
+// by aggregating probe_ranges across all enabled services in svcCfg.
+func collectCIDRs(regions []string, svcCfg *serviceconfig.Config) []string {
+	if len(regions) == 0 || svcCfg == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var cidrs []string
+	for _, svc := range svcCfg.Services {
+		if !svc.Enabled {
+			continue
+		}
+		for _, region := range regions {
+			for _, cidr := range svc.ProbeRanges[region] {
+				if !seen[cidr] {
+					seen[cidr] = true
+					cidrs = append(cidrs, cidr)
+				}
+			}
+		}
+	}
+	return cidrs
 }
 
 func targetHostForFailure(t fleet.Target, f scenario.Failure) string {

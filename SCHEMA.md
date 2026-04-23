@@ -36,6 +36,7 @@ These fields apply to every failure type.
 |-------|------|----------|---------|-------------|
 | `type` | string | yes | — | Failure type discriminator. See types below. |
 | `rate` | float | no | `1.0` | Fraction of requests affected, in the range (0.0, 1.0]. `1.0` affects every request. `0.4` affects roughly 40%. Zero is not permitted — a zero-rate failure injects nothing. |
+| `regions` | list of strings | no | *(all)* | Restrict this failure to probes from specific geographic regions. Each name must match a key in `probe_ranges` in `services.toml`. When set, the failure is applied only to connections from source IPs in those regions; probes from other regions see a healthy response. Omit to affect all traffic regardless of origin. |
 | `offset` | duration string | no | `"0s"` | Time after scenario start before this failure begins. **Reserved — not yet implemented. All failures currently start simultaneously at scenario start regardless of this value. See** [**ROADMAP.md**](ROADMAP.md). |
 
 ---

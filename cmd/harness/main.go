@@ -116,7 +116,7 @@ func main() {
 	defer cancel()
 
 	log.Printf("harness: starting scenario: %s", sc.ID)
-	runID, runErr := runner.Run(ctx, sc, fl, database, adapters)
+	runID, runErr := runner.Run(ctx, sc, fl, database, adapters, svcCfg)
 
 	if runID != "" {
 		// Derive metrics in a separate pass — never in the same transaction as events.

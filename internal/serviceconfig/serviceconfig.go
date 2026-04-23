@@ -36,6 +36,12 @@ type Service struct {
 	// Enabled controls whether this service participates in runs.
 	// Set to false to skip a service without removing its config.
 	Enabled bool
+
+	// ProbeRanges maps region names to the CIDR blocks used by this service's
+	// probes in that region. Used to expand scenario failure Regions fields into
+	// concrete source IP ranges for geographic failure injection.
+	// Example: probe_ranges.us-east = ["74.125.0.0/16", "198.51.100.0/24"]
+	ProbeRanges map[string][]string
 }
 
 // Load reads and parses a services config file.
@@ -51,11 +57,12 @@ func Load(path string) (*Config, error) {
 func Parse(data []byte) (*Config, error) {
 	var raw struct {
 		Services []struct {
-			ID      string            `toml:"id"`
-			Type    string            `toml:"type"`
-			URL     string            `toml:"url"`
-			Auth    map[string]string `toml:"auth"`
-			Enabled bool              `toml:"enabled"`
+			ID          string              `toml:"id"`
+			Type        string              `toml:"type"`
+			URL         string              `toml:"url"`
+			Auth        map[string]string   `toml:"auth"`
+			Enabled     bool                `toml:"enabled"`
+			ProbeRanges map[string][]string `toml:"probe_ranges"`
 		} `toml:"services"`
 	}
 	if err := toml.Unmarshal(data, &raw); err != nil {
@@ -70,11 +77,12 @@ func Parse(data []byte) (*Config, error) {
 			return nil, fmt.Errorf("services: %q: type is required", s.ID)
 		}
 		c.Services = append(c.Services, Service{
-			ID:      s.ID,
-			Type:    s.Type,
-			URL:     s.URL,
-			Auth:    s.Auth,
-			Enabled: s.Enabled,
+			ID:          s.ID,
+			Type:        s.Type,
+			URL:         s.URL,
+			Auth:        s.Auth,
+			Enabled:     s.Enabled,
+			ProbeRanges: s.ProbeRanges,
 		})
 	}
 	return c, nil

@@ -92,10 +92,21 @@ func main() {
 }
 
 // handleTCP processes one incoming TCP connection through the proxy layer.
-// TCP-level failures (tcp_refused, tcp_timeout) are applied here before
-// forwarding; all other traffic is piped to the internal HTTP server.
+// Check order:
+//  1. Geo-restricted failures — intercepted here by source IP before any HTTP parsing.
+//  2. Global tcp_refused / tcp_timeout — close or stall the connection.
+//  3. All other failures — forward to the internal HTTP server.
 func handleTCP(client net.Conn, registry *control.FailureRegistry, dst string) {
 	defer client.Close()
+
+	// Geo failure: if the source IP matches a geographically restricted failure,
+	// apply it at the TCP layer and return without forwarding to the HTTP server.
+	if clientIP := parseRemoteIP(client.RemoteAddr()); clientIP != nil {
+		if spec, ok := registry.LookupForIP(clientIP); ok {
+			applyGeoFailure(client, spec)
+			return
+		}
+	}
 
 	// Check for active tcp_refused failure (applies at port level, host="").
 	if _, ok := registry.Lookup("tcp_refused", "", ""); ok {
@@ -129,6 +140,54 @@ func handleTCP(client net.Conn, registry *control.FailureRegistry, dst string) {
 	go pipe(server, client)
 	go pipe(client, server)
 	<-done
+}
+
+// parseRemoteIP extracts the IP address from a net.Addr (e.g. "1.2.3.4:56789").
+func parseRemoteIP(addr net.Addr) net.IP {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return nil
+	}
+	return net.ParseIP(host)
+}
+
+// applyGeoFailure applies a geo-restricted failure to a raw TCP connection.
+// For TCP failure types the connection is closed or stalled. For HTTP failure
+// types a minimal HTTP response is written before closing.
+func applyGeoFailure(conn net.Conn, spec control.FailureSpec) {
+	switch spec.Type {
+	case "tcp_refused":
+		// Close immediately — no data sent.
+
+	case "tcp_timeout":
+		delay := spec.Duration
+		if delay <= 0 {
+			delay = 60 * time.Second
+		}
+		time.Sleep(delay)
+
+	default:
+		// For HTTP failure types, send a minimal well-formed HTTP response.
+		// The status code comes from the failure params when present.
+		code := http.StatusServiceUnavailable
+		if v, ok := spec.Params["status_code"]; ok {
+			switch sv := v.(type) {
+			case float64:
+				code = int(sv)
+			case int:
+				code = sv
+			}
+		}
+		statusText := http.StatusText(code)
+		if statusText == "" {
+			statusText = "Service Unavailable"
+		}
+		body := statusText + "\n"
+		fmt.Fprintf(conn,
+			"HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+			code, statusText, len(body), body,
+		)
+	}
 }
 
 // virtualHostHandler is the HTTP handler running on the internal port.

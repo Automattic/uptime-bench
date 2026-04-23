@@ -4,6 +4,9 @@
 # Go build output
 /bin/
 /dist/
+/dns
+/harness
+/target
 *.exe
 *.exe~
 *.dll

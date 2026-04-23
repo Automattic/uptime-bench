@@ -37,6 +37,14 @@ type FailureSpec struct {
 
 	// Params carries failure-type-specific parameters (status code, delay, etc.).
 	Params map[string]any `json:"params,omitempty"`
+
+	// SourceCIDRs, if non-empty, restricts the failure to connections whose
+	// source IP falls within at least one of these CIDR ranges. Used for
+	// geographic failure scenarios. The runner populates this by expanding
+	// region names from the scenario file using probe IP ranges from services.toml.
+	// Geo-restricted failures are applied at the TCP layer; the HTTP handler
+	// never sees connections from matching source IPs.
+	SourceCIDRs []string `json:"source_cidrs,omitempty"`
 }
 
 // ActivateRequest is sent by the harness to start a failure on a fleet member.

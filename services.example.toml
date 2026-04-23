@@ -3,20 +3,34 @@
 #
 # Each [[services]] block declares one monitoring service instance to evaluate.
 #
-#   id      — unique identifier; must match what scenario TOML files list under monitors
-#   type    — adapter type (see supported types below)
-#   url     — API root URL; omit to use the service's default public endpoint
-#   auth    — credential key=value pairs; required keys vary by type (see below)
-#   enabled — set false to skip this service without removing its config
+#   id           — unique identifier; must match what scenario TOML files list under monitors
+#   type         — adapter type (see supported types below)
+#   url          — API root URL; omit to use the service's default public endpoint
+#   auth         — credential key=value pairs; required keys vary by type (see below)
+#   enabled      — set false to skip this service without removing its config
+#   probe_ranges — maps region name → list of CIDR blocks used by this service's probes
+#                  in that region. Used to expand `regions` in scenario failure blocks
+#                  into source IP ranges for geographic failure injection.
 #
 # The id is arbitrary. If you run multiple accounts of the same service, give
 # each a distinct id (e.g. "pingdom-prod", "pingdom-staging") and reference
 # those ids in your scenario monitor lists.
+#
+# Geographic failure injection:
+#   When a [[failures]] block in a scenario specifies `regions = ["us-east"]`,
+#   the runner aggregates probe_ranges.us-east CIDRs across all enabled services
+#   and injects the failure only for connections from those source IPs. Probes
+#   from other regions see a healthy response.
+#
+#   Use any region name you like — they are matched by string equality against
+#   the `regions` field in scenario files. Publish the names you use in a comment
+#   so scenario authors know what to write.
 
 # -----------------------------------------------------------------------------
 # Jetmon 1
 # Required: url (no public API; point at your Jetmon API endpoint)
 # Auth keys: token
+# Note: Jetmon is agent-based and does not have fixed probe IP ranges.
 # -----------------------------------------------------------------------------
 [[services]]
 id      = "jetmon"
@@ -29,6 +43,7 @@ auth    = { token = "replace-with-your-token" }
 # Pingdom
 # Default URL: https://api.pingdom.com/api/3.1
 # Auth keys: token
+# Probe IP list: https://my.pingdom.com/probes/ipv4 (JSON)
 # -----------------------------------------------------------------------------
 [[services]]
 id      = "pingdom"
@@ -36,10 +51,19 @@ type    = "pingdom"
 enabled = false
 auth    = { token = "replace-with-your-token" }
 
+[services.probe_ranges]
+# Replace these example CIDRs with current values from Pingdom's published probe list.
+us-east  = ["212.84.74.0/24", "46.246.93.0/24"]
+us-west  = ["69.58.176.0/24"]
+eu-west  = ["94.75.228.0/24", "94.75.229.0/24"]
+eu-north = ["82.196.6.0/24"]
+ap-sea   = ["43.251.28.0/24"]
+
 # -----------------------------------------------------------------------------
 # UptimeRobot
 # Default URL: https://api.uptimerobot.com/v2
 # Auth keys: api_key
+# Probe IP list: https://uptimerobot.com/inc/files/ips/IPv4andIPv6.txt
 # -----------------------------------------------------------------------------
 [[services]]
 id      = "uptimerobot"
@@ -47,10 +71,18 @@ type    = "uptimerobot"
 enabled = false
 auth    = { api_key = "replace-with-your-key" }
 
+[services.probe_ranges]
+# Replace these example CIDRs with current values from UptimeRobot's published IP list.
+us-east  = ["216.144.248.0/24"]
+us-west  = ["208.115.199.0/24"]
+eu-west  = ["178.63.112.0/24"]
+ap-sea   = ["103.253.145.0/24"]
+
 # -----------------------------------------------------------------------------
 # Datadog Synthetics
 # Default URL: https://api.datadoghq.com
 # Auth keys: api_key, app_key
+# Probe IP list: https://ip-ranges.datadoghq.com/ (JSON, "synthetics" key)
 # -----------------------------------------------------------------------------
 [[services]]
 id      = "datadog-synthetics"
@@ -58,13 +90,28 @@ type    = "datadog-synthetics"
 enabled = false
 auth    = { api_key = "replace-with-your-key", app_key = "replace-with-your-key" }
 
+[services.probe_ranges]
+# Replace these example CIDRs with current values from Datadog's ip-ranges endpoint.
+us-east  = ["3.87.113.0/24", "34.206.179.0/24"]
+us-west  = ["52.52.131.0/24"]
+eu-west  = ["176.34.247.0/24"]
+eu-central = ["52.29.178.0/24"]
+ap-sea   = ["13.228.142.0/24"]
+
 # -----------------------------------------------------------------------------
 # Better Uptime
 # Default URL: https://betteruptime.com/api/v2
 # Auth keys: token
+# Probe IP list: https://betterstack.com/docs/uptime/ip-addresses/
 # -----------------------------------------------------------------------------
 [[services]]
 id      = "better-uptime"
 type    = "better-uptime"
 enabled = false
 auth    = { token = "replace-with-your-token" }
+
+[services.probe_ranges]
+# Replace these example CIDRs with current values from Better Stack's documentation.
+us-east  = ["23.88.96.0/24"]
+eu-west  = ["65.108.79.0/24"]
+ap-sea   = ["43.134.8.0/24"]

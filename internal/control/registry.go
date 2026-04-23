@@ -2,6 +2,7 @@ package control
 
 import (
 	"math/rand"
+	"net"
 	"sync"
 	"time"
 )
@@ -69,9 +70,9 @@ func (r *FailureRegistry) Active() []FailureSpec {
 	return out
 }
 
-// Lookup returns the active failure for the given (type, host, path), applying
-// the configured rate probabilistically. Returns zero value and false if no
-// matching failure is found or the request is skipped by the rate filter.
+// Lookup returns the active global failure for the given (type, host, path),
+// applying the configured rate probabilistically. Failures with SourceCIDRs
+// set are never returned — those are geo-restricted and handled by LookupForIP.
 //
 // Match priority: exact (type+host+path) → host wildcard (type+host) → full wildcard (type only).
 func (r *FailureRegistry) Lookup(failureType, host, path string) (FailureSpec, bool) {
@@ -93,11 +94,45 @@ func (r *FailureRegistry) Lookup(failureType, host, path string) (FailureSpec, b
 			delete(r.failures, k)
 			continue
 		}
-		// Apply rate filter.
+		if len(af.spec.SourceCIDRs) > 0 {
+			continue // geo-restricted; use LookupForIP instead
+		}
 		if af.rng != nil && af.rng.Float64() >= af.spec.Rate {
 			return FailureSpec{}, false
 		}
 		return af.spec, true
+	}
+	return FailureSpec{}, false
+}
+
+// LookupForIP returns the first active geo-restricted failure (one with
+// non-empty SourceCIDRs) whose CIDR list contains ip. Returns zero value
+// and false if no active geo failure covers the given IP.
+func (r *FailureRegistry) LookupForIP(ip net.IP) (FailureSpec, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+
+	for k, af := range r.failures {
+		if now.After(af.expires) {
+			delete(r.failures, k)
+			continue
+		}
+		if len(af.spec.SourceCIDRs) == 0 {
+			continue
+		}
+		for _, cidrStr := range af.spec.SourceCIDRs {
+			_, ipNet, err := net.ParseCIDR(cidrStr)
+			if err != nil {
+				continue
+			}
+			if ipNet.Contains(ip) {
+				if af.rng != nil && af.rng.Float64() >= af.spec.Rate {
+					return FailureSpec{}, false
+				}
+				return af.spec, true
+			}
+		}
 	}
 	return FailureSpec{}, false
 }

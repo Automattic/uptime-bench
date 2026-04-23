@@ -49,6 +49,12 @@ type Failure struct {
 	DaysExpired   int
 	DaysRemaining int
 	Reason        string
+
+	// Regions, if non-empty, restricts this failure to probes from specific
+	// geographic regions. Region names must match keys in probe_ranges in
+	// services.toml. The runner expands names to CIDR lists at run time;
+	// the failure is applied only to connections from matching source IPs.
+	Regions []string
 }
 
 // raw mirrors the TOML structure for unmarshalling before validation.
@@ -81,9 +87,10 @@ type rawFailure struct {
 	Keyword            string `toml:"keyword"`
 	AddedLatency       string `toml:"added_latency"`
 	Mode               string `toml:"mode"`
-	DaysExpired        int    `toml:"days_expired"`
-	DaysRemaining      int    `toml:"days_remaining"`
-	Reason             string `toml:"reason"`
+	DaysExpired        int      `toml:"days_expired"`
+	DaysRemaining      int      `toml:"days_remaining"`
+	Reason             string   `toml:"reason"`
+	Regions            []string `toml:"regions"`
 }
 
 // Parse decodes and validates a scenario from TOML bytes.
@@ -186,6 +193,7 @@ func validateFailure(i int, rf rawFailure) (Failure, error) {
 		DaysExpired:        rf.DaysExpired,
 		DaysRemaining:      rf.DaysRemaining,
 		Reason:             rf.Reason,
+		Regions:            rf.Regions,
 	}
 
 	if rf.Delay != "" {
