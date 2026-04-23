@@ -27,7 +27,9 @@ The target fleet is the set of infrastructure that uptime-bench controls and can
 | TLS | Go `crypto/tls` layer | Per-site certs via SNI; `tls_expired`, `tls_invalid`, `tls_handshake` |
 | HTTP | Go `net/http` request handler | `http_status`, `http_timeout`, `http_partial`, `http_redirect`, `http_body` |
 
-The TCP proxy layer accepts raw connections, checks the failure registry for active TCP-level failures on that `(host, port)`, and either applies the failure (close immediately, hold open silently) or forwards the connection to the HTTP/TLS server. This keeps TCP failure injection self-contained within the Go binary without requiring root or iptables.
+The TCP proxy layer accepts raw connections, checks the failure registry for active TCP-level failures, and either applies the failure or forwards the connection to the HTTP/TLS server. This keeps TCP failure injection self-contained within the Go binary without requiring root or iptables.
+
+`tcp_refused` is global only — a real connection refused happens at SYN time before any data is exchanged, so there is no host to discriminate on. `tcp_timeout` supports per-host discrimination by peeking at the HTTP `Host` header before deciding whether to stall the connection; peeked bytes are replayed transparently on forward. When TLS support is added, SNI from the ClientHello will serve the same role for the TLS port.
 
 **Control plane:** Each fleet member listens on a dedicated control port (separate from the data-plane ports 80 and 443). The control API is an authenticated HTTP/JSON service. The harness sends activate and deactivate commands for specific `(host, path)` failure states. Failures carry a `duration` and expire automatically; the harness also sends explicit deactivate commands at scenario end to guarantee clean state.
 

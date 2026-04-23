@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -108,14 +111,21 @@ func handleTCP(client net.Conn, registry *control.FailureRegistry, dst string) {
 		}
 	}
 
-	// Check for active tcp_refused failure (applies at port level, host="").
+	// tcp_refused: always global — connection refused happens at SYN time, before
+	// any bytes are exchanged, so there is no host to discriminate on.
 	if _, ok := registry.Lookup("tcp_refused", "", ""); ok {
-		// Close immediately — no data sent.
 		return
 	}
 
-	// Check for tcp_timeout — hold the connection open until it expires.
-	if spec, ok := registry.Lookup("tcp_timeout", "", ""); ok {
+	// Peek at the HTTP request to extract the Host header for per-host lookup.
+	// Peeked bytes remain in the buffer and are replayed transparently on forward.
+	// When TLS is added, use the SNI value from the ClientHello instead.
+	br := bufio.NewReaderSize(client, 4096)
+	host := peekHTTPHost(br)
+
+	// tcp_timeout: per-host when a host-specific failure is registered;
+	// falls back to global via the registry priority chain.
+	if spec, ok := registry.Lookup("tcp_timeout", host, ""); ok {
 		delay := spec.Duration
 		if delay <= 0 {
 			delay = 60 * time.Second
@@ -133,13 +143,31 @@ func handleTCP(client net.Conn, registry *control.FailureRegistry, dst string) {
 	defer server.Close()
 
 	done := make(chan struct{}, 2)
-	pipe := func(dst, src net.Conn) {
-		io.Copy(dst, src)
-		done <- struct{}{}
-	}
-	go pipe(server, client)
-	go pipe(client, server)
+	go func() { io.Copy(server, br); done <- struct{}{} }()
+	go func() { io.Copy(client, server); done <- struct{}{} }()
 	<-done
+}
+
+// peekHTTPHost extracts the Host header value from the buffered request without
+// consuming data. Returns empty string if the host cannot be determined.
+func peekHTTPHost(br *bufio.Reader) string {
+	data, _ := br.Peek(4096)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Scan() // skip request line
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			break
+		}
+		if len(line) > 5 && strings.EqualFold(line[:5], "Host:") {
+			host := strings.TrimSpace(line[5:])
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				return h
+			}
+			return host
+		}
+	}
+	return ""
 }
 
 // parseRemoteIP extracts the IP address from a net.Addr (e.g. "1.2.3.4:56789").
