@@ -2,7 +2,7 @@
 
 This guide covers everything needed to stand up a working uptime-bench fleet: VPS requirements, domain configuration, provisioning, credential setup, and starting the service.
 
-> **Implementation status:** The target server, DNS server, and harness binaries are currently stubs under active development. This guide documents the intended full setup. Steps that depend on unfinished code are marked **[pending implementation]**.
+> **Implementation status:** The target binary, DNS binary, harness, and Jetmon adapter are implemented and working end-to-end. Adapters for UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime are not yet implemented — configure only `jetmon` in `services.toml` until the others land.
 
 ---
 
@@ -176,7 +176,9 @@ Save the output — you will distribute it to every VM in the next step. Treat i
 
 ## Step 5 — Provision all VPSs
 
-From your local machine (with the repo checked out), run the provisioning script for each VM. The `--harness-ip` flag restricts the control port to accept connections only from the harness VM — always set this in production.
+From your local machine (with the repo checked out), run the provisioning script for each VM. The `HARNESS_IP` variable restricts the control port to accept connections only from the harness VM — always set this in production.
+
+If the SSH user on a VM is not `ubuntu`, pass `DEPLOY_USER=<name>`. The provisioning script writes `AllowUsers ${DEPLOY_USER}` into the SSH hardening drop-in, so this must match the user you actually log in as.
 
 ```sh
 # Harness VM
@@ -197,66 +199,49 @@ Each provisioning run:
 - Configures UFW with role-appropriate port rules
 - Installs fail2ban, unattended-upgrades, chrony
 - Creates a 2 GB swap file if none exists
-- Installs and enables the systemd unit (not yet started)
+- Drops `*.example` skeleton files into `/etc/uptime-bench/` (per-role `<type>.env.example`, `control-token.example`, plus `fleet.example.toml` on harness/dns and `services.example.toml` on harness)
+- Installs the systemd unit; enables it on target and DNS hosts. The harness unit is installed but **not** enabled — the harness binary requires `-scenario` per invocation and is run on demand (see Step 11).
 
-After provisioning completes, re-authentication as root is disabled. All subsequent SSH must use the `ubuntu` user (or whichever `--deploy-user` you specified).
+After provisioning completes, re-authentication as root is disabled. All subsequent SSH must use the `ubuntu` user (or whichever `DEPLOY_USER` you specified).
+
+The script's "Next steps" output at the end of each run lists the exact commands to copy and edit each `.example` file. The next three steps cover the same ground in narrative form.
 
 ---
 
 ## Step 6 — Place credential files on each VM
 
-Each VM needs credential files in `/etc/uptime-bench/`. These are created manually — they contain secrets and are never committed to the repo.
+Provisioning has already dropped skeletons into `/etc/uptime-bench/` on each VM:
 
-### On the harness VM
+- `<type>.env.example` — the env file the systemd unit (or harness CLI) reads. Each header comment names every variable.
+- `control-token.example` — the bare-token file that `fleet.toml`'s `auth_token_file` setting points at.
 
-```sh
-ssh ubuntu@203.0.113.5
-sudo bash -c 'cat > /etc/uptime-bench/harness.env' <<'EOF'
-DB_DSN=uptime_bench:CHOOSE_A_STRONG_PASSWORD@tcp(127.0.0.1:3306)/uptime_bench?parseTime=true
-CONTROL_TOKEN=YOUR_GENERATED_TOKEN_HERE
-EOF
-sudo chmod 640 /etc/uptime-bench/harness.env
-sudo chown root:uptime-bench /etc/uptime-bench/harness.env
-
-sudo bash -c 'echo "YOUR_GENERATED_TOKEN_HERE" > /etc/uptime-bench/control-token'
-sudo chmod 640 /etc/uptime-bench/control-token
-sudo chown root:uptime-bench /etc/uptime-bench/control-token
-```
-
-### On each target VM
+Copy each skeleton to its real name and fill in the values. The pattern is the same on every VM:
 
 ```sh
-ssh ubuntu@203.0.113.20
-sudo bash -c 'cat > /etc/uptime-bench/target.env' <<'EOF'
-CONTROL_TOKEN=YOUR_GENERATED_TOKEN_HERE
-EOF
-sudo chmod 640 /etc/uptime-bench/target.env
-sudo chown root:uptime-bench /etc/uptime-bench/target.env
+ssh <user>@<vm-ip>
 
-sudo bash -c 'echo "YOUR_GENERATED_TOKEN_HERE" > /etc/uptime-bench/control-token'
-sudo chmod 640 /etc/uptime-bench/control-token
+# Replace TYPE with harness, target, or dns to match the role.
+sudo cp /etc/uptime-bench/TYPE.env.example /etc/uptime-bench/TYPE.env
+sudo chown root:uptime-bench /etc/uptime-bench/TYPE.env
+sudo chmod 640 /etc/uptime-bench/TYPE.env
+sudoedit /etc/uptime-bench/TYPE.env
+
+sudo cp /etc/uptime-bench/control-token.example /etc/uptime-bench/control-token
 sudo chown root:uptime-bench /etc/uptime-bench/control-token
+sudo chmod 640 /etc/uptime-bench/control-token
+sudoedit /etc/uptime-bench/control-token  # delete the comment block, paste the token
 ```
 
-### On each DNS VM
+Per-role values to fill in:
 
-`MEMBER_ID` must match the `id` field of this VM's `[[nameservers]]` entry in `fleet.toml` — the DNS binary uses it to find its own zone records in the fleet config.
-
-```sh
-ssh ubuntu@203.0.113.10
-sudo bash -c 'cat > /etc/uptime-bench/dns.env' <<'EOF'
-CONTROL_TOKEN=YOUR_GENERATED_TOKEN_HERE
-MEMBER_ID=ns-01
-EOF
-sudo chmod 640 /etc/uptime-bench/dns.env
-sudo chown root:uptime-bench /etc/uptime-bench/dns.env
-
-sudo bash -c 'echo "YOUR_GENERATED_TOKEN_HERE" > /etc/uptime-bench/control-token'
-sudo chmod 640 /etc/uptime-bench/control-token
-sudo chown root:uptime-bench /etc/uptime-bench/control-token
-```
-
-Repeat for ns-02, setting `MEMBER_ID=ns-02`.
+| File | Variable | Value |
+|---|---|---|
+| `harness.env` | `DB_DSN` | `uptime_bench:<password>@tcp(127.0.0.1:3306)/uptime_bench?parseTime=true` |
+| `harness.env` | `CONTROL_TOKEN` | The token from Step 4 |
+| `target.env`  | `CONTROL_TOKEN` | Same token |
+| `dns.env`     | `CONTROL_TOKEN` | Same token |
+| `dns.env`     | `MEMBER_ID` | This VM's `id` from its `[[nameservers]]` entry in `fleet.toml` (e.g. `ns-01`, `ns-02`) — the DNS binary uses it to find its own zone records |
+| `control-token` (every VM) | (file body) | Same token, on a single line, no other content |
 
 The `CONTROL_TOKEN` value must be identical on every VM.
 
@@ -264,32 +249,25 @@ The `CONTROL_TOKEN` value must be identical on every VM.
 
 ## Step 7 — Deploy fleet.toml
 
-`fleet.toml` is never committed. The harness reads it to orchestrate runs; each DNS VM also reads it at startup to derive the A records it serves. Copy it to all three roles.
+`fleet.toml` is never committed — it contains your real IPs and hostnames. The harness reads it to orchestrate runs; each DNS VM also reads it at startup to derive the A records it serves. It must be present on the harness and on every DNS VM, with the same content. Target VMs do not need it.
 
-The simplest approach: edit `fleet.example.toml` locally, then copy it:
+Provisioning has already uploaded `fleet.example.toml` to `/etc/uptime-bench/` on the harness and on each DNS VM. To use it, copy and edit on each of those VMs:
 
 ```sh
-cp fleet.example.toml fleet.toml
-# edit fleet.toml with your real IPs and hostnames
+ssh <user>@<vm-ip>
+sudo cp /etc/uptime-bench/fleet.example.toml /etc/uptime-bench/fleet.toml
+sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml
+sudo chmod 640 /etc/uptime-bench/fleet.toml
+sudoedit /etc/uptime-bench/fleet.toml
+```
 
-# Harness VM
-scp fleet.toml ubuntu@203.0.113.5:/tmp/fleet.toml
-ssh ubuntu@203.0.113.5 'sudo mv /tmp/fleet.toml /etc/uptime-bench/fleet.toml && \
-  sudo chmod 640 /etc/uptime-bench/fleet.toml && \
-  sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml'
+Keep the content identical across all three (or more) VMs. A common workflow: write the canonical version on the harness, then scp it to each DNS VM:
 
-# DNS VMs
-scp fleet.toml ubuntu@203.0.113.10:/tmp/fleet.toml
-ssh ubuntu@203.0.113.10 'sudo mv /tmp/fleet.toml /etc/uptime-bench/fleet.toml && \
-  sudo chmod 640 /etc/uptime-bench/fleet.toml && \
-  sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml'
-
-scp fleet.toml ubuntu@203.0.113.11:/tmp/fleet.toml
-ssh ubuntu@203.0.113.11 'sudo mv /tmp/fleet.toml /etc/uptime-bench/fleet.toml && \
-  sudo chmod 640 /etc/uptime-bench/fleet.toml && \
-  sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml'
-
-rm fleet.toml  # remove from local machine; it is git-ignored but clean up anyway
+```sh
+ssh <user>@harness 'sudo cat /etc/uptime-bench/fleet.toml' \
+  | ssh <user>@dns-vm 'sudo tee /etc/uptime-bench/fleet.toml >/dev/null \
+      && sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml \
+      && sudo chmod 640 /etc/uptime-bench/fleet.toml'
 ```
 
 A minimal `fleet.toml` for the example fleet:
@@ -353,27 +331,27 @@ ttl         = 30
 
 ## Step 7b — Create services.toml on the harness VM
 
-`services.toml` declares which monitoring services to evaluate and their credentials. It is never committed — it contains secrets and is specific to your deployment.
+`services.toml` declares which monitoring services to evaluate and their credentials. It lives only on the harness and is never committed.
 
-Edit `services.example.toml` locally, then copy it to the harness VM:
+Provisioning has already uploaded `services.example.toml` to `/etc/uptime-bench/` on the harness. To use it:
 
 ```sh
-cp services.example.toml services.toml
-# Edit services.toml: set enabled = true and fill in url and auth for each service
-scp services.toml ubuntu@203.0.113.5:/tmp/services.toml
-ssh ubuntu@203.0.113.5 'sudo mv /tmp/services.toml /etc/uptime-bench/services.toml && \
-  sudo chmod 640 /etc/uptime-bench/services.toml && \
-  sudo chown root:uptime-bench /etc/uptime-bench/services.toml'
-rm services.toml
+ssh <user>@harness
+sudo cp /etc/uptime-bench/services.example.toml /etc/uptime-bench/services.toml
+sudo chown root:uptime-bench /etc/uptime-bench/services.toml
+sudo chmod 640 /etc/uptime-bench/services.toml
+sudoedit /etc/uptime-bench/services.toml
 ```
 
-See `services.example.toml` for the format and the required `auth` keys for each service type. The `id` field in each block must match the IDs used in scenario `monitors` lists.
+Edit each `[[services]]` block: set `enabled = true` for the services you want to evaluate, and fill in the `url` and `auth` fields. The `id` field in each block must match the IDs used in scenario `monitors` lists.
+
+For now, only `jetmon` has an implemented adapter — leave the others `enabled = false` until their adapters land.
 
 ---
 
 ## Step 8 — Deploy binaries
 
-Build and push all three binaries from your local machine. The `deploy-*` targets cross-compile for `linux/amd64`:
+Build and push all three binaries from your local machine. The `deploy-*` targets cross-compile for `linux/amd64`. As with `provision-*`, pass `DEPLOY_USER=<name>` if the SSH user is not `ubuntu`.
 
 ```sh
 make deploy-dns     DNS_HOST=203.0.113.10
@@ -384,41 +362,29 @@ make deploy-harness HARNESS_HOST=203.0.113.5
 
 Each deploy:
 1. Builds the binary for `linux/amd64`
-2. Copies it atomically to `/usr/local/bin/`
+2. scps the binary to `/tmp/uptime-bench-<role>.new` and `sudo install`s it into `/usr/local/bin/` (the temp-file-plus-rename pattern avoids `ETXTBSY` when overwriting a running binary)
 3. Re-applies `cap_net_bind_service` (target and DNS only)
-4. Restarts the systemd service
+4. Restarts the systemd service (target and DNS only — the harness is invoked per-scenario, see Step 11)
 
 ---
 
 ## Step 9 — Start and verify services
 
-Services are enabled by the provisioning script but not started (the binary was not present yet). After deploying, start them:
+The target and DNS systemd units are enabled by `provision-server.sh` and restarted by `deploy.sh`, so they should already be running after Step 8. Verify:
 
 ```sh
-# DNS VMs
-ssh ubuntu@203.0.113.10 'sudo systemctl start uptime-bench-dns'
-ssh ubuntu@203.0.113.11 'sudo systemctl start uptime-bench-dns'
-
-# Target VM
-ssh ubuntu@203.0.113.20 'sudo systemctl start uptime-bench-target'
-
-# Harness VM (start last — it connects to fleet members on startup)
-ssh ubuntu@203.0.113.5  'sudo systemctl start uptime-bench-harness'
+ssh <user>@203.0.113.10 'sudo systemctl status uptime-bench-dns    --no-pager'
+ssh <user>@203.0.113.11 'sudo systemctl status uptime-bench-dns    --no-pager'
+ssh <user>@203.0.113.20 'sudo systemctl status uptime-bench-target --no-pager'
 ```
 
-Check that each service is running:
+If a unit isn't running, tail its journal:
 
 ```sh
-ssh ubuntu@203.0.113.10 'sudo systemctl status uptime-bench-dns --no-pager'
-ssh ubuntu@203.0.113.20 'sudo systemctl status uptime-bench-target --no-pager'
-ssh ubuntu@203.0.113.5  'sudo systemctl status uptime-bench-harness --no-pager'
+ssh <user>@203.0.113.20 'sudo journalctl -u uptime-bench-target -n 50 --no-pager'
 ```
 
-Tail logs if needed:
-
-```sh
-ssh ubuntu@203.0.113.5 'sudo journalctl -u uptime-bench-harness -f'
-```
+The harness has no long-running mode — its binary requires `-scenario` per invocation. The `uptime-bench-harness` systemd unit is installed but deliberately not enabled; do not try to `systemctl start` it. Run scenarios manually via Step 11 instead.
 
 ---
 
@@ -443,15 +409,20 @@ The DNS binary loads A records from `fleet.toml` at startup — it serves every 
 
 ## Step 11 — Run a scenario
 
-Run a scenario on the harness VM:
+Scenario TOML files live in the repo's `scenarios/` directory; copy the ones you want to run onto the harness (e.g. `scp scenarios/http-503.toml <user>@harness:/tmp/`). Then on the harness, source `harness.env` so `DB_DSN` and `CONTROL_TOKEN` are visible, and invoke the harness binary:
 
 ```sh
-ssh ubuntu@203.0.113.5
-uptime-bench-harness \
-  -fleet=/etc/uptime-bench/fleet.toml \
-  -services=/etc/uptime-bench/services.toml \
-  -scenario=/path/to/scenarios/http-503.toml
+ssh <user>@203.0.113.5
+sudo -u uptime-bench bash -c '
+  set -a; . /etc/uptime-bench/harness.env; set +a
+  exec /usr/local/bin/uptime-bench-harness \
+    -fleet=/etc/uptime-bench/fleet.toml \
+    -services=/etc/uptime-bench/services.toml \
+    -scenario=/tmp/http-503.toml
+'
 ```
+
+Running as `uptime-bench` matches the systemd unit's user; the `sudo -u` step is necessary because `/etc/uptime-bench/harness.env` is mode 0640 root:uptime-bench and `sudo` strips environment variables by default.
 
 The harness will:
 1. Parse and validate the scenario
@@ -494,24 +465,20 @@ ssh ubuntu@203.0.113.5 \
 
 ### Update fleet.toml
 
-Edit locally, copy to the harness VM, then restart the harness:
+Edit `/etc/uptime-bench/fleet.toml` in place on the harness and on every DNS VM (use `sudoedit`). Each DNS binary re-reads the file at startup, so restart any DNS unit whose zones changed:
 
 ```sh
-scp fleet.toml ubuntu@203.0.113.5:/tmp/fleet.toml
-ssh ubuntu@203.0.113.5 'sudo mv /tmp/fleet.toml /etc/uptime-bench/fleet.toml && \
-  sudo chmod 640 /etc/uptime-bench/fleet.toml && \
-  sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml && \
-  sudo systemctl restart uptime-bench-harness'
-rm fleet.toml
+ssh <user>@dns-vm 'sudo systemctl restart uptime-bench-dns'
 ```
+
+The harness reads `fleet.toml` fresh on each scenario invocation (Step 11), so it does not need a restart.
 
 ### Add a new target VM to the fleet
 
 1. Provision: `make provision-target TARGET_HOST=NEW_IP HARNESS_IP=203.0.113.5`
 2. Place credentials (Step 6)
-3. Deploy binary: `make deploy-target TARGET_HOST=NEW_IP`
-4. Start service: `ssh ubuntu@NEW_IP 'sudo systemctl start uptime-bench-target'`
-5. Add the new `[[targets]]` block to `fleet.toml` and redeploy it (see above)
+3. Deploy binary: `make deploy-target TARGET_HOST=NEW_IP` (the deploy script restarts the systemd unit for you)
+4. Add the new `[[targets]]` block to `fleet.toml` on the harness and on each DNS VM, then restart the DNS units (see "Update fleet.toml" above)
 
 ---
 
