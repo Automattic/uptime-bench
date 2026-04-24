@@ -169,12 +169,28 @@ EOF
 
 chmod 600 "$SSHD_CONF"
 
+# The systemd unit is named ssh.service on Debian/Ubuntu and sshd.service on
+# RHEL/Fedora. Probe each candidate directly with systemctl cat.
+SSH_UNIT=""
+for candidate in ssh sshd; do
+    if systemctl cat "${candidate}.service" >/dev/null 2>&1; then
+        SSH_UNIT="$candidate"
+        break
+    fi
+done
+
+if [[ -z "$SSH_UNIT" ]]; then
+    echo "ERROR: no SSH service unit found (tried ssh.service and sshd.service)." >&2
+    echo "Investigate with: systemctl list-units --type=service | grep -i ssh" >&2
+    exit 1
+fi
+
 # Validate config before reloading to avoid locking ourselves out.
 if sshd -t; then
-    systemctl reload sshd
-    ok "SSH hardening applied and sshd reloaded"
+    systemctl reload "$SSH_UNIT"
+    ok "SSH hardening applied and ${SSH_UNIT} reloaded"
 else
-    echo "ERROR: sshd config test failed — NOT reloading sshd. Fix $SSHD_CONF." >&2
+    echo "ERROR: sshd config test failed — NOT reloading ${SSH_UNIT}. Fix $SSHD_CONF." >&2
     exit 1
 fi
 

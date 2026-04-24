@@ -68,18 +68,20 @@ case "$TYPE" in
 esac
 
 SSH_OPTS="-p $SSH_PORT -o StrictHostKeyChecking=accept-new"
+# scp uses -P for port (lowercase -p means preserve times/modes).
+SCP_OPTS="-P $SSH_PORT -o StrictHostKeyChecking=accept-new"
 
 # ---------------------------------------------------------------------------
 # Upload scripts and systemd unit, then run provisioning
 # ---------------------------------------------------------------------------
 
 echo "==> Uploading provisioning script to ${SSH_USER}@${HOST}..."
-scp $SSH_OPTS \
+scp $SCP_OPTS \
     "${REPO_ROOT}/deploy/provision-server.sh" \
     "${SSH_USER}@${HOST}:/tmp/provision-server.sh"
 
 echo "==> Uploading systemd unit for ${TYPE}..."
-scp $SSH_OPTS \
+scp $SCP_OPTS \
     "${REPO_ROOT}/deploy/systemd/uptime-bench-${TYPE}.service" \
     "${SSH_USER}@${HOST}:/tmp/uptime-bench-${TYPE}.service"
 
