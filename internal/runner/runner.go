@@ -278,7 +278,7 @@ func logEvent(ctx context.Context, database *db.DB, runID, targetID, eventType, 
 }
 
 // logMonitorReport writes retrieve results to the database. serviceType is the
-// adapter type string (e.g. "jetmon") used for classification normalization;
+// adapter type string (e.g. "jetmon-v1") used for classification normalization;
 // it may be empty for Unknown results that carry no reports.
 func logMonitorReport(ctx context.Context, database *db.DB, runID, serviceID, serviceType string, result adapter.RetrieveResult) {
 	now := time.Now()

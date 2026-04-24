@@ -1,4 +1,8 @@
-// Package jetmon implements the uptime-bench adapter for Jetmon 1.
+// Package jetmonv1 implements the uptime-bench adapter for Jetmon 1.
+//
+// Jetmon 1 has no public API; this adapter talks to jetmon-bridge
+// (github.com/Automattic/jetmon-bridge), which fronts Jetmon 1's MySQL
+// database with a small HTTP API.
 //
 // In read-only mode (default), Provision looks up a pre-seeded monitor by URL.
 // In write mode, Provision calls POST /monitors to create or reactivate the monitor,
@@ -12,7 +16,7 @@
 // Optional services.toml fields:
 //
 //	auth.write_mode — "true" to enable monitor create/delete (default "false")
-package jetmon
+package jetmonv1
 
 import (
 	"bytes"
@@ -28,7 +32,7 @@ import (
 )
 
 // adapterType is the key used in adapter.NormalizedClassification.
-const adapterType = "jetmon"
+const adapterType = "jetmon-v1"
 
 // statusConfirmedDown is Jetmon's site_status value for a confirmed outage.
 const statusConfirmedDown = 2
@@ -89,7 +93,7 @@ type eventResponse struct {
 // In write mode it calls POST /monitors; in read-only mode it calls GET /monitors.
 func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
 	if a.apiURL == "" {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: url is not configured")
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon-v1: url is not configured")
 	}
 	if a.writeMode {
 		return a.provisionWrite(ctx, target)
@@ -104,20 +108,20 @@ func (a *Adapter) provisionRead(ctx context.Context, target adapter.Target) (ada
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: /monitors: %w", err)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon-v1: /monitors: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: no monitor pre-seeded for %s — add it to jetpack_monitor_sites", target.URL)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon-v1: no monitor pre-seeded for %s — add it to jetpack_monitor_sites", target.URL)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: /monitors: status %d", resp.StatusCode)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon-v1: /monitors: status %d", resp.StatusCode)
 	}
 
 	var m monitorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: /monitors: decode: %w", err)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon-v1: /monitors: decode: %w", err)
 	}
 	return monitorHandle(a.id, m), nil
 }
@@ -134,7 +138,7 @@ func (a *Adapter) provisionWrite(ctx context.Context, target adapter.Target) (ad
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: POST /monitors: %w", err)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon-v1: POST /monitors: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -143,12 +147,12 @@ func (a *Adapter) provisionWrite(ctx context.Context, target adapter.Target) (ad
 		return a.provisionRead(ctx, target)
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: POST /monitors: status %d", resp.StatusCode)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon-v1: POST /monitors: status %d", resp.StatusCode)
 	}
 
 	var m monitorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: POST /monitors: decode: %w", err)
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon-v1: POST /monitors: decode: %w", err)
 	}
 	return monitorHandle(a.id, m), nil
 }
@@ -158,7 +162,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	if a.apiURL == "" {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: "jetmon: url is not configured",
+			Reason: "jetmon-v1: url is not configured",
 		}, nil
 	}
 
@@ -166,7 +170,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	if blogID == "" {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: "jetmon: handle missing blog_id",
+			Reason: "jetmon-v1: handle missing blog_id",
 		}, nil
 	}
 
@@ -184,7 +188,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	if err != nil {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: fmt.Sprintf("jetmon: /events unreachable: %v", err),
+			Reason: fmt.Sprintf("jetmon-v1: /events unreachable: %v", err),
 		}, nil
 	}
 	defer resp.Body.Close()
@@ -192,7 +196,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	if resp.StatusCode != http.StatusOK {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: fmt.Sprintf("jetmon: /events: status %d", resp.StatusCode),
+			Reason: fmt.Sprintf("jetmon-v1: /events: status %d", resp.StatusCode),
 		}, nil
 	}
 
@@ -200,7 +204,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
 		return adapter.RetrieveResult{
 			Status: adapter.RetrieveUnknown,
-			Reason: fmt.Sprintf("jetmon: /events: decode: %v", err),
+			Reason: fmt.Sprintf("jetmon-v1: /events: decode: %v", err),
 		}, nil
 	}
 
@@ -273,7 +277,7 @@ func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle)
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("jetmon: DELETE /monitors: %w", err)
+		return fmt.Errorf("jetmon-v1: DELETE /monitors: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -281,7 +285,7 @@ func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle)
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
 		return nil
 	}
-	return fmt.Errorf("jetmon: DELETE /monitors: status %d", resp.StatusCode)
+	return fmt.Errorf("jetmon-v1: DELETE /monitors: status %d", resp.StatusCode)
 }
 
 func monitorHandle(serviceID string, m monitorResponse) adapter.MonitorHandle {

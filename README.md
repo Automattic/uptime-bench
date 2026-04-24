@@ -19,7 +19,7 @@ Uptime monitoring services are hard to compare. Vendors publish their own uptime
 
 | Service | Type |
 |---|---|
-| [Jetmon](https://github.com/Automattic/jetmon) | Agent-based (WordPress/Jetpack) |
+| [Jetmon 1 / Jetmon 2](https://github.com/Automattic/jetmon) | Agent-based (WordPress/Jetpack) |
 | [UptimeRobot](https://uptimerobot.com) | Probe-based |
 | [Pingdom](https://www.pingdom.com) | Probe-based |
 | [Datadog Synthetics](https://www.datadoghq.com/product/synthetic-monitoring/) | Probe-based |
@@ -27,9 +27,9 @@ Uptime monitoring services are hard to compare. Vendors publish their own uptime
 
 ## Status
 
-Active development. The end-to-end pipeline is working: target server, DNS server, harness, runner, database layer, and Jetmon adapter are all implemented. Scenarios covering HTTP, TCP, DNS, TLS, and content failures are defined and runnable.
+Active development. The end-to-end pipeline is working: target server, DNS server, harness, runner, database layer, and the Jetmon 1 adapter (`jetmon-v1`) are all implemented. Scenarios covering HTTP, TCP, DNS, TLS, and content failures are defined and runnable.
 
-Remaining work: implementing adapters for UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. See [`ROADMAP.md`](ROADMAP.md) for deferred features.
+Remaining work: a real `jetmon-v2` adapter (currently a stub, blocked on Jetmon 2's public REST API) and adapters for UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. See [`ROADMAP.md`](ROADMAP.md) for deferred features.
 
 ## Architecture
 

@@ -145,13 +145,15 @@ const (
 //	"unknown"         — service could not determine state (monitor-side)
 //	"unrecognized"    — raw label not in this table
 var NormalizedClassification = map[string]map[string]string{
-	"jetmon": {
+	"jetmon-v1": {
 		"down":       "http_failure",
 		"seems_down": "http_failure",
 		"degraded":   "http_failure",
 		"up":         "recovered",
 		"unknown":    "unknown",
 	},
+	// "jetmon-v2" intentionally omitted until the Jetmon 2 public API lands
+	// and a real adapter replaces the stub in internal/adapter/jetmonv2.
 	"uptimerobot": {
 		"down":       "http_failure",
 		"up":         "recovered",

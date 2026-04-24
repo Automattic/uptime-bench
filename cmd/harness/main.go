@@ -10,7 +10,8 @@ import (
 	"syscall"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
-	"github.com/Automattic/uptime-bench/internal/adapter/jetmon"
+	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv1"
+	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv2"
 	"github.com/Automattic/uptime-bench/internal/db"
 	"github.com/Automattic/uptime-bench/internal/fleet"
 	"github.com/Automattic/uptime-bench/internal/measurement"
@@ -25,12 +26,16 @@ type adapterFactory func(id, url string, auth map[string]string) (adapter.Adapte
 // registry maps service type names to their factory functions.
 // To add a new service: implement its adapter package and add an entry here.
 var registry = map[string]adapterFactory{
-	"jetmon": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
+	"jetmon-v1": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
 		if apiURL == "" {
-			return nil, fmt.Errorf("url is required (jetmon has no public API endpoint)")
+			return nil, fmt.Errorf("url is required (jetmon-v1 has no public API endpoint; point at jetmon-bridge)")
 		}
 		writeMode := auth["write_mode"] == "true"
-		return jetmon.New(id, apiURL, auth["token"], writeMode), nil
+		return jetmonv1.New(id, apiURL, auth["token"], writeMode), nil
+	},
+	"jetmon-v2": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
+		// Stub: Jetmon 2 has no public API yet. See internal/adapter/jetmonv2.
+		return nil, jetmonv2.ErrNotImplemented
 	},
 }
 

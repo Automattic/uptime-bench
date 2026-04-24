@@ -5,7 +5,7 @@
 timeout        = "10s"
 auth_token_file = "/etc/uptime-bench/control-token"
 
-[adapters.jetmon]
+[adapters.jetmon-v1]
 max_calls_per_run = 0   # unlimited (self-hosted)
 
 [[nameservers]]

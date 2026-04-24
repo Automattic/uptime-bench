@@ -36,11 +36,21 @@
 # Note: Jetmon is agent-based and does not have fixed probe IP ranges.
 # -----------------------------------------------------------------------------
 [[services]]
-id      = "jetmon"
-type    = "jetmon"
+id      = "jetmon-v1"
+type    = "jetmon-v1"
 url     = "http://localhost:7400"
 enabled = false
 auth    = { token = "replace-with-your-token", write_mode = "false" }
+
+# -----------------------------------------------------------------------------
+# Jetmon 2 — stub only; blocked on the public REST API (see jetmon/ROADMAP.md).
+# Leave enabled = false. Enabling it causes the harness to fail fast.
+# -----------------------------------------------------------------------------
+[[services]]
+id      = "jetmon-v2"
+type    = "jetmon-v2"
+enabled = false
+auth    = {}
 
 # -----------------------------------------------------------------------------
 # Pingdom

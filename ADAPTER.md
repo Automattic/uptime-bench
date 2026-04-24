@@ -279,7 +279,7 @@ var NormalizedClassification = map[string]map[string]string{
         "up":           "recovered",
         "paused":       "unknown",
     },
-    "jetmon": {
+    "jetmon-v1": {
         "down":         "http_failure",
         "seems_down":   "http_failure",
         "degraded":     "http_failure",
@@ -318,7 +318,7 @@ The harness must distinguish these outcomes and never conflate them:
 - `Retrieve` must respect context cancellation promptly. When `ctx` is cancelled mid-poll, return whatever has been retrieved so far with `Status: RetrieveUnknown` and `Reason: ctx.Err().Error()`.
 - `MonitorHandle.Fields` values must be safe to serialize to strings. The harness persists handles between Provision and Retrieve; complex types do not survive.
 - `ServiceID()` must return the same value on every call. It must match the `id` field in `services.toml` and the IDs in scenario `monitors` lists.
-- `Provision` must store `"service_type"` in `MonitorHandle.Fields` set to the adapter's type string (e.g. `"jetmon"`). The harness uses this for normalization — it must match a key in `NormalizedClassification`.
+- `Provision` must store `"service_type"` in `MonitorHandle.Fields` set to the adapter's type string (e.g. `"jetmon-v1"`). The harness uses this for normalization — it must match a key in `NormalizedClassification`.
 
 ---
 

@@ -29,7 +29,7 @@ auth_token_file = "/etc/uptime-bench/control-token"
 # How to estimate: (run_duration + grace_period) / check_frequency * 2
 # gives a rough upper bound for Retrieve polling calls per run.
 
-[adapters.jetmon]
+[adapters.jetmon-v1]
 max_calls_per_run = 0          # self-hosted, no API cost
 
 [adapters.uptimerobot]
