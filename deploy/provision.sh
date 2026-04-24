@@ -102,7 +102,7 @@ fi
 
 echo "==> Running provisioning on ${HOST} (type: ${TYPE})..."
 
-PROVISION_CMD="sudo bash /tmp/provision-server.sh --type ${TYPE}"
+PROVISION_CMD="sudo bash /tmp/provision-server.sh --type ${TYPE} --deploy-user ${SSH_USER} --ssh-port ${SSH_PORT}"
 [[ -n "$HARNESS_IP" ]]  && PROVISION_CMD="$PROVISION_CMD --harness-ip $HARNESS_IP"
 [[ -n "$EXTRA_ARGS" ]]  && PROVISION_CMD="$PROVISION_CMD $EXTRA_ARGS"
 
