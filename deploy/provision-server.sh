@@ -219,7 +219,12 @@ EOF
 #
 # CONTROL_TOKEN: shared bearer token for control-plane requests.
 #   Must match the value in /etc/uptime-bench/harness.env on the harness VM.
+#
+# MEMBER_ID: this VM's id field from the [[targets]] block in fleet.toml.
+#   The target binary reports this id in control responses so the harness
+#   can correlate results across a multi-target fleet.
 CONTROL_TOKEN=CHANGE_ME
+MEMBER_ID=target-XX
 EOF
         ;;
     dns)

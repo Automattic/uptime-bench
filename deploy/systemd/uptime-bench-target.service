@@ -9,15 +9,16 @@ Type=simple
 User=uptime-bench
 Group=uptime-bench
 
-# Needs to bind ports 80, 443, and the control port.
+# Needs to bind port 80 and the control port.
 # If running as a non-root user, grant the binary the net_bind_service capability:
 #   setcap 'cap_net_bind_service=+ep' /usr/local/bin/uptime-bench-target
+# HTTPS (443) is not yet implemented — see ROADMAP.md.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 ExecStart=/usr/local/bin/uptime-bench-target \
-    --http-port  80  \
-    --https-port 443 \
-    --control-port 9000
+    --http-port    80   \
+    --control-port 9000 \
+    --id           ${MEMBER_ID}
 
 EnvironmentFile=/etc/uptime-bench/target.env
 
