@@ -163,6 +163,20 @@ fi
 install -d -m 750 -o root -g uptime-bench /etc/uptime-bench
 ok "Created /etc/uptime-bench (750 root:uptime-bench)"
 
+# Ensure the current hostname resolves locally via /etc/hosts. Without this,
+# disabling systemd-resolved's stub listener on DNS hosts leaves sudo and
+# other tools unable to self-resolve the hostname, which produces noisy
+# "unable to resolve host" warnings even though operations still succeed.
+# 127.0.1.1 is Ubuntu's convention for the local hostname (distinct from
+# 127.0.0.1, which is reserved for localhost).
+HOSTNAME_SHORT="$(hostname -s)"
+if [[ -n "$HOSTNAME_SHORT" ]] && ! grep -qE "[[:space:]]${HOSTNAME_SHORT}([[:space:]]|$)" /etc/hosts; then
+    echo "127.0.1.1 ${HOSTNAME_SHORT}" >> /etc/hosts
+    ok "Added 127.0.1.1 ${HOSTNAME_SHORT} to /etc/hosts"
+else
+    info "/etc/hosts already resolves ${HOSTNAME_SHORT}"
+fi
+
 # ---------------------------------------------------------------------------
 # Phase 4b: Skeleton credential and config files
 # ---------------------------------------------------------------------------
@@ -254,6 +268,49 @@ for ex in fleet.example.toml services.example.toml; do
         ok "Installed /etc/uptime-bench/$ex"
     fi
 done
+
+# ---------------------------------------------------------------------------
+# Phase 4c: Create operator config files from skeletons (non-destructive)
+# ---------------------------------------------------------------------------
+# Create each real config file the first time from its skeleton with the
+# correct ownership and mode, so a forgotten chown/chmod after provisioning
+# cannot leave the service unable to read its config. Existing real files
+# are left untouched except that their ownership and mode are re-asserted.
+#
+# control-token is intentionally NOT auto-created on the harness: its
+# skeleton is pure instruction text, and auto-creating it would let the
+# harness start and then fail opaquely on the first control-plane call with
+# an invalid bearer token. The operator still sees cp/chown/chmod/edit
+# instructions for that one file below.
+
+section "Creating operator config files from skeletons"
+
+ensure_config_file() {
+    local src="$1"
+    local dst="$2"
+    if [[ -f "$dst" ]]; then
+        chown root:uptime-bench "$dst"
+        chmod 640 "$dst"
+        info "$(basename "$dst") exists — ownership/mode re-asserted"
+    elif [[ -f "$src" ]]; then
+        install -m 640 -o root -g uptime-bench "$src" "$dst"
+        ok "Created $dst from $(basename "$src")"
+    else
+        warn "Cannot create $dst: skeleton $src is missing"
+    fi
+}
+
+ensure_config_file "/etc/uptime-bench/${TYPE}.env.example" "/etc/uptime-bench/${TYPE}.env"
+
+case "$TYPE" in
+    harness)
+        ensure_config_file "/etc/uptime-bench/fleet.example.toml"    "/etc/uptime-bench/fleet.toml"
+        ensure_config_file "/etc/uptime-bench/services.example.toml" "/etc/uptime-bench/services.toml"
+        ;;
+    dns)
+        ensure_config_file "/etc/uptime-bench/fleet.example.toml"    "/etc/uptime-bench/fleet.toml"
+        ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Phase 5: SSH hardening
@@ -499,6 +556,28 @@ case "$TYPE" in
         ;;
 esac
 
+# DNS servers: uptime-bench-dns binds 0.0.0.0:53, which collides with
+# systemd-resolved's stub resolver on 127.0.0.53:53. Disable the stub so the
+# binary can bind; relink /etc/resolv.conf to systemd-resolved's real output
+# so the host itself still resolves names.
+if [[ "$TYPE" == "dns" ]]; then
+    RESOLVED_CONF="/etc/systemd/resolved.conf"
+    if grep -qE '^\s*DNSStubListener\s*=\s*no\b' "$RESOLVED_CONF"; then
+        ok "DNSStubListener already disabled in ${RESOLVED_CONF}"
+    else
+        sed -i -E '/^\s*#?\s*DNSStubListener\s*=/d' "$RESOLVED_CONF"
+        printf '\n# Disabled by uptime-bench provision-server.sh — port 53 is bound by uptime-bench-dns\nDNSStubListener=no\n' >> "$RESOLVED_CONF"
+        systemctl restart systemd-resolved
+        ok "DNSStubListener=no set and systemd-resolved restarted"
+    fi
+    if [[ -L /etc/resolv.conf && "$(readlink /etc/resolv.conf)" == "/run/systemd/resolve/resolv.conf" ]]; then
+        ok "/etc/resolv.conf already points at the real resolver"
+    else
+        ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+        ok "/etc/resolv.conf relinked to /run/systemd/resolve/resolv.conf"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Phase 12: Install systemd unit
 # ---------------------------------------------------------------------------
@@ -567,30 +646,19 @@ echo ""
 PRIMARY_IP=$(hostname -I | awk '{print $1}')
 
 echo "  Next steps:"
-echo "    1. Copy each .example file in /etc/uptime-bench/ to its real name and edit:"
-echo "       sudo cp /etc/uptime-bench/${TYPE}.env.example /etc/uptime-bench/${TYPE}.env"
-echo "       sudo chown root:uptime-bench /etc/uptime-bench/${TYPE}.env"
-echo "       sudo chmod 640 /etc/uptime-bench/${TYPE}.env"
+echo "    1. Edit the auto-created config files (ownership/mode already correct):"
 echo "       sudoedit /etc/uptime-bench/${TYPE}.env"
-echo ""
-echo "       sudo cp /etc/uptime-bench/control-token.example /etc/uptime-bench/control-token"
-echo "       sudo chown root:uptime-bench /etc/uptime-bench/control-token"
-echo "       sudo chmod 640 /etc/uptime-bench/control-token"
-echo "       sudoedit /etc/uptime-bench/control-token"
 case "$TYPE" in
     harness)
+        echo "       sudoedit /etc/uptime-bench/fleet.toml"
+        echo "       sudoedit /etc/uptime-bench/services.toml"
         echo ""
-        echo "       sudo cp /etc/uptime-bench/fleet.example.toml /etc/uptime-bench/fleet.toml"
-        echo "       sudo cp /etc/uptime-bench/services.example.toml /etc/uptime-bench/services.toml"
-        echo "       sudo chown root:uptime-bench /etc/uptime-bench/{fleet,services}.toml"
-        echo "       sudo chmod 640 /etc/uptime-bench/{fleet,services}.toml"
-        echo "       sudoedit /etc/uptime-bench/fleet.toml /etc/uptime-bench/services.toml"
+        echo "       # control-token is NOT auto-created (skeleton is instructional only);"
+        echo "       # create it, paste the shared bearer token, and save:"
+        echo "       sudo install -m 640 -o root -g uptime-bench /dev/null /etc/uptime-bench/control-token"
+        echo "       sudoedit /etc/uptime-bench/control-token"
         ;;
     dns)
-        echo ""
-        echo "       sudo cp /etc/uptime-bench/fleet.example.toml /etc/uptime-bench/fleet.toml"
-        echo "       sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml"
-        echo "       sudo chmod 640 /etc/uptime-bench/fleet.toml"
         echo "       sudoedit /etc/uptime-bench/fleet.toml"
         ;;
 esac
