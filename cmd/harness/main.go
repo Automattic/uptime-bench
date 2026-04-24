@@ -29,7 +29,8 @@ var registry = map[string]adapterFactory{
 		if apiURL == "" {
 			return nil, fmt.Errorf("url is required (jetmon has no public API endpoint)")
 		}
-		return jetmon.New(id, apiURL, auth["token"]), nil
+		writeMode := auth["write_mode"] == "true"
+		return jetmon.New(id, apiURL, auth["token"], writeMode), nil
 	},
 }
 

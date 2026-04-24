@@ -28,16 +28,19 @@
 
 # -----------------------------------------------------------------------------
 # Jetmon 1
-# Required: url (no public API; point at your Jetmon API endpoint)
-# Auth keys: token
+# Required: url (no public API; point at your jetmon-bridge endpoint)
+# Auth keys:
+#   token      — bearer token configured in jetmon-bridge (-token flag)
+#   write_mode — "true" to enable automatic monitor create/delete;
+#                "false" (default) requires monitors to be pre-seeded
 # Note: Jetmon is agent-based and does not have fixed probe IP ranges.
 # -----------------------------------------------------------------------------
 [[services]]
 id      = "jetmon"
 type    = "jetmon"
-url     = "http://localhost:9200"
+url     = "http://localhost:7400"
 enabled = false
-auth    = { token = "replace-with-your-token" }
+auth    = { token = "replace-with-your-token", write_mode = "false" }
 
 # -----------------------------------------------------------------------------
 # Pingdom

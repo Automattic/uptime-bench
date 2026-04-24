@@ -1,16 +1,21 @@
 // Package jetmon implements the uptime-bench adapter for Jetmon 1.
 //
-// Jetmon monitors are always-on and must be pre-seeded before a run.
-// Provision looks up the existing monitor by URL; it does not create one.
-// Deprovision is a no-op.
+// In read-only mode (default), Provision looks up a pre-seeded monitor by URL.
+// In write mode, Provision calls POST /monitors to create or reactivate the monitor,
+// and Deprovision calls DELETE /monitors to deactivate it when the run ends.
 //
 // Required services.toml fields:
 //
-//	url  — root URL of the Jetmon API (no public endpoint; must be configured)
-//	auth = { token = "..." }
+//	url        — root URL of the Jetmon bridge API (no public endpoint; must be configured)
+//	auth.token — bearer token for authentication
+//
+// Optional services.toml fields:
+//
+//	auth.write_mode — "true" to enable monitor create/delete (default "false")
 package jetmon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -30,20 +35,23 @@ const statusConfirmedDown = 2
 
 // Adapter implements adapter.Adapter for Jetmon 1.
 type Adapter struct {
-	id     string
-	apiURL string
-	token  string
-	client *http.Client
+	id        string
+	apiURL    string
+	token     string
+	writeMode bool
+	client    *http.Client
 }
 
 // New creates a Jetmon adapter. id is the configured service instance ID,
-// apiURL is the root URL of the Jetmon API, and token is the bearer token.
-func New(id, apiURL, token string) *Adapter {
+// apiURL is the root URL of the Jetmon bridge, token is the bearer token,
+// and writeMode controls whether Provision/Deprovision make write calls.
+func New(id, apiURL, token string, writeMode bool) *Adapter {
 	return &Adapter{
-		id:     id,
-		apiURL: apiURL,
-		token:  token,
-		client: &http.Client{Timeout: 15 * time.Second},
+		id:        id,
+		apiURL:    apiURL,
+		token:     token,
+		writeMode: writeMode,
+		client:    &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
@@ -77,14 +85,19 @@ type eventResponse struct {
 	CreatedAt string  `json:"created_at"`
 }
 
-// Provision looks up the pre-seeded monitor for target.URL.
-// Returns an error if the API is unreachable or no monitor is registered
-// for this URL — pre-seeding is required for the always-on Jetmon model.
+// Provision looks up or creates a monitor for target.URL.
+// In write mode it calls POST /monitors; in read-only mode it calls GET /monitors.
 func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
 	if a.apiURL == "" {
 		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: url is not configured")
 	}
+	if a.writeMode {
+		return a.provisionWrite(ctx, target)
+	}
+	return a.provisionRead(ctx, target)
+}
 
+func (a *Adapter) provisionRead(ctx context.Context, target adapter.Target) (adapter.MonitorHandle, error) {
 	endpoint := a.apiURL + "/monitors?url=" + url.QueryEscape(target.URL)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	req.Header.Set("Authorization", "Bearer "+a.token)
@@ -106,20 +119,41 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
 		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: /monitors: decode: %w", err)
 	}
-
-	return adapter.MonitorHandle{
-		ServiceID: a.id,
-		MonitorID: strconv.FormatInt(m.BlogID, 10),
-		Fields: map[string]string{
-			"service_type": adapterType,
-			"blog_id":      strconv.FormatInt(m.BlogID, 10),
-			"monitor_url":  m.MonitorURL,
-		},
-	}, nil
+	return monitorHandle(a.id, m), nil
 }
 
-// Retrieve fetches status_transition events from the Jetmon API for the run window.
-// It maps Jetmon's site_status values to normalized MonitorReport events.
+func (a *Adapter) provisionWrite(ctx context.Context, target adapter.Target) (adapter.MonitorHandle, error) {
+	type createReq struct {
+		URL string `json:"url"`
+	}
+	bodyBytes, _ := json.Marshal(createReq{URL: target.URL})
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, a.apiURL+"/monitors", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.token)
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: POST /monitors: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Bridge not in write mode — fall back to read-only lookup.
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		return a.provisionRead(ctx, target)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: POST /monitors: status %d", resp.StatusCode)
+	}
+
+	var m monitorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return adapter.MonitorHandle{}, fmt.Errorf("jetmon: POST /monitors: decode: %w", err)
+	}
+	return monitorHandle(a.id, m), nil
+}
+
+// Retrieve fetches status_transition events from the Jetmon bridge for the run window.
 func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, window adapter.RunWindow) (adapter.RetrieveResult, error) {
 	if a.apiURL == "" {
 		return adapter.RetrieveResult{
@@ -191,7 +225,6 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 			eventType = adapter.EventAlertFired
 			rawClass = "down"
 		} else {
-			// Any transition away from down (new_status = 1 = UP) is a recovery.
 			eventType = adapter.EventAlertResolved
 			rawClass = "up"
 		}
@@ -223,8 +256,42 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	}, nil
 }
 
-// Deprovision is a no-op: Jetmon monitors are always-on and managed outside
-// the benchmark tool. Pre-seeded monitors are not deleted between runs.
+// Deprovision deactivates the monitor when write mode is enabled.
+// In read-only mode it is a no-op: monitors are managed outside the benchmark tool.
 func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle) error {
-	return nil
+	if !a.writeMode {
+		return nil
+	}
+	monitorURL := handle.Fields["monitor_url"]
+	if monitorURL == "" {
+		return nil
+	}
+
+	endpoint := a.apiURL + "/monitors?url=" + url.QueryEscape(monitorURL)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	req.Header.Set("Authorization", "Bearer "+a.token)
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("jetmon: DELETE /monitors: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 204 No Content and 404 Not Found are both acceptable — idempotent.
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return fmt.Errorf("jetmon: DELETE /monitors: status %d", resp.StatusCode)
+}
+
+func monitorHandle(serviceID string, m monitorResponse) adapter.MonitorHandle {
+	return adapter.MonitorHandle{
+		ServiceID: serviceID,
+		MonitorID: strconv.FormatInt(m.BlogID, 10),
+		Fields: map[string]string{
+			"service_type": adapterType,
+			"blog_id":      strconv.FormatInt(m.BlogID, 10),
+			"monitor_url":  m.MonitorURL,
+		},
+	}
 }
