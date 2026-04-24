@@ -495,8 +495,17 @@ if [[ -f "$UNIT_SRC" ]]; then
     cp "$UNIT_SRC" "$UNIT_DST"
     chmod 644 "$UNIT_DST"
     systemctl daemon-reload
-    systemctl enable "uptime-bench-${TYPE}"
-    ok "Systemd unit installed and enabled (not started — binary not yet deployed)"
+    if [[ "$TYPE" == "harness" ]]; then
+        # The harness binary requires -scenario per invocation; running it
+        # via systemd would loop in failure-restart. Install the unit so it
+        # is available for future use, but do not enable or start it.
+        systemctl disable "uptime-bench-${TYPE}" 2>/dev/null || true
+        systemctl stop    "uptime-bench-${TYPE}" 2>/dev/null || true
+        ok "Systemd unit installed but not enabled (harness runs per-scenario)"
+    else
+        systemctl enable "uptime-bench-${TYPE}"
+        ok "Systemd unit installed and enabled (not started — binary not yet deployed)"
+    fi
 else
     info "Unit file not found at ${UNIT_SRC} — skipping"
     info "Expected: deploy/systemd/uptime-bench-${TYPE}.service copied to /tmp/ by provision.sh"

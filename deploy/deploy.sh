@@ -53,24 +53,27 @@ echo "==> Building $COMPONENT for linux/amd64..."
 GOOS=linux GOARCH=amd64 go build -o "$BINARY" "$CMD_PATH"
 
 echo "==> Copying binary to ${REMOTE_USER}@${HOST}:${REMOTE_BIN}..."
-# Copy to a temporary path first, then move atomically to avoid replacing the
-# running binary in-place (which can cause "text file busy" on Linux).
-REMOTE_TMP="${REMOTE_BIN}.new"
-scp "$BINARY" "${REMOTE_USER}@${HOST}:${REMOTE_TMP}"
+# scp to a user-writable staging path; sudo install handles ownership and
+# the atomic temp-file-plus-rename that avoids ETXTBSY when overwriting a
+# running binary.
+REMOTE_STAGING="/tmp/uptime-bench-${COMPONENT}.new"
+scp "$BINARY" "${REMOTE_USER}@${HOST}:${REMOTE_STAGING}"
 
 echo "==> Installing binary and restarting service..."
 # shellcheck disable=SC2029
 ssh "${REMOTE_USER}@${HOST}" "
-    sudo mv ${REMOTE_TMP} ${REMOTE_BIN}
-    sudo chmod 755 ${REMOTE_BIN}
-    # Replacing the binary clears any file capabilities set by provision.sh.
-    # Re-apply cap_net_bind_service for target and dns servers (needed to bind
+    sudo install -m 755 -o root -g root ${REMOTE_STAGING} ${REMOTE_BIN}
+    rm -f ${REMOTE_STAGING}
+    # install replaces the binary, clearing any file capabilities. Re-apply
+    # cap_net_bind_service for target and dns servers (needed to bind
     # ports 80/443 and 53 without running as root).
     if [[ '${COMPONENT}' == 'target' || '${COMPONENT}' == 'dns' ]]; then
         sudo setcap 'cap_net_bind_service=+ep' ${REMOTE_BIN}
+        sudo systemctl restart ${SERVICE}
+        sudo systemctl status ${SERVICE} --no-pager -l
+    else
+        echo 'Harness systemd unit is vestigial (binary requires -scenario per run); skipping restart.'
     fi
-    sudo systemctl restart ${SERVICE}
-    sudo systemctl status ${SERVICE} --no-pager -l
 "
 
-echo "==> Done. ${SERVICE} restarted on ${HOST}."
+echo "==> Done. Deploy finished for ${SERVICE} on ${HOST}."
