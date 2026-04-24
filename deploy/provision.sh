@@ -85,6 +85,21 @@ scp $SCP_OPTS \
     "${REPO_ROOT}/deploy/systemd/uptime-bench-${TYPE}.service" \
     "${SSH_USER}@${HOST}:/tmp/uptime-bench-${TYPE}.service"
 
+# Upload example config files for the roles that consume them.
+# Harness reads both; DNS reads fleet.toml for zone records; target needs neither.
+if [[ "$TYPE" == "harness" || "$TYPE" == "dns" ]]; then
+    echo "==> Uploading fleet.example.toml..."
+    scp $SCP_OPTS \
+        "${REPO_ROOT}/fleet.example.toml" \
+        "${SSH_USER}@${HOST}:/tmp/fleet.example.toml"
+fi
+if [[ "$TYPE" == "harness" ]]; then
+    echo "==> Uploading services.example.toml..."
+    scp $SCP_OPTS \
+        "${REPO_ROOT}/services.example.toml" \
+        "${SSH_USER}@${HOST}:/tmp/services.example.toml"
+fi
+
 echo "==> Running provisioning on ${HOST} (type: ${TYPE})..."
 
 PROVISION_CMD="sudo bash /tmp/provision-server.sh --type ${TYPE}"

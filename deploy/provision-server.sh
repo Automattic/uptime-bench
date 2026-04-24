@@ -147,6 +147,98 @@ install -d -m 750 -o root -g uptime-bench /etc/uptime-bench
 ok "Created /etc/uptime-bench (750 root:uptime-bench)"
 
 # ---------------------------------------------------------------------------
+# Phase 4b: Skeleton credential and config files
+# ---------------------------------------------------------------------------
+# .example files are always overwritten so they track the latest documented
+# format. The operator copies them to the real names and fills in secrets.
+# Real credential files (without the .example suffix) are never touched here.
+
+section "Writing skeleton credential and config files"
+
+case "$TYPE" in
+    harness)
+        cat > /etc/uptime-bench/harness.env.example <<'EOF'
+# uptime-bench harness environment file.
+#
+# To use:
+#   sudo cp harness.env.example harness.env
+#   sudo chown root:uptime-bench harness.env
+#   sudo chmod 640 harness.env
+#   sudoedit harness.env
+#
+# DB_DSN: MySQL connection string for the harness's event log database.
+#   Format: user:password@tcp(host:3306)/uptime_bench?parseTime=true
+#
+# CONTROL_TOKEN: shared bearer token used for control-plane requests to
+#   every fleet member. Generate once with `openssl rand -hex 32` and
+#   reuse the exact same value on every fleet VM.
+DB_DSN=uptime_bench:CHANGE_ME@tcp(127.0.0.1:3306)/uptime_bench?parseTime=true
+CONTROL_TOKEN=CHANGE_ME
+EOF
+        ;;
+    target)
+        cat > /etc/uptime-bench/target.env.example <<'EOF'
+# uptime-bench target environment file.
+#
+# To use:
+#   sudo cp target.env.example target.env
+#   sudo chown root:uptime-bench target.env
+#   sudo chmod 640 target.env
+#   sudoedit target.env
+#
+# CONTROL_TOKEN: shared bearer token for control-plane requests.
+#   Must match the value in /etc/uptime-bench/harness.env on the harness VM.
+CONTROL_TOKEN=CHANGE_ME
+EOF
+        ;;
+    dns)
+        cat > /etc/uptime-bench/dns.env.example <<'EOF'
+# uptime-bench DNS environment file.
+#
+# To use:
+#   sudo cp dns.env.example dns.env
+#   sudo chown root:uptime-bench dns.env
+#   sudo chmod 640 dns.env
+#   sudoedit dns.env
+#
+# CONTROL_TOKEN: shared bearer token for control-plane requests.
+#   Must match the value in /etc/uptime-bench/harness.env on the harness VM.
+#
+# MEMBER_ID: this VM's id field from the [[nameservers]] block in fleet.toml.
+#   The DNS binary uses it to look up which zones it should serve.
+CONTROL_TOKEN=CHANGE_ME
+MEMBER_ID=ns-XX
+EOF
+        ;;
+esac
+chmod 640 "/etc/uptime-bench/${TYPE}.env.example"
+chown root:uptime-bench "/etc/uptime-bench/${TYPE}.env.example"
+ok "Wrote /etc/uptime-bench/${TYPE}.env.example"
+
+cat > /etc/uptime-bench/control-token.example <<'EOF'
+# Replace this entire file with the same hex string used for CONTROL_TOKEN
+# in /etc/uptime-bench/harness.env on the harness VM.
+#
+# To use:
+#   sudo cp control-token.example control-token
+#   sudo chown root:uptime-bench control-token
+#   sudo chmod 640 control-token
+#   sudoedit control-token   # delete these comments and paste the token
+EOF
+chmod 640 /etc/uptime-bench/control-token.example
+chown root:uptime-bench /etc/uptime-bench/control-token.example
+ok "Wrote /etc/uptime-bench/control-token.example"
+
+# Move uploaded example config files into place when present.
+for ex in fleet.example.toml services.example.toml; do
+    if [[ -f "/tmp/$ex" ]]; then
+        install -m 640 -o root -g uptime-bench "/tmp/$ex" "/etc/uptime-bench/$ex"
+        rm -f "/tmp/$ex"
+        ok "Installed /etc/uptime-bench/$ex"
+    fi
+done
+
+# ---------------------------------------------------------------------------
 # Phase 5: SSH hardening
 # ---------------------------------------------------------------------------
 
@@ -446,15 +538,43 @@ echo "  Deploy user : ${DEPLOY_USER}"
 echo "  SSH port    : ${SSH_PORT}"
 [[ -n "$HARNESS_IP" ]] && echo "  Control IP  : ${HARNESS_IP} (control port restricted)"
 echo ""
+PRIMARY_IP=$(hostname -I | awk '{print $1}')
+
 echo "  Next steps:"
-echo "    1. Place credentials in /etc/uptime-bench/ (mode 0640, root:uptime-bench)"
-echo "       - harness.env / target.env / dns.env  (DB_DSN, CONTROL_TOKEN)"
-echo "       - control-token                        (shared fleet auth token)"
-echo "    2. Deploy the binary:"
-echo "       make deploy-${TYPE} ${TYPE^^}_HOST=$(hostname -I | awk '{print $1}')"
+echo "    1. Copy each .example file in /etc/uptime-bench/ to its real name and edit:"
+echo "       sudo cp /etc/uptime-bench/${TYPE}.env.example /etc/uptime-bench/${TYPE}.env"
+echo "       sudo chown root:uptime-bench /etc/uptime-bench/${TYPE}.env"
+echo "       sudo chmod 640 /etc/uptime-bench/${TYPE}.env"
+echo "       sudoedit /etc/uptime-bench/${TYPE}.env"
+echo ""
+echo "       sudo cp /etc/uptime-bench/control-token.example /etc/uptime-bench/control-token"
+echo "       sudo chown root:uptime-bench /etc/uptime-bench/control-token"
+echo "       sudo chmod 640 /etc/uptime-bench/control-token"
+echo "       sudoedit /etc/uptime-bench/control-token"
+case "$TYPE" in
+    harness)
+        echo ""
+        echo "       sudo cp /etc/uptime-bench/fleet.example.toml /etc/uptime-bench/fleet.toml"
+        echo "       sudo cp /etc/uptime-bench/services.example.toml /etc/uptime-bench/services.toml"
+        echo "       sudo chown root:uptime-bench /etc/uptime-bench/{fleet,services}.toml"
+        echo "       sudo chmod 640 /etc/uptime-bench/{fleet,services}.toml"
+        echo "       sudoedit /etc/uptime-bench/fleet.toml /etc/uptime-bench/services.toml"
+        ;;
+    dns)
+        echo ""
+        echo "       sudo cp /etc/uptime-bench/fleet.example.toml /etc/uptime-bench/fleet.toml"
+        echo "       sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml"
+        echo "       sudo chmod 640 /etc/uptime-bench/fleet.toml"
+        echo "       sudoedit /etc/uptime-bench/fleet.toml"
+        ;;
+esac
+echo ""
+echo "    2. Deploy the binary (run on your local machine, in the repo):"
+echo "       make deploy-${TYPE} ${TYPE^^}_HOST=${PRIMARY_IP} DEPLOY_USER=${DEPLOY_USER}"
 if [[ "$TYPE" == "target" || "$TYPE" == "dns" ]]; then
-    echo "    3. After binary is deployed, verify capability:"
-    echo "       sudo setcap 'cap_net_bind_service=+ep' ${BINARY}"
+    echo ""
+    echo "    3. After the binary is deployed, verify the privileged-port capability:"
     echo "       getcap ${BINARY}"
+    echo "       (deploy.sh re-applies it on every deploy; this is just a sanity check.)"
 fi
 echo ""
