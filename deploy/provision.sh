@@ -28,6 +28,24 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ---------------------------------------------------------------------------
+# Output helpers (colour-aware, NO_COLOR-respecting)
+# ---------------------------------------------------------------------------
+
+if [[ "${NO_COLOR:-}" == "" ]] && { [[ -t 1 ]] || [[ "${FORCE_COLOR:-}" == "1" ]]; }; then
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_RED=$'\033[31m'
+    C_GREEN=$'\033[32m'
+    C_CYAN=$'\033[36m'
+else
+    C_RESET= C_BOLD= C_RED= C_GREEN= C_CYAN=
+fi
+
+section() { echo; echo "${C_BOLD}${C_CYAN}==>${C_RESET} ${C_BOLD}$*${C_RESET}"; }
+ok()      { echo "    ${C_GREEN}[ok]${C_RESET} $*"; }
+err()     { echo "    ${C_BOLD}${C_RED}[ERROR]${C_RESET} $*" >&2; }
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
@@ -47,22 +65,22 @@ while [[ $# -gt 0 ]]; do
         --ssh-port)    SSH_PORT="$2";    shift 2 ;;
         --skip-swap)   EXTRA_ARGS="$EXTRA_ARGS --skip-swap"; shift ;;
         *)
-            echo "Unknown argument: $1" >&2
-            echo "Usage: $0 --type <harness|target|dns> --host <host> [--user USER] [--harness-ip IP] [--ssh-port PORT] [--skip-swap]" >&2
+            err "Unknown argument: $1"
+            err "Usage: $0 --type <harness|target|dns> --host <host> [--user USER] [--harness-ip IP] [--ssh-port PORT] [--skip-swap]"
             exit 1
             ;;
     esac
 done
 
 if [[ -z "$TYPE" || -z "$HOST" ]]; then
-    echo "Error: --type and --host are required." >&2
+    err "--type and --host are required."
     exit 1
 fi
 
 case "$TYPE" in
     harness|target|dns) ;;
     *)
-        echo "Error: --type must be one of: harness, target, dns" >&2
+        err "--type must be one of: harness, target, dns"
         exit 1
         ;;
 esac
@@ -75,12 +93,12 @@ SCP_OPTS="-P $SSH_PORT -o StrictHostKeyChecking=accept-new"
 # Upload scripts and systemd unit, then run provisioning
 # ---------------------------------------------------------------------------
 
-echo "==> Uploading provisioning script to ${SSH_USER}@${HOST}..."
+section "Uploading provisioning script to ${SSH_USER}@${HOST}"
 scp $SCP_OPTS \
     "${REPO_ROOT}/deploy/provision-server.sh" \
     "${SSH_USER}@${HOST}:/tmp/provision-server.sh"
 
-echo "==> Uploading systemd unit for ${TYPE}..."
+section "Uploading systemd unit for ${TYPE}"
 scp $SCP_OPTS \
     "${REPO_ROOT}/deploy/systemd/uptime-bench-${TYPE}.service" \
     "${SSH_USER}@${HOST}:/tmp/uptime-bench-${TYPE}.service"
@@ -88,28 +106,34 @@ scp $SCP_OPTS \
 # Upload example config files for the roles that consume them.
 # Harness reads both; DNS reads fleet.toml for zone records; target needs neither.
 if [[ "$TYPE" == "harness" || "$TYPE" == "dns" ]]; then
-    echo "==> Uploading fleet.example.toml..."
+    section "Uploading fleet.example.toml"
     scp $SCP_OPTS \
         "${REPO_ROOT}/fleet.example.toml" \
         "${SSH_USER}@${HOST}:/tmp/fleet.example.toml"
 fi
 if [[ "$TYPE" == "harness" ]]; then
-    echo "==> Uploading services.example.toml..."
+    section "Uploading services.example.toml"
     scp $SCP_OPTS \
         "${REPO_ROOT}/services.example.toml" \
         "${SSH_USER}@${HOST}:/tmp/services.example.toml"
 fi
 
-echo "==> Running provisioning on ${HOST} (type: ${TYPE})..."
+section "Running provisioning on ${HOST} (type: ${TYPE})"
 
-PROVISION_CMD="sudo bash /tmp/provision-server.sh --type ${TYPE} --deploy-user ${SSH_USER} --ssh-port ${SSH_PORT}"
+# Forward colour preference to the remote provision-server.sh. Its stdout
+# isn't a terminal over ssh, so it needs FORCE_COLOR. sudo strips the
+# environment by default, so the variable is passed as a sudo argument
+# (sudo accepts NAME=value pairs before the command).
+SUDO_ENV=""
+[[ -n "$C_RESET" ]] && SUDO_ENV="FORCE_COLOR=1 "
+
+PROVISION_CMD="sudo ${SUDO_ENV}bash /tmp/provision-server.sh --type ${TYPE} --deploy-user ${SSH_USER} --ssh-port ${SSH_PORT}"
 [[ -n "$HARNESS_IP" ]]  && PROVISION_CMD="$PROVISION_CMD --harness-ip $HARNESS_IP"
 [[ -n "$EXTRA_ARGS" ]]  && PROVISION_CMD="$PROVISION_CMD $EXTRA_ARGS"
 
 # shellcheck disable=SC2029
 ssh $SSH_OPTS "${SSH_USER}@${HOST}" "$PROVISION_CMD"
 
-echo ""
-echo "==> Provisioning complete on ${HOST}."
-echo "    Next step: deploy the binary with:"
-echo "      make deploy-${TYPE} ${TYPE^^}_HOST=${HOST}"
+section "Provisioning complete on ${HOST}"
+ok "Next step: deploy the binary with:"
+echo "      ${C_BOLD}make deploy-${TYPE} ${TYPE^^}_HOST=${HOST} DEPLOY_USER=${SSH_USER}${C_RESET}"

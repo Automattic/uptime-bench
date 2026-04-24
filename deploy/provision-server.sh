@@ -76,9 +76,26 @@ fi
 # Helpers
 # ---------------------------------------------------------------------------
 
-section() { echo ""; echo "==> $*"; }
-ok()      { echo "    [ok] $*"; }
-info()    { echo "    [--] $*"; }
+# ANSI color setup. Honours NO_COLOR (https://no-color.org/) and inherits
+# colour preference when called from a parent script that sets FORCE_COLOR=1
+# (provision.sh forwards FORCE_COLOR over ssh so remote output stays coloured).
+if [[ "${NO_COLOR:-}" == "" ]] && { [[ -t 1 ]] || [[ "${FORCE_COLOR:-}" == "1" ]]; }; then
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_DIM=$'\033[2m'
+    C_RED=$'\033[31m'
+    C_GREEN=$'\033[32m'
+    C_YELLOW=$'\033[33m'
+    C_CYAN=$'\033[36m'
+else
+    C_RESET= C_BOLD= C_DIM= C_RED= C_GREEN= C_YELLOW= C_CYAN=
+fi
+
+section() { echo; echo "${C_BOLD}${C_CYAN}==>${C_RESET} ${C_BOLD}$*${C_RESET}"; }
+ok()      { echo "    ${C_GREEN}[ok]${C_RESET} $*"; }
+info()    { echo "    ${C_DIM}[--]${C_RESET} $*"; }
+warn()    { echo "    ${C_YELLOW}[!!]${C_RESET} $*" >&2; }
+err()     { echo "    ${C_BOLD}${C_RED}[ERROR]${C_RESET} $*" >&2; }
 
 # ---------------------------------------------------------------------------
 # Phase 1: System update
@@ -272,8 +289,8 @@ for candidate in ssh sshd; do
 done
 
 if [[ -z "$SSH_UNIT" ]]; then
-    echo "ERROR: no SSH service unit found (tried ssh.service and sshd.service)." >&2
-    echo "Investigate with: systemctl list-units --type=service | grep -i ssh" >&2
+    err "No SSH service unit found (tried ssh.service and sshd.service)."
+    err "Investigate with: systemctl list-units --type=service | grep -i ssh"
     exit 1
 fi
 
@@ -282,7 +299,7 @@ if sshd -t; then
     systemctl reload "$SSH_UNIT"
     ok "SSH hardening applied and ${SSH_UNIT} reloaded"
 else
-    echo "ERROR: sshd config test failed — NOT reloading ${SSH_UNIT}. Fix $SSHD_CONF." >&2
+    err "sshd config test failed — NOT reloading ${SSH_UNIT}. Fix $SSHD_CONF."
     exit 1
 fi
 

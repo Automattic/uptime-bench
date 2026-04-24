@@ -23,12 +23,30 @@
 
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Output helpers (colour-aware, NO_COLOR-respecting)
+# ---------------------------------------------------------------------------
+
+if [[ "${NO_COLOR:-}" == "" ]] && { [[ -t 1 ]] || [[ "${FORCE_COLOR:-}" == "1" ]]; }; then
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_RED=$'\033[31m'
+    C_GREEN=$'\033[32m'
+    C_CYAN=$'\033[36m'
+else
+    C_RESET= C_BOLD= C_RED= C_GREEN= C_CYAN=
+fi
+
+section() { echo; echo "${C_BOLD}${C_CYAN}==>${C_RESET} ${C_BOLD}$*${C_RESET}"; }
+ok()      { echo "    ${C_GREEN}[ok]${C_RESET} $*"; }
+err()     { echo "    ${C_BOLD}${C_RED}[ERROR]${C_RESET} $*" >&2; }
+
 COMPONENT="${1:-}"
 HOST="${2:-}"
 REMOTE_USER="${3:-ubuntu}"
 
 if [[ -z "$COMPONENT" || -z "$HOST" ]]; then
-    echo "Usage: $0 <harness|target|dns> <host> [user]" >&2
+    err "Usage: $0 <harness|target|dns> <host> [user]"
     exit 1
 fi
 
@@ -37,7 +55,7 @@ case "$COMPONENT" in
     target)  CMD_PATH="./cmd/target"  ;;
     dns)     CMD_PATH="./cmd/dns"     ;;
     *)
-        echo "Unknown component: $COMPONENT. Must be one of: harness, target, dns" >&2
+        err "Unknown component: $COMPONENT. Must be one of: harness, target, dns"
         exit 1
         ;;
 esac
@@ -49,17 +67,17 @@ REMOTE_BIN="/usr/local/bin/uptime-bench-${COMPONENT}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "==> Building $COMPONENT for linux/amd64..."
+section "Building $COMPONENT for linux/amd64"
 GOOS=linux GOARCH=amd64 go build -o "$BINARY" "$CMD_PATH"
 
-echo "==> Copying binary to ${REMOTE_USER}@${HOST}:${REMOTE_BIN}..."
+section "Copying binary to ${REMOTE_USER}@${HOST}:${REMOTE_BIN}"
 # scp to a user-writable staging path; sudo install handles ownership and
 # the atomic temp-file-plus-rename that avoids ETXTBSY when overwriting a
 # running binary.
 REMOTE_STAGING="/tmp/uptime-bench-${COMPONENT}.new"
 scp "$BINARY" "${REMOTE_USER}@${HOST}:${REMOTE_STAGING}"
 
-echo "==> Installing binary and restarting service..."
+section "Installing binary and restarting service"
 # shellcheck disable=SC2029
 ssh "${REMOTE_USER}@${HOST}" "
     sudo install -m 755 -o root -g root ${REMOTE_STAGING} ${REMOTE_BIN}
@@ -76,4 +94,5 @@ ssh "${REMOTE_USER}@${HOST}" "
     fi
 "
 
-echo "==> Done. Deploy finished for ${SERVICE} on ${HOST}."
+section "Done — ${SERVICE} on ${HOST}"
+ok "Deploy finished."
