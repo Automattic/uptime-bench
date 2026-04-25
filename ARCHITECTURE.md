@@ -106,6 +106,8 @@ Preserve each monitoring service's raw incident classification alongside any nor
 
 If an adapter cannot reach a monitoring service's API during a run (service outage, rate limit, authentication failure), that is Unknown — not a missed detection or false negative. uptime-bench must distinguish "monitor did not detect the failure" from "we could not retrieve the monitor's detection state." Conflating these corrupts accuracy measurements and is unfair to the service under test.
 
+The same separation applies to capability mismatches: when a scenario requires a feature the adapter does not support (e.g., keyword body inspection on a service that only does HTTP status checks), the harness skips `Provision` for that adapter rather than running an inevitable false negative. The result is recorded with `reason_code = "capability_mismatch"`. These rows are the **support matrix** — a first-class deliverable showing which services support which features — and reporting must compute accuracy metrics only over rows where `reason_code` is empty. Conflating capability-mismatch with false-negative is the same hazard as conflating Unknown with false-negative, and the harness treats them with the same care. See EVENTS.md for the full reporting rules.
+
 ### Idempotent identifiers
 
 Scenario runs, target failure events, and monitor report events all need stable, deterministic identifiers so that retries and replays do not produce duplicates in the output.

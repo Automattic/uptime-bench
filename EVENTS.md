@@ -95,14 +95,21 @@ Every scenario run records why it ended. This affects whether results are usable
 
 ---
 
-## Unknown vs. missed detection
+## Missed detection vs. Unknown vs. capability mismatch
 
-These are distinct outcomes and must never be conflated:
+These are three distinct outcomes and must never be conflated:
 
 - **Missed detection (false negative):** the adapter successfully retrieved the service's state and confirmed it did not alert during an active failure window.
 - **Unknown:** the adapter could not retrieve data — API outage, rate limit, authentication failure. The service may or may not have detected the failure; we do not know.
+- **Capability mismatch:** the scenario required a feature the service does not support (e.g., keyword body inspection on a service that only does status checks), so the harness skipped Provision rather than running an inevitable false negative. The service was never asked.
 
-Record Unknown in the monitor report event with `event_type = unknown` and capture the reason in `metadata`. Never count Unknown as a false negative in accuracy calculations.
+Both Unknown and capability mismatch are recorded with `event_type = unknown`, but they're distinguished by the `reason_code` field (free-form `reason` carries the human-readable detail). Reporting and any accuracy/coverage calculations must use `reason_code` to keep the three categories separate:
+
+- True/false positives and true/false negatives are computed only over rows where `reason_code` is empty (i.e. genuine adapter results).
+- Unknown rates are computed over rows where `reason_code` indicates an adapter-side or API-side problem (e.g. `api_unreachable`, `rate_limited`, `auth_failed`).
+- Capability-mismatch rates are computed over rows where `reason_code = "capability_mismatch"` and form the **support matrix** — for any given scenario, which services have the feature needed to detect the failure. This is a first-class deliverable of the project, not a noise filter.
+
+Never count Unknown or capability_mismatch as a false negative in accuracy calculations. Reports that aggregate without filtering on `reason_code` will conflate "the service missed the failure" with "the service was never asked," which is the central data-integrity hazard the harness is built to avoid.
 
 ---
 
@@ -122,6 +129,6 @@ If the same event is written twice, the second write updates the existing row ra
 
 1. Every scenario run has a `resolution_reason` on close — no run ends without one.
 2. Replaying the same scenario with the same seed produces the same ground-truth event sequence.
-3. Unknown adapter results never appear as false negatives in derived metric rows.
+3. Neither Unknown nor capability_mismatch adapter results appear as false negatives in derived metric rows. Capability_mismatch rows are separately queryable so the support matrix can be reported without re-deriving it from logs.
 4. `detection_latency_seconds` is null when no `alert_fired` event exists for that run × service pair — never zero or negative.
 5. Adapter deprovision runs and is recorded even when a scenario aborts midway.

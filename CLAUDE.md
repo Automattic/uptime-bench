@@ -49,6 +49,8 @@ Monitor adapters are the only place service-specific behavior lives: rate limits
 
 If an adapter cannot reach a monitoring service's API, the result is Unknown — not a false negative. Never count Unknown as a missed detection. Record why the adapter failed and propagate Unknown to derived metrics correctly.
 
+The same rule applies to capability mismatches: when a scenario needs a feature the adapter doesn't support, the harness skips Provision and writes a row tagged `reason_code = "capability_mismatch"`. Reporting and accuracy calculations must filter these out before deriving false-negative rates. Capability-mismatch rows are *data*, not noise — they are the support matrix for the benchmark.
+
 ### Reproducibility is non-negotiable
 
 Every scenario run must be deterministic given the same inputs. Randomized injection must be seeded and the seed recorded. Scenario definitions, target implementations, and adapter versions must all be pinned in the run record.
@@ -61,6 +63,7 @@ Preserve each service's raw incident classification alongside any normalized sco
 
 - Every scenario run records a `resolution_reason` on close — no run ends without one.
 - Adapters produce Unknown (not false negative) when they cannot reach a service.
+- The runner produces capability_mismatch (not false negative) when a scenario needs a feature the adapter doesn't support. Reporting filters this out of accuracy metrics and queries it separately for the support matrix.
 - Adapter deprovision runs even when a scenario aborts midway — no state leaks between runs.
 - The seed is recorded in the run record for every run.
 - No service-specific logic in the core harness — adapter only.
