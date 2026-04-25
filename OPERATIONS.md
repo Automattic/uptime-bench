@@ -236,11 +236,12 @@ Per-role values to fill in:
 
 | File | Variable | Value |
 |---|---|---|
-| `harness.env` | `DB_DSN` | `uptime_bench:<password>@tcp(127.0.0.1:3306)/uptime_bench?parseTime=true` |
+| `harness.env` | `DB_DSN` | `"uptime_bench:<password>@tcp(127.0.0.1:3306)/uptime_bench?parseTime=true"` (keep the double quotes — the `tcp(...)` parens are a shell syntax error if you ever source this file via `. harness.env`) |
 | `harness.env` | `CONTROL_TOKEN` | The token from Step 4 |
-| `target.env`  | `CONTROL_TOKEN` | Same token |
-| `dns.env`     | `CONTROL_TOKEN` | Same token |
-| `dns.env`     | `MEMBER_ID` | This VM's `id` from its `[[nameservers]]` entry in `fleet.toml` (e.g. `ns-01`, `ns-02`) — the DNS binary uses it to find its own zone records |
+| `target.env` | `CONTROL_TOKEN` | Same token |
+| `target.env` | `MEMBER_ID` | This VM's `id` from its `[[targets]]` entry in `fleet.toml` (e.g. `target-01`) — the target binary reports it in control responses so the harness can correlate results across multiple targets |
+| `dns.env`    | `CONTROL_TOKEN` | Same token |
+| `dns.env`    | `MEMBER_ID` | This VM's `id` from its `[[nameservers]]` entry in `fleet.toml` (e.g. `ns-01`, `ns-02`) — the DNS binary uses it to find its own zone records |
 | `control-token` (every VM) | (file body) | Same token, on a single line, no other content |
 
 The `CONTROL_TOKEN` value must be identical on every VM.

@@ -203,8 +203,11 @@ case "$TYPE" in
 # CONTROL_TOKEN: shared bearer token used for control-plane requests to
 #   every fleet member. Generate once with `openssl rand -hex 32` and
 #   reuse the exact same value on every fleet VM.
-DB_DSN=uptime_bench:CHANGE_ME@tcp(127.0.0.1:3306)/uptime_bench?parseTime=true
-CONTROL_TOKEN=CHANGE_ME
+# Values are quoted so this file is valid both for systemd's
+# EnvironmentFile= parser and for shell sourcing (the parens in tcp(...)
+# would otherwise be a bash syntax error during `. harness.env`).
+DB_DSN="uptime_bench:CHANGE_ME@tcp(127.0.0.1:3306)/uptime_bench?parseTime=true"
+CONTROL_TOKEN="CHANGE_ME"
 EOF
         ;;
     target)
