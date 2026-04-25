@@ -26,7 +26,7 @@ A handful of the eleven shipped scenarios involve serving a fully-rendered ranso
 | [Jetmon 1](https://github.com/Automattic/jetmon) | Agent-based (WordPress/Jetpack) | Implemented (`jetmon-v1`, via [jetmon-bridge](https://github.com/Automattic/jetmon-bridge)) |
 | [Jetmon 2](https://github.com/Automattic/jetmon) | Agent-based (WordPress/Jetpack) | Stub — blocked on Jetmon 2's public REST API |
 | [UptimeRobot](https://uptimerobot.com) | Probe-based | Implemented (`uptimerobot`) — wire-pinned by tests; not yet exercised against the live API |
-| [Pingdom](https://www.pingdom.com) | Probe-based | Not yet implemented |
+| [Pingdom](https://www.pingdom.com) | Probe-based | Implemented (`pingdom`) — wire-pinned by tests; not yet exercised against the live API |
 | [Datadog Synthetics](https://www.datadoghq.com/product/synthetic-monitoring/) | Probe-based | Not yet implemented |
 | [Better Uptime](https://betterstack.com/better-uptime) | Probe-based | Not yet implemented |
 

@@ -13,7 +13,7 @@ import (
 // a new adapter should require an entry here, and removing one should
 // fail the test loudly rather than silently change behavior.
 func TestRegistry_KnownTypes(t *testing.T) {
-	want := []string{"jetmon-v1", "jetmon-v2", "uptimerobot"}
+	want := []string{"jetmon-v1", "jetmon-v2", "uptimerobot", "pingdom"}
 	for _, typ := range want {
 		if _, ok := registry[typ]; !ok {
 			t.Errorf("registry missing factory for %q", typ)
@@ -120,6 +120,35 @@ func TestRegistry_UptimeRobotBuilds(t *testing.T) {
 		t.Fatal("factory returned nil")
 	}
 	if a.ServiceID() != "ur" {
+		t.Fatalf("ServiceID = %q", a.ServiceID())
+	}
+}
+
+// TestRegistry_PingdomRequiresToken — same fail-fast contract as the
+// other adapters: if the operator forgets the token, error before any
+// API call instead of producing a confusing 401 mid-run.
+func TestRegistry_PingdomRequiresToken(t *testing.T) {
+	factory := registry["pingdom"]
+	_, err := factory("pd", "", nil)
+	if err == nil {
+		t.Fatal("expected error from pingdom factory with empty token")
+	}
+	if !strings.Contains(err.Error(), "token") {
+		t.Fatalf("err = %v, want one mentioning token", err)
+	}
+}
+
+// TestRegistry_PingdomBuilds — happy path.
+func TestRegistry_PingdomBuilds(t *testing.T) {
+	factory := registry["pingdom"]
+	a, err := factory("pd", "", map[string]string{"token": "tok"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if a == nil {
+		t.Fatal("factory returned nil")
+	}
+	if a.ServiceID() != "pd" {
 		t.Fatalf("ServiceID = %q", a.ServiceID())
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/Automattic/uptime-bench/internal/adapter"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv1"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv2"
+	"github.com/Automattic/uptime-bench/internal/adapter/pingdom"
 	"github.com/Automattic/uptime-bench/internal/adapter/uptimerobot"
 	"github.com/Automattic/uptime-bench/internal/db"
 	"github.com/Automattic/uptime-bench/internal/fleet"
@@ -44,6 +45,13 @@ var registry = map[string]adapterFactory{
 			return nil, fmt.Errorf("uptimerobot: auth.api_key is required")
 		}
 		return uptimerobot.New(id, apiURL, key), nil
+	},
+	"pingdom": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
+		token := auth["token"]
+		if token == "" {
+			return nil, fmt.Errorf("pingdom: auth.token is required")
+		}
+		return pingdom.New(id, apiURL, token), nil
 	},
 }
 

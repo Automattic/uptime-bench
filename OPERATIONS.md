@@ -2,7 +2,7 @@
 
 This guide covers everything needed to stand up a working uptime-bench fleet: VPS requirements, domain configuration, provisioning, credential setup, and starting the service.
 
-> **Implementation status:** The target binary, DNS binary, harness, the Jetmon 1 adapter (`jetmon-v1`), and the UptimeRobot adapter (`uptimerobot`) are implemented and working end-to-end. The `jetmon-v2` type is a stub — blocked on the Jetmon 2 public REST API — and will fail fast if enabled. Adapters for Pingdom, Datadog Synthetics, and Better Uptime are not yet implemented — leave those `enabled = false` in `services.toml` until they land.
+> **Implementation status:** The target binary, DNS binary, harness, and three adapters — Jetmon 1 (`jetmon-v1`), UptimeRobot (`uptimerobot`), and Pingdom (`pingdom`) — are implemented. The `jetmon-v2` type is a stub blocked on the Jetmon 2 public REST API and will fail fast if enabled. The UptimeRobot and Pingdom adapters are wire-pinned by tests but have not been exercised against their live APIs; first-run quirks should surface clearly because both decode the service's error envelope into the failure path. Adapters for Datadog Synthetics and Better Uptime are not yet implemented.
 
 ---
 
@@ -346,7 +346,7 @@ sudoedit /etc/uptime-bench/services.toml
 
 Edit each `[[services]]` block: set `enabled = true` for the services you want to evaluate, and fill in the `url` and `auth` fields. The `id` field in each block must match the IDs used in scenario `monitors` lists.
 
-`jetmon-v1` and `uptimerobot` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate. Leave the rest `enabled = false` until their adapters land. The `jetmon-v2` entry is a stub; enabling it causes the harness to exit with "jetmon-v2: adapter not implemented — blocked on Jetmon 2 public API".
+`jetmon-v1`, `uptimerobot`, and `pingdom` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate. Leave the rest `enabled = false` until their adapters land. The `jetmon-v2` entry is a stub; enabling it causes the harness to exit with "jetmon-v2: adapter not implemented — blocked on Jetmon 2 public API".
 
 ---
 
