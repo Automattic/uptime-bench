@@ -2,7 +2,7 @@
 
 This guide covers everything needed to stand up a working uptime-bench fleet: VPS requirements, domain configuration, provisioning, credential setup, and starting the service.
 
-> **Implementation status:** The target binary, DNS binary, harness, and five adapters — Jetmon 1 (`jetmon-v1`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), and Datadog Synthetics (`datadog-synthetics`) — are implemented. The `jetmon-v2` type is a stub blocked on the Jetmon 2 public REST API and will fail fast if enabled. The four probe-based adapters are wire-pinned by tests but have not been exercised against their live APIs; first-run quirks should surface clearly because each decodes the service's error envelope into the failure path.
+> **Implementation status:** The target binary, DNS binary, harness, and five adapters — Jetmon 1 (`jetmon-v1`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), and Datadog Synthetics (`datadog-synthetics`) — are implemented. The `jetmon-v2` type is a stub blocked on the Jetmon 2 public REST API and will fail fast if enabled. UptimeRobot, Pingdom, and Datadog Synthetics have all been exercised against their live APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`; Better Uptime has the same scaffolding but has not yet been run end-to-end against the live service.
 
 ---
 
@@ -347,6 +347,15 @@ sudoedit /etc/uptime-bench/services.toml
 Edit each `[[services]]` block: set `enabled = true` for the services you want to evaluate, and fill in the `url` and `auth` fields. The `id` field in each block must match the IDs used in scenario `monitors` lists.
 
 `jetmon-v1`, `uptimerobot`, `pingdom`, `better-uptime`, and `datadog-synthetics` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate. The `jetmon-v2` entry is a stub; enabling it causes the harness to exit with "jetmon-v2: adapter not implemented — blocked on Jetmon 2 public API".
+
+### Pre-seeding monitors for `jetmon-v1`
+
+Jetmon 1 has no public API; the adapter talks to a sidecar `jetmon-bridge` that fronts Jetmon's MySQL. Two modes are supported, controlled by the `write_mode` auth key:
+
+- `write_mode = "false"` (default) — read-only. The adapter looks up each target URL in Jetmon's `jetpack_monitor_sites` table during Provision. If the row is missing, the run fails fast with `jetmon-v1: no monitor pre-seeded for <url> — add it to jetpack_monitor_sites`. **You must insert one row per site URL declared in `fleet.toml` before the first scenario runs.** Each row needs at minimum `blog_id`, `bucket_no`, `monitor_url`, `monitor_active = 1`, and a sensible `check_interval`. Rows are persistent — pre-seed once per fleet, not per run.
+- `write_mode = "true"` — read/write. Provision creates (or reactivates) the row automatically; Deprovision soft-deletes it at the end of the run. Use this only if your `jetmon-bridge` deployment was started with write capability enabled, and only against a Jetmon environment whose contents you fully control.
+
+The other four adapters create their monitors via API on every run and have no equivalent pre-seeding step.
 
 ---
 

@@ -19,11 +19,10 @@
 //
 // `url` is optional; the default endpoint is https://api.pingdom.com/api/3.1.
 //
-// Status: implemented against the public API documentation. The wire shapes
-// match the docs and are pinned by unit tests using httptest, but this code
-// has not been exercised against the live Pingdom API. First-run quirks
-// should surface clearly because the JSON error envelope is decoded into
-// the failure path with the service's message.
+// Status: implemented against the public API documentation. The wire
+// shapes are pinned by unit tests using httptest, and a full
+// Provision/Retrieve/Deprovision cycle has been exercised against the
+// live Pingdom API via the build-tagged smoke test in `live_test.go`.
 package pingdom
 
 import (

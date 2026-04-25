@@ -21,9 +21,11 @@
 //
 // `url` is optional; the default endpoint is https://api.datadoghq.com.
 //
-// Status: implemented against the public API documentation. The wire shapes
-// match the docs and are pinned by unit tests using httptest, but this code
-// has not been exercised against the live Datadog API.
+// Status: implemented against the public API documentation. The wire
+// shapes are pinned by unit tests using httptest, and a full
+// Provision/Retrieve/Deprovision cycle has been exercised against the
+// live Datadog Synthetics API via the build-tagged smoke test in
+// `live_test.go`.
 package datadog
 
 import (
@@ -170,11 +172,11 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	}
 
 	req := newTestRequest{
-		Type:    "api",
-		Subtype: "http",
-		Name:    "uptime-bench: " + target.ID,
-		Message: "uptime-bench synthetic test for " + target.ID + " failed.",
-		Status:  "live",
+		Type:      "api",
+		Subtype:   "http",
+		Name:      "uptime-bench: " + target.ID,
+		Message:   "uptime-bench synthetic test for " + target.ID + " failed.",
+		Status:    "live",
 		Locations: []string{"aws:us-east-1"}, // most accounts have this; operators on EU/etc may need to override via tags
 		Config: testConfig{
 			Request: testRequest{

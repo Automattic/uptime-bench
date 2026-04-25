@@ -21,11 +21,10 @@
 //
 // `url` is optional; the default endpoint is https://api.uptimerobot.com/v2.
 //
-// Status: implemented against the public API documentation. The wire shapes
-// match the docs and are pinned by unit tests using httptest, but this code
-// has not been exercised against the live UptimeRobot API. First-run quirks
-// should be caught quickly because every call surfaces stat=fail with the
-// service's error message.
+// Status: implemented against the public API documentation. The wire
+// shapes are pinned by unit tests using httptest, and a full
+// Provision/Retrieve/Deprovision cycle has been exercised against the
+// live UptimeRobot API via the build-tagged smoke test in `live_test.go`.
 package uptimerobot
 
 import (
