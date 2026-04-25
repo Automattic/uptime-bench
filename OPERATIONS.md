@@ -2,7 +2,7 @@
 
 This guide covers everything needed to stand up a working uptime-bench fleet: VPS requirements, domain configuration, provisioning, credential setup, and starting the service.
 
-> **Implementation status:** The target binary, DNS binary, harness, and Jetmon 1 adapter (`jetmon-v1`) are implemented and working end-to-end. The `jetmon-v2` type is a stub — blocked on the Jetmon 2 public REST API — and will fail fast if enabled. Adapters for UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime are not yet implemented — configure only `jetmon-v1` in `services.toml` until the others land.
+> **Implementation status:** The target binary, DNS binary, harness, the Jetmon 1 adapter (`jetmon-v1`), and the UptimeRobot adapter (`uptimerobot`) are implemented and working end-to-end. The `jetmon-v2` type is a stub — blocked on the Jetmon 2 public REST API — and will fail fast if enabled. Adapters for Pingdom, Datadog Synthetics, and Better Uptime are not yet implemented — leave those `enabled = false` in `services.toml` until they land.
 
 ---
 
@@ -346,7 +346,7 @@ sudoedit /etc/uptime-bench/services.toml
 
 Edit each `[[services]]` block: set `enabled = true` for the services you want to evaluate, and fill in the `url` and `auth` fields. The `id` field in each block must match the IDs used in scenario `monitors` lists.
 
-For now, only `jetmon-v1` has an implemented adapter — leave the others `enabled = false` until their adapters land. The `jetmon-v2` entry is a stub; enabling it causes the harness to exit with "jetmon-v2: adapter not implemented — blocked on Jetmon 2 public API".
+`jetmon-v1` and `uptimerobot` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate. Leave the rest `enabled = false` until their adapters land. The `jetmon-v2` entry is a stub; enabling it causes the harness to exit with "jetmon-v2: adapter not implemented — blocked on Jetmon 2 public API".
 
 ---
 

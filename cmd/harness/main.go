@@ -12,6 +12,7 @@ import (
 	"github.com/Automattic/uptime-bench/internal/adapter"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv1"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv2"
+	"github.com/Automattic/uptime-bench/internal/adapter/uptimerobot"
 	"github.com/Automattic/uptime-bench/internal/db"
 	"github.com/Automattic/uptime-bench/internal/fleet"
 	"github.com/Automattic/uptime-bench/internal/measurement"
@@ -36,6 +37,13 @@ var registry = map[string]adapterFactory{
 	"jetmon-v2": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
 		// Stub: Jetmon 2 has no public API yet. See internal/adapter/jetmonv2.
 		return nil, jetmonv2.ErrNotImplemented
+	},
+	"uptimerobot": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
+		key := auth["api_key"]
+		if key == "" {
+			return nil, fmt.Errorf("uptimerobot: auth.api_key is required")
+		}
+		return uptimerobot.New(id, apiURL, key), nil
 	},
 }
 
