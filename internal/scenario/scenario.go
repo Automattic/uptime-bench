@@ -26,7 +26,9 @@ type Scenario struct {
 type Failure struct {
 	Type string
 	Rate float64
-	// Offset is parsed but not yet acted on by the runner (see ROADMAP.md).
+	// Offset delays this failure's activation by the specified duration
+	// after the scenario starts. The failure runs for the scenario's
+	// `duration` from its activation moment.
 	Offset time.Duration
 
 	// HTTP failure fields

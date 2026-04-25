@@ -4,25 +4,16 @@ Deferred features that are intentionally not yet implemented. Items here have be
 
 ---
 
-## Staggered failure start times
+## Staggered failure measurement matching
 
-**Status:** Schema-ready, not implemented.
+**Status:** Runner support done; measurement engine matching rule pending.
 
-The `offset` field is defined on every `[[failures]]` block and validated by the schema parser, but the runner ignores it. All failures currently start simultaneously at scenario start regardless of what `offset` is set to.
+The `offset` field is now honored by the runner: failures activate at `scenario_start + offset` and run for `duration` from that point (`internal/runner/runner.go:scheduleFailureEvents`). Ground-truth events emit independent `failure_start` / `failure_end` pairs per failure with the correct timestamps.
 
-**What it enables:**
+**Still to design:**
 
-- Models realistic cascading failures where one layer degrades before another (e.g., DNS latency appears 30 seconds before TCP connections start failing).
-- Tests detection sensitivity: does a monitor fire on the first failing layer, or only after multiple layers compound?
-- Enables recovery-and-re-failure within a single run without requiring two separate scenarios.
-
-**What needs to be built:**
-
-- *Runner:* schedule each failure block's injection start at `scenario_start + offset` rather than injecting all failures at once.
-- *Ground-truth log:* already correct — each failure block emits its own `failure_start` and `failure_end` events with the actual timestamps.
-- *Measurement engine:* detection latency must be calculated against the right `failure_start` event. When failures are staggered, "which failure did the monitor respond to?" becomes the hard question. The metric calculation needs a matching rule — either the earliest active failure or the failure whose classification best matches the monitor's reported classification.
-
-**Complexity note:** the measurement engine change is the substantive work, not the runner scheduling. Design the matching rule before implementing.
+- *Measurement engine:* detection latency is calculated against the first failure window an alert falls inside (`internal/measurement/measurement.go`). When failures are staggered and overlapping, "which failure did the monitor respond to?" matters for accurate latency attribution. Today's "earliest active failure" rule is a reasonable default but loses signal when multiple layers fail together (e.g., DNS at t=0, HTTP at t=30, alert at t=45 — was the monitor responding to DNS or HTTP?).
+- The matching rule should probably be: the failure whose normalized classification best matches the monitor's reported classification, falling back to earliest-active when classification doesn't disambiguate. Spec it before implementing.
 
 ---
 

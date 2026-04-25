@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
+	"github.com/Automattic/uptime-bench/internal/scenario"
 )
 
 // recordingAdapter captures the ctx.Err() it sees on Deprovision so the
@@ -132,5 +133,112 @@ func (a *slowDeprovisionAdapter) Deprovision(ctx context.Context, _ adapter.Moni
 		return ctx.Err()
 	case <-time.After(2 * deprovisionTimeout):
 		return nil
+	}
+}
+
+// TestScheduleFailureEvents_NoOffsets — every failure activates at start
+// and deactivates at start+duration. Order within the activate / deactivate
+// halves is preserved.
+func TestScheduleFailureEvents_NoOffsets(t *testing.T) {
+	start := time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)
+	duration := time.Minute
+	failures := []scenario.Failure{
+		{Type: "http_status"},
+		{Type: "tcp_refused"},
+	}
+	events := scheduleFailureEvents(start, duration, failures)
+
+	if len(events) != 4 {
+		t.Fatalf("got %d events, want 4", len(events))
+	}
+	// First two are activates at start.
+	for i := 0; i < 2; i++ {
+		if !events[i].activate || !events[i].at.Equal(start) {
+			t.Fatalf("events[%d] = (%v, activate=%v), want activate at start", i, events[i].at, events[i].activate)
+		}
+	}
+	// Next two are deactivates at start+duration.
+	for i := 2; i < 4; i++ {
+		if events[i].activate || !events[i].at.Equal(start.Add(duration)) {
+			t.Fatalf("events[%d] = (%v, activate=%v), want deactivate at start+duration", i, events[i].at, events[i].activate)
+		}
+	}
+}
+
+// TestScheduleFailureEvents_StaggeredOffsets — verifies the timeline
+// for the canonical "DNS issue at t=0, HTTP error at t=30s" pattern.
+// Each failure runs for `duration` from its individual activate.
+func TestScheduleFailureEvents_StaggeredOffsets(t *testing.T) {
+	start := time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)
+	duration := 100 * time.Second
+	failures := []scenario.Failure{
+		{Type: "dns_latency", Offset: 0},
+		{Type: "http_status", Offset: 30 * time.Second},
+	}
+	events := scheduleFailureEvents(start, duration, failures)
+
+	want := []struct {
+		at       time.Time
+		activate bool
+		typ      string
+	}{
+		{start.Add(0 * time.Second), true, "dns_latency"},
+		{start.Add(30 * time.Second), true, "http_status"},
+		{start.Add(100 * time.Second), false, "dns_latency"},
+		{start.Add(130 * time.Second), false, "http_status"},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("got %d events, want %d", len(events), len(want))
+	}
+	for i, e := range events {
+		if !e.at.Equal(want[i].at) || e.activate != want[i].activate || e.failure.Type != want[i].typ {
+			t.Fatalf("events[%d] = (%v, activate=%v, %s), want (%v, %v, %s)",
+				i, e.at, e.activate, e.failure.Type,
+				want[i].at, want[i].activate, want[i].typ)
+		}
+	}
+}
+
+// TestScheduleFailureEvents_OverlappingDeactivateAndActivate — when the
+// deactivate of failure A and the activate of failure B fall on the same
+// instant, the activate must come first so the registry never momentarily
+// has zero failures active. Stable sort with activate-before-deactivate
+// pinned in the comparator.
+func TestScheduleFailureEvents_OverlappingDeactivateAndActivate(t *testing.T) {
+	start := time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)
+	duration := 10 * time.Second
+	failures := []scenario.Failure{
+		{Type: "first", Offset: 0},
+		{Type: "second", Offset: duration}, // activate of "second" == deactivate of "first"
+	}
+	events := scheduleFailureEvents(start, duration, failures)
+
+	// Expected order:
+	//   t=0:  activate first
+	//   t=10: activate second   (must come before deactivate at the same instant)
+	//   t=10: deactivate first
+	//   t=20: deactivate second
+	want := []struct {
+		activate bool
+		typ      string
+	}{
+		{true, "first"},
+		{true, "second"},
+		{false, "first"},
+		{false, "second"},
+	}
+	for i, e := range events {
+		if e.activate != want[i].activate || e.failure.Type != want[i].typ {
+			t.Fatalf("events[%d] = (activate=%v, %s), want (%v, %s)",
+				i, e.activate, e.failure.Type, want[i].activate, want[i].typ)
+		}
+	}
+}
+
+// TestScheduleFailureEvents_Empty — no failures, no events.
+func TestScheduleFailureEvents_Empty(t *testing.T) {
+	events := scheduleFailureEvents(time.Now(), time.Minute, nil)
+	if len(events) != 0 {
+		t.Fatalf("got %d events for empty input, want 0", len(events))
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -139,58 +140,79 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		}
 	}()
 
-	// Activate failures.
-	failureStarted := time.Now()
-	failureDuration := sc.Duration + sc.GracePeriod + 30*time.Second // safety margin for auto-expiry
+	// Walk the failure event timeline. Each failure produces one activate
+	// event at start+offset and one deactivate event at start+offset+duration;
+	// scheduleFailureEvents sorts them all into a single time-ordered list
+	// so staggered scenarios just fall out of the same loop as simultaneous
+	// ones (offset = 0).
+	earliestStart := time.Now()
+	events := scheduleFailureEvents(earliestStart, sc.Duration, sc.Failures)
+
+	// Target-side auto-expiry timer: must outlast the latest deactivate
+	// plus a generous safety margin in case the harness's deactivate is
+	// delayed or fails. Without this, a long-offset failure could expire
+	// on the target before the harness gets to it.
+	maxOffset := time.Duration(0)
 	for _, f := range sc.Failures {
-		fp := failureParams(f)
-		sourceCIDRs := collectCIDRs(f.Regions, svcCfg)
-		if len(f.Regions) > 0 && len(sourceCIDRs) == 0 {
-			log.Printf("runner: warning: failure %s has regions %v but no matching probe_ranges found in services.toml", f.Type, f.Regions)
+		if f.Offset > maxOffset {
+			maxOffset = f.Offset
 		}
-		req := control.ActivateRequest{
-			RunID: runID,
-			Seed:  seed,
-			Failure: control.FailureSpec{
-				Type:        f.Type,
+	}
+	failureDuration := maxOffset + sc.Duration + sc.GracePeriod + 30*time.Second
+
+	var failureStarted, failureEnded time.Time
+	for _, e := range events {
+		if waitFor := time.Until(e.at); waitFor > 0 {
+			select {
+			case <-time.After(waitFor):
+			case <-ctx.Done():
+				resolutionReason = "aborted"
+				return runID, ctx.Err()
+			}
+		}
+
+		f := e.failure
+		if e.activate {
+			fp := failureParams(f)
+			sourceCIDRs := collectCIDRs(f.Regions, svcCfg)
+			if len(f.Regions) > 0 && len(sourceCIDRs) == 0 {
+				log.Printf("runner: warning: failure %s has regions %v but no matching probe_ranges found in services.toml", f.Type, f.Regions)
+			}
+			req := control.ActivateRequest{
+				RunID: runID,
+				Seed:  seed,
+				Failure: control.FailureSpec{
+					Type:        f.Type,
+					Host:        targetHostForFailure(target, f),
+					Duration:    failureDuration,
+					Rate:        f.Rate,
+					Params:      fp,
+					SourceCIDRs: sourceCIDRs,
+				},
+			}
+			if err := targetClient.Activate(ctx, req); err != nil {
+				log.Printf("runner: activate %s: %v", f.Type, err)
+				resolutionReason = "adapter_error"
+				return runID, fmt.Errorf("runner: activate %s: %w", f.Type, err)
+			}
+			logEvent(ctx, database, runID, sc.Target, "failure_start", f.Type, fp)
+			log.Printf("runner: activated %s on %s", f.Type, sc.Target)
+			if failureStarted.IsZero() {
+				failureStarted = time.Now()
+			}
+		} else {
+			req := control.DeactivateRequest{
+				RunID:       runID,
+				FailureType: f.Type,
 				Host:        targetHostForFailure(target, f),
-				Duration:    failureDuration,
-				Rate:        f.Rate,
-				Params:      fp,
-				SourceCIDRs: sourceCIDRs,
-			},
+			}
+			if err := targetClient.Deactivate(ctx, req); err != nil {
+				log.Printf("runner: deactivate %s: %v", f.Type, err)
+			}
+			logEvent(ctx, database, runID, sc.Target, "failure_end", f.Type, nil)
+			log.Printf("runner: deactivated %s", f.Type)
+			failureEnded = time.Now()
 		}
-		if err := targetClient.Activate(ctx, req); err != nil {
-			log.Printf("runner: activate %s: %v", f.Type, err)
-			resolutionReason = "adapter_error"
-			return runID, fmt.Errorf("runner: activate %s: %w", f.Type, err)
-		}
-		logEvent(ctx, database, runID, sc.Target, "failure_start", f.Type, fp)
-		log.Printf("runner: activated %s on %s", f.Type, sc.Target)
-	}
-
-	// Wait for scenario duration.
-	log.Printf("runner: failure active for %v", sc.Duration)
-	select {
-	case <-time.After(sc.Duration):
-	case <-ctx.Done():
-		resolutionReason = "aborted"
-		return runID, ctx.Err()
-	}
-	failureEnded := time.Now()
-
-	// Deactivate failures.
-	for _, f := range sc.Failures {
-		req := control.DeactivateRequest{
-			RunID:       runID,
-			FailureType: f.Type,
-			Host:        targetHostForFailure(target, f),
-		}
-		if err := targetClient.Deactivate(ctx, req); err != nil {
-			log.Printf("runner: deactivate %s: %v", f.Type, err)
-		}
-		logEvent(ctx, database, runID, sc.Target, "failure_end", f.Type, nil)
-		log.Printf("runner: deactivated %s", f.Type)
 	}
 
 	// Wait for grace period.
@@ -397,6 +419,42 @@ func targetHostForFailure(t fleet.Target, f scenario.Failure) string {
 		return t.Sites[0].Host
 	}
 	return ""
+}
+
+// failureEvent is one activate or deactivate that should fire at a specific
+// wall-clock time during a scenario run.
+type failureEvent struct {
+	at       time.Time
+	activate bool // true = activate, false = deactivate
+	failure  scenario.Failure
+}
+
+// scheduleFailureEvents builds a time-ordered list of activate/deactivate
+// events for a scenario's failures. Each failure contributes:
+//
+//	activate   at start + offset
+//	deactivate at start + offset + duration
+//
+// Stable sort by (time, activate-before-deactivate) so two events at the
+// same instant always activate first — keeps the registry in a sensible
+// state across simultaneous starts/ends.
+func scheduleFailureEvents(start time.Time, duration time.Duration, failures []scenario.Failure) []failureEvent {
+	events := make([]failureEvent, 0, 2*len(failures))
+	for _, f := range failures {
+		activateAt := start.Add(f.Offset)
+		deactivateAt := activateAt.Add(duration)
+		events = append(events,
+			failureEvent{at: activateAt, activate: true, failure: f},
+			failureEvent{at: deactivateAt, activate: false, failure: f},
+		)
+	}
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].at.Equal(events[j].at) {
+			return events[i].activate && !events[j].activate
+		}
+		return events[i].at.Before(events[j].at)
+	})
+	return events
 }
 
 func newRunID() string {
