@@ -77,7 +77,7 @@ For the full local POC including Jetmon and the bridge, see [`TESTING.md`](TESTI
 go test -race ./...
 ```
 
-Roughly sixty test cases across ten packages, including a corpus check that asserts every shipped scenario file parses cleanly and every documented config example loads without error. The DNS server and control plane are tested as units (the partial-read, latency-parallelism, and timing-attack regression tests are doing real work).
+Over a hundred and fifty test cases across fifteen packages, including a corpus check that asserts every shipped scenario file parses cleanly and every documented config example loads without error. The DNS server and control plane are tested as units (the partial-read, latency-parallelism, and timing-attack regression tests are doing real work). Live build-tagged smoke tests under each adapter (`internal/adapter/<name>/live_test.go`) exercise the full Provision/Retrieve/Deprovision contract against the real APIs; CI compiles them but never runs them, since they require credentials.
 
 ## Deployment
 

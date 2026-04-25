@@ -5,7 +5,7 @@ This guide gets you from zero to a running end-to-end benchmark against a monito
 ## Prerequisites
 
 - Docker and Docker Compose v2
-- Go 1.22+ (for local builds only; Docker handles compilation)
+- Go 1.26+ (for local builds only; Docker handles compilation)
 - A running monitoring service with an adapter configured in the harness
 
 ## 1. First-time Setup
@@ -117,6 +117,7 @@ SELECT * FROM derived_metrics WHERE run_id = '<run-id>';
 | Scenario | Failure | What it tests |
 |----------|---------|---------------|
 | `http-503.toml` | HTTP 503 status | Basic downtime detection |
+| `http-geo-503.toml` | HTTP 503 from a region's probe IPs only | Geo-scoped failure detection |
 | `tcp-refused.toml` | TCP connection refused | Network-layer reachability |
 | `http-timeout-ttfb.toml` | 35s TTFB stall | Timeout detection at connection |
 | `http-partial.toml` | Response truncated at 100 bytes | Incomplete response detection |

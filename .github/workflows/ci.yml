@@ -39,5 +39,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Vet (live build tag)
+        # Live tests gate on `//go:build live` and require real API
+        # credentials to run, so CI never executes them — but they still
+        # need to compile. This catches syntax/import drift that the
+        # default vet would skip.
+        run: go vet -tags live ./...
+
       - name: Test (with race detector)
         run: go test -race ./...
