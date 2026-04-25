@@ -120,3 +120,30 @@ uptime-bench's target fleet is currently passive — it responds to probes. Simu
 - Adapter support to provision a heartbeat monitor (endpoint URL, expected interval).
 
 This architectural extension should be designed when the first monitor service ships heartbeat support. The control API and scenario schema are designed to accommodate new failure types without breaking changes.
+
+---
+
+## Keyword-monitoring capability is dead-wired
+
+**Status:** Plumbing in place but not connected end-to-end. Real capability gap, not just polish.
+
+Found during a review pass on 2026-04-25. The pieces exist independently but never meet:
+
+- `adapter.Capabilities.SupportsKeyword` is set to `true` on Pingdom, UptimeRobot, Datadog, and Better Uptime; to `false` on `jetmon-v1`. Currently nothing in `internal/runner` reads either flag, so it has no effect.
+- `adapter.ProvisionConfig.Keyword` exists on the struct (`internal/adapter/adapter.go:91`) but the runner builds the config with only `CheckFrequency` (`internal/runner/runner.go:144`) — `Keyword` is never populated.
+- Each adapter's `Provision` ignores `config.Keyword`. Pingdom always creates a status (`type=http`) check; UptimeRobot uses `monitorTypeHTTP = 1` (a keyword check would be `type=2`); Datadog only adds a `statusCode` assertion; Better Uptime always uses `monitor_type = "status"`.
+- Scenario TOMLs already carry `keyword = "uptime-bench-canary"` for the keyword scenarios, and the runner forwards that string to the target binary's control plane (`internal/runner/runner.go:403`), which uses it to know what string to remove or inject when serving tampered content. So the target side is keyword-aware — the monitor side is not.
+
+Net effect today: any scenario with `monitors = ["pingdom" | "uptimerobot" | "datadog-synthetics" | "better-uptime"]` plus a content failure produces a status-only check that sees `200 OK` and reports nothing. The benchmark would record a false negative, but the failure is in the adapter, not the service.
+
+To close the gap:
+
+1. **Runner** — pass keyword from scenario into `ProvisionConfig`. The current scenario model carries `Keyword` per-failure; the simplest mapping is to use the first failure's `Keyword` (most scenarios have a single failure). Cleaner long-term: hoist `keyword` to scenario level since it's a property of the monitor configuration, not the failure.
+2. **Capability gating** — when the scenario contains a content failure, skip adapters where `Capabilities().SupportsKeyword == false` and emit the same `capability_mismatch` Unknown status the runner already does for `MinCheckFrequency` (`internal/runner/runner.go:127`). The pattern is already there.
+3. **Each keyword-supporting adapter** — branch on `config.Keyword != ""`:
+   - **Pingdom**: `newCheckRequest` should carry `shouldcontain` (the keyword to look for in the response body) when set. Pingdom v3.1 supports keyword matching on `type=http` checks via the `shouldcontain` / `shouldnotcontain` fields, so the type stays `"http"`.
+   - **UptimeRobot**: switch `type` from `1` (HTTP) to `2` (Keyword) and add `keyword_type` (`1` for "exists" / `2` for "not exists") and `keyword_value` to the form body.
+   - **Datadog**: append a `body` assertion (`{type:"body", operator:"contains", target:keyword}`) to the existing assertions list.
+   - **Better Uptime**: switch `monitor_type` from `"status"` to `"keyword"` and add `required_keyword`.
+
+Until all three steps land, the benchmark cannot accurately compare content-tampering detection across the four probe-based services. The `jetmon-v1` adapter (agent-based; `SupportsKeyword = false`) can already evaluate content scenarios, but not via the keyword path — it relies on the agent's own content rules.
