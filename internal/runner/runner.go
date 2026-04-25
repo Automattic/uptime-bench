@@ -23,6 +23,16 @@ import (
 	"github.com/Automattic/uptime-bench/internal/serviceconfig"
 )
 
+// recorder is the subset of *db.DB the runner uses. Defined here (not in
+// internal/db) so tests can inject a fake without depending on the real
+// MySQL driver. *db.DB satisfies it structurally.
+type recorder interface {
+	InsertRun(ctx context.Context, r db.RunRecord) error
+	CloseRun(ctx context.Context, runID string, endedAt time.Time, reason string) error
+	InsertGroundTruthEvent(ctx context.Context, e db.GroundTruthEvent) error
+	InsertMonitorReport(ctx context.Context, r db.MonitorReportRow) error
+}
+
 // Run executes a scenario end-to-end and returns the run ID.
 //
 //  1. Provision each adapter.
@@ -33,7 +43,12 @@ import (
 //  6. Retrieve results from each adapter; write monitor_reports.
 //  7. Deprovision all adapters (unconditionally).
 //  8. Close the run with a resolution_reason.
-func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database *db.DB, adapters []adapter.Adapter, svcCfg *serviceconfig.Config) (string, error) {
+//
+// Ground-truth event log writes are treated as fatal: if the harness can't
+// record a failure_start / failure_end, the run is aborted with
+// resolution_reason = "ground_truth_log_failure" because metrics are
+// recomputed from the log and a missed write silently corrupts the record.
+func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database recorder, adapters []adapter.Adapter, svcCfg *serviceconfig.Config) (string, error) {
 	runID := newRunID()
 	startedAt := time.Now()
 
@@ -76,16 +91,24 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		return "", fmt.Errorf("runner: insert run: %w", err)
 	}
 
-	logEvent(ctx, database, runID, sc.Target, "run_start", "", nil)
-
 	resolutionReason := "planned_completion"
 	defer func() {
-		logEvent(ctx, database, runID, sc.Target, "run_end", "", map[string]any{"reason": resolutionReason})
+		// run_end is fire-and-forget: we're already exiting. CloseRun is
+		// the canonical run-end record; if it fails too the operator
+		// sees both errors in the log.
+		if err := logEvent(ctx, database, runID, sc.Target, "run_end", "", map[string]any{"reason": resolutionReason}); err != nil {
+			log.Printf("runner: log run_end: %v", err)
+		}
 		if err := database.CloseRun(ctx, runID, time.Now(), resolutionReason); err != nil {
 			log.Printf("runner: close run: %v", err)
 		}
 		log.Printf("runner: run %s closed: %s", runID, resolutionReason)
 	}()
+
+	if err := logEvent(ctx, database, runID, sc.Target, "run_start", "", nil); err != nil {
+		resolutionReason = "ground_truth_log_failure"
+		return runID, err
+	}
 
 	// Determine effective call budget per adapter.
 	budgets := make(map[string]int, len(adapters))
@@ -195,7 +218,10 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 				resolutionReason = "adapter_error"
 				return runID, fmt.Errorf("runner: activate %s: %w", f.Type, err)
 			}
-			logEvent(ctx, database, runID, sc.Target, "failure_start", f.Type, fp)
+			if err := logEvent(ctx, database, runID, sc.Target, "failure_start", f.Type, fp); err != nil {
+				resolutionReason = "ground_truth_log_failure"
+				return runID, err
+			}
 			log.Printf("runner: activated %s on %s", f.Type, sc.Target)
 			if failureStarted.IsZero() {
 				failureStarted = time.Now()
@@ -209,7 +235,10 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			if err := targetClient.Deactivate(ctx, req); err != nil {
 				log.Printf("runner: deactivate %s: %v", f.Type, err)
 			}
-			logEvent(ctx, database, runID, sc.Target, "failure_end", f.Type, nil)
+			if err := logEvent(ctx, database, runID, sc.Target, "failure_end", f.Type, nil); err != nil {
+				resolutionReason = "ground_truth_log_failure"
+				return runID, err
+			}
 			log.Printf("runner: deactivated %s", f.Type)
 			failureEnded = time.Now()
 		}
@@ -280,17 +309,24 @@ func readFleetToken(fl *fleet.Config) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-func logEvent(ctx context.Context, database *db.DB, runID, targetID, eventType, failureType string, details any) {
-	if err := database.InsertGroundTruthEvent(ctx, db.GroundTruthEvent{
+// logEvent writes one ground-truth event row. Returns the underlying error
+// so the caller can decide whether to abort — for the runner, any DB
+// failure here is fatal because the event log is the canonical record
+// metrics are derived from.
+func logEvent(ctx context.Context, database recorder, runID, targetID, eventType, failureType string, details any) error {
+	err := database.InsertGroundTruthEvent(ctx, db.GroundTruthEvent{
 		RunID:       runID,
 		EventType:   eventType,
 		TargetID:    targetID,
 		FailureType: failureType,
 		OccurredAt:  time.Now(),
 		Details:     details,
-	}); err != nil {
+	})
+	if err != nil {
 		log.Printf("runner: log event %s: %v", eventType, err)
+		return fmt.Errorf("ground_truth_log_failure: %s: %w", eventType, err)
 	}
+	return nil
 }
 
 // logMonitorReport writes retrieve results to the database. The adapter is
@@ -299,20 +335,22 @@ func logEvent(ctx context.Context, database *db.DB, runID, targetID, eventType, 
 //
 // a may be nil only for Unknown-without-reports results — those rows have
 // no classification to normalize.
-func logMonitorReport(ctx context.Context, database *db.DB, runID string, a adapter.Adapter, result adapter.RetrieveResult) {
+func logMonitorReport(ctx context.Context, database recorder, runID string, a adapter.Adapter, result adapter.RetrieveResult) {
 	now := time.Now()
 	serviceID := ""
 	if a != nil {
 		serviceID = a.ServiceID()
 	}
 	if result.Status == adapter.RetrieveUnknown && len(result.Reports) == 0 {
-		database.InsertMonitorReport(ctx, db.MonitorReportRow{
+		if err := database.InsertMonitorReport(ctx, db.MonitorReportRow{
 			RunID:                 runID,
 			ServiceID:             serviceID,
 			RetrieveStatus:        string(result.Status),
 			RetrieveUnknownReason: result.Reason,
 			RetrievedAt:           now,
-		})
+		}); err != nil {
+			log.Printf("runner: insert monitor_report (unknown): %v", err)
+		}
 		return
 	}
 	for _, r := range result.Reports {
@@ -322,7 +360,7 @@ func logMonitorReport(ctx context.Context, database *db.DB, runID string, a adap
 			t := r.ReportedAt
 			reportedAt = &t
 		}
-		database.InsertMonitorReport(ctx, db.MonitorReportRow{
+		if err := database.InsertMonitorReport(ctx, db.MonitorReportRow{
 			RunID:                    runID,
 			ServiceID:                serviceID,
 			RetrieveStatus:           string(result.Status),
@@ -333,7 +371,9 @@ func logMonitorReport(ctx context.Context, database *db.DB, runID string, a adap
 			ReportedAt:               reportedAt,
 			RetrievedAt:              now,
 			Metadata:                 r.Metadata,
-		})
+		}); err != nil {
+			log.Printf("runner: insert monitor_report (%s/%s): %v", serviceID, r.EventType, err)
+		}
 	}
 }
 

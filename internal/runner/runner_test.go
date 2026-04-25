@@ -3,10 +3,12 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
+	"github.com/Automattic/uptime-bench/internal/db"
 	"github.com/Automattic/uptime-bench/internal/scenario"
 )
 
@@ -241,4 +243,95 @@ func TestScheduleFailureEvents_Empty(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("got %d events for empty input, want 0", len(events))
 	}
+}
+
+// ─── logEvent + recorder seam ───────────────────────────────────────────────
+
+// fakeRecorder is a recorder that records every call and can be configured
+// to fail any of the four methods on demand. Lets tests verify both that
+// the runner respects the database errors AND that it stops calling the
+// database after one fatal failure.
+type fakeRecorder struct {
+	insertRunErr            error
+	closeRunErr             error
+	insertEventErr          error  // applies to all InsertGroundTruthEvent calls
+	failEventOfType         string // if set, only events of this type fail
+	insertReportErr         error
+	groundTruthEventsLogged []string // event types in call order
+	monitorReportsLogged    int
+	closeRunReason          string
+}
+
+func (f *fakeRecorder) InsertRun(ctx context.Context, r db.RunRecord) error {
+	return f.insertRunErr
+}
+func (f *fakeRecorder) CloseRun(ctx context.Context, runID string, endedAt time.Time, reason string) error {
+	f.closeRunReason = reason
+	return f.closeRunErr
+}
+func (f *fakeRecorder) InsertGroundTruthEvent(ctx context.Context, e db.GroundTruthEvent) error {
+	f.groundTruthEventsLogged = append(f.groundTruthEventsLogged, e.EventType)
+	if f.failEventOfType != "" && e.EventType == f.failEventOfType {
+		return f.insertEventErr
+	}
+	if f.failEventOfType == "" && f.insertEventErr != nil {
+		return f.insertEventErr
+	}
+	return nil
+}
+func (f *fakeRecorder) InsertMonitorReport(ctx context.Context, r db.MonitorReportRow) error {
+	f.monitorReportsLogged++
+	return f.insertReportErr
+}
+
+// TestLogEvent_PropagatesDBError is the basic seam: the helper must surface
+// the underlying error so callers can decide whether to abort. The error
+// message must be tagged with "ground_truth_log_failure" because that's the
+// resolution_reason callers set on it.
+func TestLogEvent_PropagatesDBError(t *testing.T) {
+	rec := &fakeRecorder{insertEventErr: errors.New("connection lost")}
+	err := logEvent(context.Background(), rec, "run-1", "t", "failure_start", "http_status", nil)
+	if err == nil {
+		t.Fatal("logEvent returned nil despite DB error")
+	}
+	if !strings.Contains(err.Error(), "ground_truth_log_failure") {
+		t.Errorf("error %q should be tagged with ground_truth_log_failure", err)
+	}
+	if !strings.Contains(err.Error(), "failure_start") {
+		t.Errorf("error %q should mention the event type", err)
+	}
+}
+
+// TestLogEvent_HappyPath — no DB error means no Go error; the row was
+// recorded.
+func TestLogEvent_HappyPath(t *testing.T) {
+	rec := &fakeRecorder{}
+	if err := logEvent(context.Background(), rec, "run-1", "t", "run_start", "", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.groundTruthEventsLogged) != 1 {
+		t.Fatalf("got %d events logged, want 1", len(rec.groundTruthEventsLogged))
+	}
+	if rec.groundTruthEventsLogged[0] != "run_start" {
+		t.Fatalf("logged %q, want run_start", rec.groundTruthEventsLogged[0])
+	}
+}
+
+// TestLogMonitorReport_LogsErrorButContinues — monitor reports are
+// observations, not ground truth. A DB failure here is logged but does
+// not abort the run (the runner has no path to recover from a partial
+// observation set anyway). This test pins the contract so a future
+// refactor that escalates monitor-report errors to fatal is a deliberate
+// choice, not an accident.
+func TestLogMonitorReport_LogsErrorButContinues(t *testing.T) {
+	rec := &fakeRecorder{insertReportErr: errors.New("connection lost")}
+	a := &recordingAdapter{id: "svc"}
+	logMonitorReport(context.Background(), rec, "run-1", a, adapter.RetrieveResult{
+		Status: adapter.RetrieveUnknown,
+		Reason: "rate-limited",
+	})
+	if rec.monitorReportsLogged != 1 {
+		t.Fatalf("InsertMonitorReport called %d times, want 1", rec.monitorReportsLogged)
+	}
+	// No assertion on Go error: this function intentionally swallows.
 }
