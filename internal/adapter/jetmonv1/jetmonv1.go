@@ -250,9 +250,11 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 		}
 
 		meta := map[string]any{
-			"old_status": e.OldStatus,
 			"new_status": *e.NewStatus,
 			"source":     e.Source,
+		}
+		if e.OldStatus != nil {
+			meta["old_status"] = *e.OldStatus
 		}
 		if e.HTTPCode != nil {
 			meta["http_code"] = *e.HTTPCode
