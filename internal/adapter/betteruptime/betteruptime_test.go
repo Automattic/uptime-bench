@@ -239,8 +239,14 @@ func TestRetrieve_HappyPath_ResolvedIncident(t *testing.T) {
 	if c.method != http.MethodGet {
 		t.Errorf("method = %q, want GET", c.method)
 	}
-	if !strings.HasPrefix(c.path, "/monitors/42/incidents") {
-		t.Errorf("path = %q, want /monitors/42/incidents", c.path)
+	if c.path != "/incidents" {
+		t.Errorf("path = %q, want /incidents", c.path)
+	}
+	if !strings.Contains(c.query, "monitor_id=42") {
+		t.Errorf("query = %q, want monitor_id=42", c.query)
+	}
+	if !strings.Contains(c.query, "from=") || !strings.Contains(c.query, "to=") {
+		t.Errorf("query = %q, want from= and to=", c.query)
 	}
 }
 

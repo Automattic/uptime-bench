@@ -2,7 +2,7 @@
 
 This guide covers everything needed to stand up a working uptime-bench fleet: VPS requirements, domain configuration, provisioning, credential setup, and starting the service.
 
-> **Implementation status:** The target binary, DNS binary, harness, and five adapters — Jetmon 1 (`jetmon-v1`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), and Datadog Synthetics (`datadog-synthetics`) — are implemented. The `jetmon-v2` type is a stub blocked on the Jetmon 2 public REST API and will fail fast if enabled. UptimeRobot, Pingdom, and Datadog Synthetics have all been exercised against their live APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`; Better Uptime has the same scaffolding but has not yet been run end-to-end against the live service.
+> **Implementation status:** The target binary, DNS binary, harness, and five adapters — Jetmon 1 (`jetmon-v1`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), and Datadog Synthetics (`datadog-synthetics`) — are implemented. The `jetmon-v2` type is a stub blocked on the Jetmon 2 public REST API and will fail fast if enabled. All four probe-based adapters have been exercised against their live APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`.
 
 ---
 

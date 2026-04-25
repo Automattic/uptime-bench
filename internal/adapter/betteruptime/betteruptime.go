@@ -9,7 +9,8 @@
 //   - JSON requests and responses, all under /api/v2/
 //   - List endpoints wrap results in {"data": [...]} with each item having
 //     id, type, attributes — JSON:API style
-//   - Outage history via GET /monitors/{id}/incidents
+//   - Outage history via GET /incidents?monitor_id={id} (the flat endpoint;
+//     there is no nested /monitors/{id}/incidents route)
 //
 // services.toml:
 //
@@ -21,9 +22,10 @@
 //
 // `url` is optional; the default endpoint is https://uptime.betterstack.com/api/v2.
 //
-// Status: implemented against the public API documentation. The wire shapes
-// match the docs and are pinned by unit tests using httptest, but this code
-// has not been exercised against the live Better Uptime API.
+// Status: implemented against the public API documentation. The wire
+// shapes are pinned by unit tests using httptest, and a full
+// Provision/Retrieve/Deprovision cycle has been exercised against the
+// live Better Uptime API via the build-tagged smoke test in `live_test.go`.
 package betteruptime
 
 import (
@@ -189,7 +191,7 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 
 // ─── Retrieve ───────────────────────────────────────────────────────────────
 
-// incidentsResponse mirrors GET /monitors/{id}/incidents.
+// incidentsResponse mirrors GET /incidents?monitor_id={id}.
 type incidentsResponse struct {
 	Data   []incidentResource `json:"data"`
 	Errors []apiError         `json:"errors,omitempty"`
@@ -218,7 +220,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 		}, nil
 	}
 
-	path := fmt.Sprintf("/monitors/%s/incidents?from=%s&to=%s",
+	path := fmt.Sprintf("/incidents?monitor_id=%s&from=%s&to=%s",
 		handle.MonitorID,
 		window.FailureStarted.UTC().Format(time.RFC3339),
 		window.GracePeriodEnd.UTC().Format(time.RFC3339),

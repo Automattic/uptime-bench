@@ -28,7 +28,7 @@ A handful of the eleven shipped scenarios involve serving a fully-rendered ranso
 | [UptimeRobot](https://uptimerobot.com) | Probe-based | Implemented (`uptimerobot`) — live-tested against the public API |
 | [Pingdom](https://www.pingdom.com) | Probe-based | Implemented (`pingdom`) — live-tested against the public API |
 | [Datadog Synthetics](https://www.datadoghq.com/product/synthetic-monitoring/) | Probe-based | Implemented (`datadog-synthetics`) — live-tested against the public API |
-| [Better Uptime](https://betterstack.com/better-uptime) | Probe-based | Implemented (`better-uptime`) — wire-pinned by tests; live test scaffolded but not yet run |
+| [Better Uptime](https://betterstack.com/better-uptime) | Probe-based | Implemented (`better-uptime`) — live-tested against the public API |
 
 Adding a new adapter is a small, well-defined exercise — implement the [`adapter.Adapter`](internal/adapter/adapter.go) interface (five methods), drop a normalization table next to it, register the type in `cmd/harness/main.go`. See [`ADAPTER.md`](ADAPTER.md) for the contract.
 
