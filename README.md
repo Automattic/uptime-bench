@@ -27,7 +27,7 @@ A handful of the eleven shipped scenarios involve serving a fully-rendered ranso
 | [Jetmon 2](https://github.com/Automattic/jetmon) | Agent-based (WordPress/Jetpack) | Stub — blocked on Jetmon 2's public REST API |
 | [UptimeRobot](https://uptimerobot.com) | Probe-based | Implemented (`uptimerobot`) — wire-pinned by tests; not yet exercised against the live API |
 | [Pingdom](https://www.pingdom.com) | Probe-based | Implemented (`pingdom`) — wire-pinned by tests; not yet exercised against the live API |
-| [Datadog Synthetics](https://www.datadoghq.com/product/synthetic-monitoring/) | Probe-based | Not yet implemented |
+| [Datadog Synthetics](https://www.datadoghq.com/product/synthetic-monitoring/) | Probe-based | Implemented (`datadog-synthetics`) — wire-pinned by tests; not yet exercised against the live API |
 | [Better Uptime](https://betterstack.com/better-uptime) | Probe-based | Implemented (`better-uptime`) — wire-pinned by tests; not yet exercised against the live API |
 
 Adding a new adapter is a small, well-defined exercise — implement the [`adapter.Adapter`](internal/adapter/adapter.go) interface (five methods), drop a normalization table next to it, register the type in `cmd/harness/main.go`. See [`ADAPTER.md`](ADAPTER.md) for the contract.

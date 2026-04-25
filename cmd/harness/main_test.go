@@ -13,7 +13,7 @@ import (
 // a new adapter should require an entry here, and removing one should
 // fail the test loudly rather than silently change behavior.
 func TestRegistry_KnownTypes(t *testing.T) {
-	want := []string{"jetmon-v1", "jetmon-v2", "uptimerobot", "pingdom", "better-uptime"}
+	want := []string{"jetmon-v1", "jetmon-v2", "uptimerobot", "pingdom", "better-uptime", "datadog-synthetics"}
 	for _, typ := range want {
 		if _, ok := registry[typ]; !ok {
 			t.Errorf("registry missing factory for %q", typ)
@@ -174,6 +174,40 @@ func TestRegistry_BetterUptimeBuilds(t *testing.T) {
 		t.Fatal("factory returned nil")
 	}
 	if a.ServiceID() != "bu" {
+		t.Fatalf("ServiceID = %q", a.ServiceID())
+	}
+}
+
+func TestRegistry_DatadogRequiresBothKeys(t *testing.T) {
+	factory := registry["datadog-synthetics"]
+	cases := []map[string]string{
+		nil,
+		{"api_key": "ak"},                // missing app_key
+		{"app_key": "pk"},                // missing api_key
+		{"api_key": "", "app_key": "pk"}, // empty api_key
+	}
+	for _, auth := range cases {
+		_, err := factory("dd", "", auth)
+		if err == nil {
+			t.Errorf("auth=%v: expected error from datadog factory", auth)
+			continue
+		}
+		if !strings.Contains(err.Error(), "required") {
+			t.Errorf("auth=%v: err = %v, want one mentioning required", auth, err)
+		}
+	}
+}
+
+func TestRegistry_DatadogBuilds(t *testing.T) {
+	factory := registry["datadog-synthetics"]
+	a, err := factory("dd", "", map[string]string{"api_key": "ak", "app_key": "pk"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if a == nil {
+		t.Fatal("factory returned nil")
+	}
+	if a.ServiceID() != "dd" {
 		t.Fatalf("ServiceID = %q", a.ServiceID())
 	}
 }

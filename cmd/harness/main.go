@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
 	"github.com/Automattic/uptime-bench/internal/adapter/betteruptime"
+	"github.com/Automattic/uptime-bench/internal/adapter/datadog"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv1"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv2"
 	"github.com/Automattic/uptime-bench/internal/adapter/pingdom"
@@ -60,6 +61,14 @@ var registry = map[string]adapterFactory{
 			return nil, fmt.Errorf("better-uptime: auth.token is required")
 		}
 		return betteruptime.New(id, apiURL, token), nil
+	},
+	"datadog-synthetics": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
+		apiKey := auth["api_key"]
+		appKey := auth["app_key"]
+		if apiKey == "" || appKey == "" {
+			return nil, fmt.Errorf("datadog-synthetics: auth.api_key and auth.app_key are both required")
+		}
+		return datadog.New(id, apiURL, apiKey, appKey), nil
 	},
 }
 
