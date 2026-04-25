@@ -51,6 +51,35 @@ id = "x"
 	}
 }
 
+func TestParse_RejectsDuplicateID(t *testing.T) {
+	_, err := Parse([]byte(`
+[[services]]
+id   = "x"
+type = "jetmon-v1"
+
+[[services]]
+id   = "x"
+type = "pingdom"
+`))
+	if err == nil || !strings.Contains(err.Error(), "duplicate id") {
+		t.Fatalf("got err=%v, want one mentioning duplicate id", err)
+	}
+}
+
+func TestParse_RejectsMalformedCIDR(t *testing.T) {
+	_, err := Parse([]byte(`
+[[services]]
+id   = "p"
+type = "pingdom"
+
+[services.probe_ranges]
+us-east = ["1.2.3.0/24", "not-a-cidr"]
+`))
+	if err == nil || !strings.Contains(err.Error(), "invalid CIDR") {
+		t.Fatalf("got err=%v, want one mentioning invalid CIDR", err)
+	}
+}
+
 func TestParse_RoundTripsAuthAndProbeRanges(t *testing.T) {
 	in := `
 [[services]]

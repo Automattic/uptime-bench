@@ -5,6 +5,7 @@ package serviceconfig
 
 import (
 	"fmt"
+	"net"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -69,6 +70,7 @@ func Parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("services: parse: %w", err)
 	}
 	c := &Config{}
+	seen := make(map[string]int, len(raw.Services))
 	for i, s := range raw.Services {
 		if s.ID == "" {
 			return nil, fmt.Errorf("services: entry %d: id is required", i)
@@ -76,6 +78,22 @@ func Parse(data []byte) (*Config, error) {
 		if s.Type == "" {
 			return nil, fmt.Errorf("services: %q: type is required", s.ID)
 		}
+		if prev, dup := seen[s.ID]; dup {
+			return nil, fmt.Errorf("services: duplicate id %q at entries %d and %d — scenario monitor lookup is keyed by id, so duplicates silently shadow each other", s.ID, prev, i)
+		}
+		seen[s.ID] = i
+
+		// Probe ranges drive geographic failure injection. A malformed CIDR
+		// here means the corresponding region's failure silently doesn't
+		// match any source IP at runtime — fail at parse time instead.
+		for region, cidrs := range s.ProbeRanges {
+			for _, cidr := range cidrs {
+				if _, _, err := net.ParseCIDR(cidr); err != nil {
+					return nil, fmt.Errorf("services: %q: probe_ranges.%s: invalid CIDR %q: %w", s.ID, region, cidr, err)
+				}
+			}
+		}
+
 		c.Services = append(c.Services, Service{
 			ID:          s.ID,
 			Type:        s.Type,
