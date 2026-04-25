@@ -13,7 +13,7 @@ import (
 // a new adapter should require an entry here, and removing one should
 // fail the test loudly rather than silently change behavior.
 func TestRegistry_KnownTypes(t *testing.T) {
-	want := []string{"jetmon-v1", "jetmon-v2", "uptimerobot", "pingdom"}
+	want := []string{"jetmon-v1", "jetmon-v2", "uptimerobot", "pingdom", "better-uptime"}
 	for _, typ := range want {
 		if _, ok := registry[typ]; !ok {
 			t.Errorf("registry missing factory for %q", typ)
@@ -149,6 +149,31 @@ func TestRegistry_PingdomBuilds(t *testing.T) {
 		t.Fatal("factory returned nil")
 	}
 	if a.ServiceID() != "pd" {
+		t.Fatalf("ServiceID = %q", a.ServiceID())
+	}
+}
+
+func TestRegistry_BetterUptimeRequiresToken(t *testing.T) {
+	factory := registry["better-uptime"]
+	_, err := factory("bu", "", nil)
+	if err == nil {
+		t.Fatal("expected error from better-uptime factory with empty token")
+	}
+	if !strings.Contains(err.Error(), "token") {
+		t.Fatalf("err = %v, want one mentioning token", err)
+	}
+}
+
+func TestRegistry_BetterUptimeBuilds(t *testing.T) {
+	factory := registry["better-uptime"]
+	a, err := factory("bu", "", map[string]string{"token": "tok"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if a == nil {
+		t.Fatal("factory returned nil")
+	}
+	if a.ServiceID() != "bu" {
 		t.Fatalf("ServiceID = %q", a.ServiceID())
 	}
 }

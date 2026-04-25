@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
+	"github.com/Automattic/uptime-bench/internal/adapter/betteruptime"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv1"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv2"
 	"github.com/Automattic/uptime-bench/internal/adapter/pingdom"
@@ -52,6 +53,13 @@ var registry = map[string]adapterFactory{
 			return nil, fmt.Errorf("pingdom: auth.token is required")
 		}
 		return pingdom.New(id, apiURL, token), nil
+	},
+	"better-uptime": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
+		token := auth["token"]
+		if token == "" {
+			return nil, fmt.Errorf("better-uptime: auth.token is required")
+		}
+		return betteruptime.New(id, apiURL, token), nil
 	},
 }
 
