@@ -21,6 +21,7 @@ type recordingAdapter struct {
 
 func (a *recordingAdapter) ServiceID() string                  { return a.id }
 func (a *recordingAdapter) Capabilities() adapter.Capabilities { return adapter.Capabilities{} }
+func (a *recordingAdapter) Normalize(string) string            { return adapter.UnrecognizedClassification }
 func (a *recordingAdapter) Provision(ctx context.Context, _ adapter.Target, _ adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
 	return adapter.MonitorHandle{}, nil
 }
@@ -115,6 +116,7 @@ type slowDeprovisionAdapter struct {
 
 func (a *slowDeprovisionAdapter) ServiceID() string                  { return a.id }
 func (a *slowDeprovisionAdapter) Capabilities() adapter.Capabilities { return adapter.Capabilities{} }
+func (a *slowDeprovisionAdapter) Normalize(string) string            { return adapter.UnrecognizedClassification }
 func (a *slowDeprovisionAdapter) Provision(ctx context.Context, _ adapter.Target, _ adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
 	return adapter.MonitorHandle{}, nil
 }

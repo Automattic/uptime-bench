@@ -36,7 +36,30 @@ type Adapter interface {
 	// Deprovision removes the monitor from the service. Must be called even if
 	// Provision only partially completed or the scenario aborted midway.
 	Deprovision(ctx context.Context, handle MonitorHandle) error
+
+	// Normalize maps a raw service-specific classification label to
+	// uptime-bench's common vocabulary. Service-specific complexity
+	// belongs in the adapter (see CLAUDE.md), so each adapter owns its
+	// own mapping table.
+	//
+	// Normalized vocabulary:
+	//
+	//	"http_failure"    — non-2xx/3xx response or connection-level HTTP error
+	//	"dns_failure"     — DNS resolution failure of any kind
+	//	"tls_failure"     — TLS handshake or certificate error
+	//	"timeout"         — response timeout (any phase)
+	//	"content_failure" — body content check failed
+	//	"recovered"       — incident resolved
+	//	"unknown"         — service could not determine state (monitor-side)
+	//	"unrecognized"    — raw label unknown to this adapter; use UnrecognizedClassification
+	Normalize(raw string) string
 }
+
+// UnrecognizedClassification is the constant adapters return from Normalize
+// when a raw label has no entry in their mapping table. The benchmark
+// records the raw label alongside the normalized one so unrecognized
+// values can be added later without losing audit data.
+const UnrecognizedClassification = "unrecognized"
 
 // Capabilities describes what a monitoring service supports.
 type Capabilities struct {
@@ -129,59 +152,3 @@ const (
 	EventAlertResolved ReportEventType = "alert_resolved"
 	EventStatusChange  ReportEventType = "status_change"
 )
-
-// NormalizedClassification maps each service's raw incident labels to
-// uptime-bench's common vocabulary. "unrecognized" is stored when no
-// mapping exists — never silently dropped.
-//
-// Normalized vocabulary:
-//
-//	"http_failure"    — non-2xx/3xx response or connection-level HTTP error
-//	"dns_failure"     — DNS resolution failure of any kind
-//	"tls_failure"     — TLS handshake or certificate error
-//	"timeout"         — response timeout (any phase)
-//	"content_failure" — body content check failed
-//	"recovered"       — incident resolved
-//	"unknown"         — service could not determine state (monitor-side)
-//	"unrecognized"    — raw label not in this table
-var NormalizedClassification = map[string]map[string]string{
-	"jetmon-v1": {
-		"down":       "http_failure",
-		"seems_down": "http_failure",
-		"degraded":   "http_failure",
-		"up":         "recovered",
-		"unknown":    "unknown",
-	},
-	// "jetmon-v2" intentionally omitted until the Jetmon 2 public API lands
-	// and a real adapter replaces the stub in internal/adapter/jetmonv2.
-	"uptimerobot": {
-		"down":       "http_failure",
-		"up":         "recovered",
-		"seems_down": "http_failure",
-	},
-	"pingdom": {
-		"down":        "http_failure",
-		"up":          "recovered",
-		"unconfirmed": "unknown",
-	},
-	"datadog-synthetics": {
-		"Alert":     "http_failure",
-		"No Data":   "unknown",
-		"Recovered": "recovered",
-	},
-	"better-uptime": {
-		"down":   "http_failure",
-		"up":     "recovered",
-		"paused": "unknown",
-	},
-}
-
-// Normalize maps a raw service classification label to uptime-bench's vocabulary.
-func Normalize(serviceID, raw string) string {
-	if table, ok := NormalizedClassification[serviceID]; ok {
-		if normalized, ok := table[raw]; ok {
-			return normalized
-		}
-	}
-	return "unrecognized"
-}

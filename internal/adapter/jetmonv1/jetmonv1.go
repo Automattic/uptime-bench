@@ -31,11 +31,19 @@ import (
 	"github.com/Automattic/uptime-bench/internal/adapter"
 )
 
-// adapterType is the key used in adapter.NormalizedClassification.
-const adapterType = "jetmon-v1"
-
 // statusConfirmedDown is Jetmon's site_status value for a confirmed outage.
 const statusConfirmedDown = 2
+
+// classification maps Jetmon 1's raw site_status / report labels to
+// uptime-bench's normalized vocabulary. Lives next to the adapter so
+// service-specific knowledge stays out of the core (CLAUDE.md).
+var classification = map[string]string{
+	"down":       "http_failure",
+	"seems_down": "http_failure",
+	"degraded":   "http_failure",
+	"up":         "recovered",
+	"unknown":    "unknown",
+}
 
 // Adapter implements adapter.Adapter for Jetmon 1.
 type Adapter struct {
@@ -60,6 +68,14 @@ func New(id, apiURL, token string, writeMode bool) *Adapter {
 }
 
 func (a *Adapter) ServiceID() string { return a.id }
+
+// Normalize implements adapter.Adapter.Normalize.
+func (a *Adapter) Normalize(raw string) string {
+	if v, ok := classification[raw]; ok {
+		return v
+	}
+	return adapter.UnrecognizedClassification
+}
 
 func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
@@ -293,9 +309,8 @@ func monitorHandle(serviceID string, m monitorResponse) adapter.MonitorHandle {
 		ServiceID: serviceID,
 		MonitorID: strconv.FormatInt(m.BlogID, 10),
 		Fields: map[string]string{
-			"service_type": adapterType,
-			"blog_id":      strconv.FormatInt(m.BlogID, 10),
-			"monitor_url":  m.MonitorURL,
+			"blog_id":     strconv.FormatInt(m.BlogID, 10),
+			"monitor_url": m.MonitorURL,
 		},
 	}
 }

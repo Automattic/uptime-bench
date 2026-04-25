@@ -243,11 +243,12 @@ Skipped pairs are recorded in the run output with reason `"capability_mismatch"`
 
 ### Normalization
 
-After Retrieve, the harness maps each `RawClassification` to uptime-bench's common vocabulary. The normalization table is the single place that encodes each service's vocabulary. Both the raw and normalized labels are stored in the run output.
+After Retrieve, the harness asks each adapter to map its `RawClassification` labels to uptime-bench's common vocabulary. Each adapter owns its own mapping table — service-specific knowledge belongs in the adapter, not in the core (CLAUDE.md). Both the raw and normalized labels are stored in the run output.
 
 ```go
-// NormalizedClassification maps raw service labels to uptime-bench's vocabulary.
-// "unrecognized" is stored when no mapping exists — never silently dropped.
+// On the Adapter interface:
+//
+//   Normalize(raw string) string
 //
 // Normalized vocabulary:
 //   "http_failure"   — non-2xx/3xx response or connection-level HTTP error
@@ -257,46 +258,29 @@ After Retrieve, the harness maps each `RawClassification` to uptime-bench's comm
 //   "content_failure"— body content check failed (keyword, empty body, error page)
 //   "recovered"      — incident resolved
 //   "unknown"        — service could not determine state (monitor-side)
-//   "unrecognized"   — raw label not in this table; add an entry when seen
-var NormalizedClassification = map[string]map[string]string{
-    "pingdom": {
-        "down":         "http_failure",
-        "up":           "recovered",
-        "unconfirmed":  "unknown",
-    },
-    "uptimerobot": {
-        "down":         "http_failure",
-        "up":           "recovered",
-        "seems_down":   "http_failure",
-    },
-    "datadog-synthetics": {
-        "Alert":        "http_failure",
-        "No Data":      "unknown",
-        "Recovered":    "recovered",
-    },
-    "better-uptime": {
-        "down":         "http_failure",
-        "up":           "recovered",
-        "paused":       "unknown",
-    },
-    "jetmon-v1": {
-        "down":         "http_failure",
-        "seems_down":   "http_failure",
-        "degraded":     "http_failure",
-        "up":           "recovered",
-        "unknown":      "unknown",
-    },
+//   "unrecognized"   — raw label unknown to this adapter; return adapter.UnrecognizedClassification
+```
+
+Each adapter package keeps its own table next to the implementation, e.g. for jetmon-v1:
+
+```go
+var classification = map[string]string{
+    "down":       "http_failure",
+    "seems_down": "http_failure",
+    "degraded":   "http_failure",
+    "up":         "recovered",
+    "unknown":    "unknown",
 }
 
-func Normalize(serviceType, raw string) string {
-    if table, ok := NormalizedClassification[serviceType]; ok {
-        if normalized, ok := table[raw]; ok {
-            return normalized
-        }
+func (a *Adapter) Normalize(raw string) string {
+    if v, ok := classification[raw]; ok {
+        return v
     }
-    return "unrecognized"
+    return adapter.UnrecognizedClassification
 }
 ```
+
+When you implement a new adapter, define its mapping table in its own package and implement `Normalize` against it. The core `internal/adapter` package never grows a per-service branch.
 
 ### Unknown vs. false negative
 
@@ -318,7 +302,7 @@ The harness must distinguish these outcomes and never conflate them:
 - `Retrieve` must respect context cancellation promptly. When `ctx` is cancelled mid-poll, return whatever has been retrieved so far with `Status: RetrieveUnknown` and `Reason: ctx.Err().Error()`.
 - `MonitorHandle.Fields` values must be safe to serialize to strings. The harness persists handles between Provision and Retrieve; complex types do not survive.
 - `ServiceID()` must return the same value on every call. It must match the `id` field in `services.toml` and the IDs in scenario `monitors` lists.
-- `Provision` must store `"service_type"` in `MonitorHandle.Fields` set to the adapter's type string (e.g. `"jetmon-v1"`). The harness uses this for normalization — it must match a key in `NormalizedClassification`.
+- `Normalize(raw)` must map every label this adapter ever returns from `Retrieve` to a normalized vocabulary value, or to `adapter.UnrecognizedClassification` when no mapping exists. The harness records the raw label alongside the normalized one, so unrecognized labels are not silently dropped.
 
 ---
 
