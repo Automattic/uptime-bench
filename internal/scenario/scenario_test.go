@@ -1,0 +1,162 @@
+package scenario
+
+import (
+	"strings"
+	"testing"
+)
+
+// TestValidateFailureType_DefaultsApplied is a regression test for a bug where
+// validateFailureType took the Failure by value and silently discarded every
+// default it set. Each subtest parses a scenario that omits a defaultable field
+// and asserts the parsed Failure carries the expected default.
+func TestValidateFailureType_DefaultsApplied(t *testing.T) {
+	const header = `
+id              = "x"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "60s"
+`
+
+	cases := []struct {
+		name      string
+		failure   string
+		assertion func(t *testing.T, f Failure)
+	}{
+		{
+			name: "http_redirect chain default chain_length=15",
+			failure: `
+[[failures]]
+type    = "http_redirect"
+variant = "chain"
+`,
+			assertion: func(t *testing.T, f Failure) {
+				if f.ChainLength != 15 {
+					t.Fatalf("ChainLength: got %d, want 15", f.ChainLength)
+				}
+			},
+		},
+		{
+			name: "dns_ns_unavailable default mode=silent",
+			failure: `
+[[failures]]
+type = "dns_ns_unavailable"
+`,
+			assertion: func(t *testing.T, f Failure) {
+				if f.Mode != "silent" {
+					t.Fatalf("Mode: got %q, want %q", f.Mode, "silent")
+				}
+			},
+		},
+		{
+			name: "tls_expired default days_expired=1",
+			failure: `
+[[failures]]
+type = "tls_expired"
+`,
+			assertion: func(t *testing.T, f Failure) {
+				if f.DaysExpired != 1 {
+					t.Fatalf("DaysExpired: got %d, want 1", f.DaysExpired)
+				}
+			},
+		},
+		{
+			name: "tls_invalid default variant=self_signed",
+			failure: `
+[[failures]]
+type = "tls_invalid"
+`,
+			assertion: func(t *testing.T, f Failure) {
+				if f.Variant != "self_signed" {
+					t.Fatalf("Variant: got %q, want %q", f.Variant, "self_signed")
+				}
+			},
+		},
+		{
+			name: "tls_handshake default reason=version_mismatch",
+			failure: `
+[[failures]]
+type = "tls_handshake"
+`,
+			assertion: func(t *testing.T, f Failure) {
+				if f.Reason != "version_mismatch" {
+					t.Fatalf("Reason: got %q, want %q", f.Reason, "version_mismatch")
+				}
+			},
+		},
+		{
+			name: "tls_deprecated default variant=TLS11",
+			failure: `
+[[failures]]
+type = "tls_deprecated"
+`,
+			assertion: func(t *testing.T, f Failure) {
+				if f.Variant != "TLS11" {
+					t.Fatalf("Variant: got %q, want %q", f.Variant, "TLS11")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, err := Parse([]byte(header + tc.failure))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if len(sc.Failures) != 1 {
+				t.Fatalf("expected 1 failure, got %d", len(sc.Failures))
+			}
+			tc.assertion(t, sc.Failures[0])
+		})
+	}
+}
+
+// TestValidateFailureType_RejectsBadInput covers the existing validation
+// errors so the refactor doesn't accidentally weaken them.
+func TestValidateFailureType_RejectsBadInput(t *testing.T) {
+	const header = `
+id              = "x"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "60s"
+`
+
+	cases := []struct {
+		name       string
+		failure    string
+		wantSubstr string
+	}{
+		{"http_status bad code", `
+[[failures]]
+type        = "http_status"
+status_code = 999
+`, "status_code must be a valid HTTP status code"},
+		{"http_redirect bad variant", `
+[[failures]]
+type    = "http_redirect"
+variant = "bogus"
+`, "variant must be one of: loop, chain"},
+		{"unknown failure type", `
+[[failures]]
+type = "made_up"
+`, "unknown failure type"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(header + tc.failure))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantSubstr)
+			}
+		})
+	}
+}

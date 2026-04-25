@@ -1,6 +1,7 @@
 package control
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -31,9 +32,18 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) withAuth(next http.Handler) http.Handler {
+	expected := []byte(s.token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != s.token {
+		if !strings.HasPrefix(auth, "Bearer ") {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		got := []byte(strings.TrimPrefix(auth, "Bearer "))
+		// ConstantTimeCompare returns 0 if lengths differ or bytes differ.
+		// It runs in time independent of where the first differing byte is,
+		// which prevents timing-side-channel token recovery.
+		if subtle.ConstantTimeCompare(got, expected) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

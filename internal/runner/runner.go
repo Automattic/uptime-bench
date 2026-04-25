@@ -97,10 +97,6 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	}
 
 	// Provision adapters; skip those that fail capability checks.
-	type provisioned struct {
-		a      adapter.Adapter
-		handle adapter.MonitorHandle
-	}
 	var handles []provisioned
 	for _, a := range adapters {
 		caps := a.Capabilities()
@@ -133,14 +129,13 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	}
 
 	// Deprovision unconditionally on exit, even on abort.
+	// Uses a fresh context (see deprovisionAll) because the run's outer ctx
+	// may already be cancelled when this defer fires (e.g. SIGINT during
+	// the failure window). With the outer ctx, Deprovision calls would
+	// fail immediately with context.Canceled and leak monitors.
 	defer func() {
-		for _, p := range handles {
-			if err := p.a.Deprovision(ctx, p.handle); err != nil {
-				log.Printf("runner: deprovision %s: %v", p.a.ServiceID(), err)
-				if resolutionReason == "planned_completion" {
-					resolutionReason = "adapter_error"
-				}
-			}
+		if errs := deprovisionAll(handles); errs > 0 && resolutionReason == "planned_completion" {
+			resolutionReason = "adapter_error"
 		}
 	}()
 
@@ -173,7 +168,6 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		logEvent(ctx, database, runID, sc.Target, "failure_start", f.Type, fp)
 		log.Printf("runner: activated %s on %s", f.Type, sc.Target)
 	}
-	failureEnded := failureStarted
 
 	// Wait for scenario duration.
 	log.Printf("runner: failure active for %v", sc.Duration)
@@ -183,7 +177,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		resolutionReason = "aborted"
 		return runID, ctx.Err()
 	}
-	failureEnded = time.Now()
+	failureEnded := time.Now()
 
 	// Deactivate failures.
 	for _, f := range sc.Failures {
@@ -400,6 +394,40 @@ func targetHostForFailure(t fleet.Target, f scenario.Failure) string {
 
 func newRunID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// provisioned pairs an adapter with the handle returned by its Provision call.
+// Lives at package scope (not inside Run) so deprovisionAll can be tested
+// in isolation.
+type provisioned struct {
+	a      adapter.Adapter
+	handle adapter.MonitorHandle
+}
+
+// deprovisionTimeout bounds how long we'll wait for adapter cleanup. Each
+// adapter's HTTP DELETE is short, but a hung remote service must not block
+// fleet shutdown forever. It's a var (not const) so tests can shrink it.
+var deprovisionTimeout = 30 * time.Second
+
+// deprovisionAll tears down every monitor handle, returning the number of
+// errors encountered. It deliberately uses a fresh context derived from
+// context.Background() — the run's outer ctx is often already cancelled
+// when this runs (defer on abort path), and reusing it would make every
+// Deprovision call fail immediately with context.Canceled.
+func deprovisionAll(handles []provisioned) int {
+	if len(handles) == 0 {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deprovisionTimeout)
+	defer cancel()
+	errs := 0
+	for _, p := range handles {
+		if err := p.a.Deprovision(ctx, p.handle); err != nil {
+			log.Printf("runner: deprovision %s: %v", p.a.ServiceID(), err)
+			errs++
+		}
+	}
+	return errs
 }

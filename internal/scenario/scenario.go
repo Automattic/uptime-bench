@@ -77,16 +77,16 @@ type rawFailure struct {
 
 	Offset string `toml:"offset"`
 
-	StatusCode         int    `toml:"status_code"`
-	Phase              string `toml:"phase"`
-	Delay              string `toml:"delay"`
-	TruncateAfterBytes *int   `toml:"truncate_after_bytes"`
-	Variant            string `toml:"variant"`
-	ChainLength        int    `toml:"chain_length"`
-	Content            string `toml:"content"`
-	Keyword            string `toml:"keyword"`
-	AddedLatency       string `toml:"added_latency"`
-	Mode               string `toml:"mode"`
+	StatusCode         int      `toml:"status_code"`
+	Phase              string   `toml:"phase"`
+	Delay              string   `toml:"delay"`
+	TruncateAfterBytes *int     `toml:"truncate_after_bytes"`
+	Variant            string   `toml:"variant"`
+	ChainLength        int      `toml:"chain_length"`
+	Content            string   `toml:"content"`
+	Keyword            string   `toml:"keyword"`
+	AddedLatency       string   `toml:"added_latency"`
+	Mode               string   `toml:"mode"`
 	DaysExpired        int      `toml:"days_expired"`
 	DaysRemaining      int      `toml:"days_remaining"`
 	Reason             string   `toml:"reason"`
@@ -211,14 +211,17 @@ func validateFailure(i int, rf rawFailure) (Failure, error) {
 		f.AddedLatency = d
 	}
 
-	if err := validateFailureType(ctx, f); err != nil {
+	if err := validateFailureType(ctx, &f); err != nil {
 		return Failure{}, err
 	}
 
 	return f, nil
 }
 
-func validateFailureType(ctx string, f Failure) error {
+// validateFailureType checks per-type required fields and applies per-type
+// defaults. Takes *Failure so default writes (e.g. ChainLength = 15) are
+// observable to the caller.
+func validateFailureType(ctx string, f *Failure) error {
 	switch f.Type {
 	case "http_status":
 		if f.StatusCode < 100 || f.StatusCode > 599 {

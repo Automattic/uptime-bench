@@ -1,17 +1,21 @@
 package control
 
 import (
+	"log"
 	"math/rand"
 	"net"
 	"sync"
 	"time"
 )
 
-// activeFailure is a failure held in the registry with its expiry and optional RNG.
+// activeFailure is a failure held in the registry with its expiry, optional
+// RNG, and pre-parsed source CIDRs. CIDRs are parsed once at Set time so the
+// hot path in LookupForIP only does net.IPNet.Contains, not net.ParseCIDR.
 type activeFailure struct {
 	spec    FailureSpec
 	expires time.Time
 	rng     *rand.Rand // non-nil when Rate < 1.0; seeded per run for reproducibility
+	nets    []*net.IPNet
 }
 
 // FailureRegistry is a thread-safe in-memory store of active failures.
@@ -29,6 +33,10 @@ func NewRegistry() *FailureRegistry {
 // Set registers a failure. It overwrites any existing failure with the same key.
 // seed is the scenario run seed; a per-failure-type derivative is used so each
 // failure type has an independent random stream.
+//
+// SourceCIDRs are pre-parsed; entries that fail to parse are logged and
+// dropped. A failure with all-bad CIDRs is still stored but will never match
+// in LookupForIP.
 func (r *FailureRegistry) Set(spec FailureSpec, seed int64) {
 	af := activeFailure{
 		spec:    spec,
@@ -41,6 +49,14 @@ func (r *FailureRegistry) Set(spec FailureSpec, seed int64) {
 	if rate < 1.0 {
 		// Derive a per-failure-type seed so concurrent failures don't share a stream.
 		af.rng = rand.New(rand.NewSource(seed ^ strHash(spec.Type)))
+	}
+	for _, cidrStr := range spec.SourceCIDRs {
+		_, ipNet, err := net.ParseCIDR(cidrStr)
+		if err != nil {
+			log.Printf("control: registry: drop invalid CIDR %q on %s: %v", cidrStr, spec.Type, err)
+			continue
+		}
+		af.nets = append(af.nets, ipNet)
 	}
 	r.mu.Lock()
 	r.failures[failureKey(spec)] = af
@@ -108,6 +124,9 @@ func (r *FailureRegistry) Lookup(failureType, host, path string) (FailureSpec, b
 // LookupForIP returns the first active geo-restricted failure (one with
 // non-empty SourceCIDRs) whose CIDR list contains ip. Returns zero value
 // and false if no active geo failure covers the given IP.
+//
+// CIDRs are pre-parsed at Set time; this loop does no string parsing on
+// the hot path.
 func (r *FailureRegistry) LookupForIP(ip net.IP) (FailureSpec, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -118,14 +137,10 @@ func (r *FailureRegistry) LookupForIP(ip net.IP) (FailureSpec, bool) {
 			delete(r.failures, k)
 			continue
 		}
-		if len(af.spec.SourceCIDRs) == 0 {
+		if len(af.nets) == 0 {
 			continue
 		}
-		for _, cidrStr := range af.spec.SourceCIDRs {
-			_, ipNet, err := net.ParseCIDR(cidrStr)
-			if err != nil {
-				continue
-			}
+		for _, ipNet := range af.nets {
 			if ipNet.Contains(ip) {
 				if af.rng != nil && af.rng.Float64() >= af.spec.Rate {
 					return FailureSpec{}, false
