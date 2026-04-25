@@ -142,6 +142,9 @@ func TestProvision_RequestShape(t *testing.T) {
 	if got.Status != "live" {
 		t.Errorf("status = %q, want live", got.Status)
 	}
+	if got.Message == "" {
+		t.Error("message must be non-empty: Datadog rejects the create with 400 otherwise")
+	}
 	if got.Config.Request.URL != "http://bench-a.harmonic.party/" {
 		t.Errorf("config.request.url = %q", got.Config.Request.URL)
 	}

@@ -108,7 +108,8 @@ type newTestRequest struct {
 	Type      string      `json:"type"`    // "api"
 	Subtype   string      `json:"subtype"` // "http"
 	Name      string      `json:"name"`
-	Status    string      `json:"status"` // "live" to enable on creation
+	Message   string      `json:"message"` // required by API; alert notification body
+	Status    string      `json:"status"`  // "live" to enable on creation
 	Locations []string    `json:"locations"`
 	Config    testConfig  `json:"config"`
 	Options   testOptions `json:"options"`
@@ -169,10 +170,11 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	}
 
 	req := newTestRequest{
-		Type:      "api",
-		Subtype:   "http",
-		Name:      "uptime-bench: " + target.ID,
-		Status:    "live",
+		Type:    "api",
+		Subtype: "http",
+		Name:    "uptime-bench: " + target.ID,
+		Message: "uptime-bench synthetic test for " + target.ID + " failed.",
+		Status:  "live",
 		Locations: []string{"aws:us-east-1"}, // most accounts have this; operators on EU/etc may need to override via tags
 		Config: testConfig{
 			Request: testRequest{
