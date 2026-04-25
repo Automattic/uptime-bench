@@ -16,6 +16,16 @@ type DB struct {
 	db *sql.DB
 }
 
+// nullStr returns nil for empty strings, otherwise a pointer to s. Used to
+// pass NULL into MySQL columns where the empty string would be a distinct
+// (and incorrect) value.
+func nullStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // Open connects to MySQL using the given DSN.
 // DSN format: user:password@tcp(host:3306)/uptime_bench?parseTime=true
 func Open(dsn string) (*DB, error) {
@@ -139,12 +149,6 @@ func (d *DB) InsertMonitorReport(ctx context.Context, r MonitorReportRow) error 
 			return fmt.Errorf("db: InsertMonitorReport: marshal metadata: %w", err)
 		}
 	}
-	nullStr := func(s string) *string {
-		if s == "" {
-			return nil
-		}
-		return &s
-	}
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO monitor_reports
 		 (run_id, service_id, retrieve_status, retrieve_unknown_reason,
@@ -177,12 +181,6 @@ type DerivedMetricRow struct {
 // UpsertDerivedMetric inserts or replaces one derived_metrics row.
 // The UNIQUE KEY on (run_id, service_id, metric_name) makes this idempotent.
 func (d *DB) UpsertDerivedMetric(ctx context.Context, r DerivedMetricRow) error {
-	nullStr := func(s string) *string {
-		if s == "" {
-			return nil
-		}
-		return &s
-	}
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO derived_metrics
 		 (run_id, service_id, metric_name, metric_value, metric_text, computed_at)

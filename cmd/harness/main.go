@@ -40,10 +40,10 @@ var registry = map[string]adapterFactory{
 }
 
 func main() {
-	fleetPath    := flag.String("fleet",    "fleet.toml",    "path to fleet configuration file")
+	fleetPath := flag.String("fleet", "fleet.toml", "path to fleet configuration file")
 	servicesPath := flag.String("services", "services.toml", "path to services configuration file")
-	scenarioPath := flag.String("scenario", "",              "path to scenario TOML file to run")
-	dsnFlag      := flag.String("dsn",      "",              "MySQL DSN (overrides DB_DSN env var)")
+	scenarioPath := flag.String("scenario", "", "path to scenario TOML file to run")
+	dsnFlag := flag.String("dsn", "", "MySQL DSN (overrides DB_DSN env var)")
 	flag.Parse()
 
 	if *scenarioPath == "" {

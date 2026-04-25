@@ -92,9 +92,11 @@ func computeMetrics(sr *serviceData, windows []failureWindow) map[string]db.Deri
 		return out
 	}
 
-	// Check true/false positive and detection latency.
+	// Single pass over alerts: classify each one as in-window (true positive,
+	// candidate detection-latency sample) or out-of-window (false positive).
 	truePositive := false
 	falseNegative := true
+	falsePositive := false
 	var detectionLatency *float64
 
 	for _, alert := range sr.alerts {
@@ -115,23 +117,7 @@ func computeMetrics(sr *serviceData, windows []failureWindow) map[string]db.Deri
 		if inWindow {
 			truePositive = true
 			falseNegative = false
-		}
-	}
-
-	// Check for false positives (alerts outside any failure window).
-	falsePositive := false
-	for _, alert := range sr.alerts {
-		if alert.ReportedAt == nil {
-			continue
-		}
-		inWindow := false
-		for _, w := range windows {
-			if !alert.ReportedAt.Before(w.start) && !alert.ReportedAt.After(w.end) {
-				inWindow = true
-				break
-			}
-		}
-		if !inWindow {
+		} else {
 			falsePositive = true
 		}
 	}
