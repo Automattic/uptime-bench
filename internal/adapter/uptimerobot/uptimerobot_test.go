@@ -165,6 +165,70 @@ func TestProvision_RequestShape(t *testing.T) {
 	if handle.Fields["url"] != "http://bench-a.harmonic.party/" {
 		t.Errorf("handle.Fields[url] = %q", handle.Fields["url"])
 	}
+	// No keyword config -> no keyword fields set on the form.
+	if c.form.Get("keyword_value") != "" || c.form.Get("keyword_type") != "" {
+		t.Errorf("status check should not set keyword fields, got value=%q type=%q",
+			c.form.Get("keyword_value"), c.form.Get("keyword_type"))
+	}
+}
+
+// TestProvision_KeywordPresent: present-mode switches type to 2 (keyword)
+// and sets keyword_type=2 (alert when keyword not present).
+func TestProvision_KeywordPresent(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"stat":"ok","monitor":{"id":1,"status":1}}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "u123-XXX")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: 5 * time.Minute,
+			Keyword:        "uptime-bench-canary",
+			KeywordCheck:   adapter.KeywordCheckPresent,
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if c.form.Get("type") != "2" {
+		t.Errorf("type = %q, want 2 (keyword)", c.form.Get("type"))
+	}
+	if c.form.Get("keyword_value") != "uptime-bench-canary" {
+		t.Errorf("keyword_value = %q", c.form.Get("keyword_value"))
+	}
+	if c.form.Get("keyword_type") != "2" {
+		t.Errorf("keyword_type = %q, want 2 (alert when not exists; the 'present' canary case)",
+			c.form.Get("keyword_type"))
+	}
+}
+
+// TestProvision_KeywordAbsent: absent-mode keeps type=2 but flips
+// keyword_type to 1 (alert when keyword exists).
+func TestProvision_KeywordAbsent(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"stat":"ok","monitor":{"id":1,"status":1}}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "u123-XXX")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: 5 * time.Minute,
+			Keyword:        "HACKED",
+			KeywordCheck:   adapter.KeywordCheckAbsent,
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if c.form.Get("keyword_value") != "HACKED" {
+		t.Errorf("keyword_value = %q", c.form.Get("keyword_value"))
+	}
+	if c.form.Get("keyword_type") != "1" {
+		t.Errorf("keyword_type = %q, want 1 (alert when exists; the 'absent' injected case)",
+			c.form.Get("keyword_type"))
+	}
 }
 
 func TestProvision_APIErrorReturnsError(t *testing.T) {

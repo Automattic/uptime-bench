@@ -67,8 +67,18 @@ type Capabilities struct {
 	MinCheckFrequency time.Duration
 
 	// SupportsKeyword indicates whether the service can verify a keyword
-	// in the response body.
+	// in the response body. When true, the adapter must honour
+	// ProvisionConfig.Keyword in present-mode (alert when keyword is
+	// missing).
 	SupportsKeyword bool
+
+	// SupportsInvertedKeyword indicates whether the service can also
+	// verify *absence* of a keyword (KeywordCheck = "absent": alert when
+	// keyword is found). Distinct from SupportsKeyword because some
+	// services (e.g. Better Uptime's `monitor_type = "keyword"`) only
+	// expose the canary direction. When false, the runner gates
+	// absent-mode scenarios as a capability_mismatch.
+	SupportsInvertedKeyword bool
 
 	// SupportsAgentChecks indicates whether the service has an on-site agent
 	// capable of running reverse-check scenarios.
@@ -88,8 +98,31 @@ type Target struct {
 // ProvisionConfig carries the parameters the adapter uses to configure the monitor.
 type ProvisionConfig struct {
 	CheckFrequency time.Duration
-	Keyword        string
+
+	// Keyword and KeywordCheck request body-content monitoring. Empty
+	// Keyword disables keyword checking; the adapter falls back to a
+	// status-only monitor.
+	//
+	// KeywordCheck is one of:
+	//
+	//   - KeywordCheckPresent — alert when Keyword is missing from the
+	//     response body (the canary case).
+	//   - KeywordCheckAbsent — alert when Keyword is found in the
+	//     response body (the injected-bad-keyword case).
+	//
+	// The runner gates this against Capabilities.SupportsKeyword: if the
+	// adapter does not support keyword monitoring, the runner skips
+	// Provision and writes a capability_mismatch row instead of calling
+	// the adapter.
+	Keyword      string
+	KeywordCheck string
 }
+
+// KeywordCheck values for ProvisionConfig.KeywordCheck.
+const (
+	KeywordCheckPresent = "present"
+	KeywordCheckAbsent  = "absent"
+)
 
 // FrequencyError is returned by Provision when the service cannot meet the
 // requested check frequency.
@@ -122,10 +155,23 @@ type RunWindow struct {
 
 // RetrieveResult is returned by Retrieve.
 type RetrieveResult struct {
-	Status  RetrieveStatus
-	Reports []MonitorReport
-	Reason  string // populated when Status == RetrieveUnknown
+	Status     RetrieveStatus
+	Reports    []MonitorReport
+	Reason     string // free-form human-readable detail (any Status)
+	ReasonCode string // structured categorisation; see Reason*Code constants
 }
+
+// Reason codes that may appear on RetrieveResult.ReasonCode and on the
+// monitor_reports.reason_code column. Empty means "not categorised"
+// (typically a Known result, or an Unknown without a code attached).
+//
+// See EVENTS.md for the reporting rules. capability_mismatch is the
+// support-matrix code: the harness skipped Provision because the
+// scenario required a capability the adapter doesn't support; never
+// counted as a false negative.
+const (
+	ReasonCapabilityMismatch = "capability_mismatch"
+)
 
 // RetrieveStatus indicates whether the adapter could determine the service's state.
 type RetrieveStatus string

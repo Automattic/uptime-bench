@@ -160,3 +160,148 @@ type = "made_up"
 		})
 	}
 }
+
+// TestKeywordDefaults exercises applyKeywordDefaults: the rules that fill
+// in scenario.Keyword and scenario.KeywordCheck for content scenarios.
+func TestKeywordDefaults(t *testing.T) {
+	const header = `
+id              = "x"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "60s"
+`
+
+	cases := []struct {
+		name      string
+		body      string
+		wantKw    string
+		wantCheck string
+	}{
+		{
+			name: "defacement defaults to canary + present",
+			body: `
+[[failures]]
+type    = "http_body"
+content = "defacement"
+`,
+			wantKw:    CanaryKeyword,
+			wantCheck: "present",
+		},
+		{
+			name: "keyword_missing defaults to canary + present",
+			body: `
+[[failures]]
+type    = "http_body"
+content = "keyword_missing"
+`,
+			wantKw:    CanaryKeyword,
+			wantCheck: "present",
+		},
+		{
+			name: "explicit keyword overrides default",
+			body: `
+keyword = "Welcome"
+
+[[failures]]
+type    = "http_body"
+content = "ransomware"
+`,
+			wantKw:    "Welcome",
+			wantCheck: "present",
+		},
+		{
+			name: "keyword_injected with explicit keyword defaults check to absent",
+			body: `
+keyword = "HACKED"
+
+[[failures]]
+type    = "http_body"
+content = "keyword_injected"
+`,
+			wantKw:    "HACKED",
+			wantCheck: "absent",
+		},
+		{
+			name: "non-content scenario leaves keyword untouched",
+			body: `
+[[failures]]
+type        = "http_status"
+status_code = 503
+`,
+			wantKw:    "",
+			wantCheck: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, err := Parse([]byte(header + tc.body))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if sc.Keyword != tc.wantKw {
+				t.Errorf("Keyword = %q, want %q", sc.Keyword, tc.wantKw)
+			}
+			if sc.KeywordCheck != tc.wantCheck {
+				t.Errorf("KeywordCheck = %q, want %q", sc.KeywordCheck, tc.wantCheck)
+			}
+		})
+	}
+}
+
+// TestKeywordValidationErrors covers the cases where the keyword config is
+// malformed enough to reject the scenario at parse time.
+func TestKeywordValidationErrors(t *testing.T) {
+	const header = `
+id              = "x"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "60s"
+`
+
+	cases := []struct {
+		name       string
+		body       string
+		wantSubstr string
+	}{
+		{
+			name: "keyword_injected without explicit keyword is rejected",
+			body: `
+[[failures]]
+type    = "http_body"
+content = "keyword_injected"
+`,
+			wantSubstr: "keyword is required",
+		},
+		{
+			name: "invalid keyword_check value",
+			body: `
+keyword       = "k"
+keyword_check = "maybe"
+
+[[failures]]
+type    = "http_body"
+content = "defacement"
+`,
+			wantSubstr: "keyword_check must be one of",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(header + tc.body))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantSubstr)
+			}
+		})
+	}
+}

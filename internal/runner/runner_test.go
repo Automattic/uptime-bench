@@ -257,8 +257,9 @@ type fakeRecorder struct {
 	insertEventErr          error  // applies to all InsertGroundTruthEvent calls
 	failEventOfType         string // if set, only events of this type fail
 	insertReportErr         error
-	groundTruthEventsLogged []string // event types in call order
-	monitorReportsLogged    int
+	groundTruthEventsLogged []string              // event types in call order
+	monitorReportsLogged    int                   // count of InsertMonitorReport calls
+	monitorReportRows       []db.MonitorReportRow // captured rows for assertions
 	closeRunReason          string
 }
 
@@ -281,6 +282,7 @@ func (f *fakeRecorder) InsertGroundTruthEvent(ctx context.Context, e db.GroundTr
 }
 func (f *fakeRecorder) InsertMonitorReport(ctx context.Context, r db.MonitorReportRow) error {
 	f.monitorReportsLogged++
+	f.monitorReportRows = append(f.monitorReportRows, r)
 	return f.insertReportErr
 }
 
@@ -334,4 +336,32 @@ func TestLogMonitorReport_LogsErrorButContinues(t *testing.T) {
 		t.Fatalf("InsertMonitorReport called %d times, want 1", rec.monitorReportsLogged)
 	}
 	// No assertion on Go error: this function intentionally swallows.
+}
+
+// TestLogMonitorReport_PropagatesReasonCode pins the contract that
+// RetrieveResult.ReasonCode reaches the database row. Capability gating
+// depends on this — without it, support-matrix queries can't tell
+// "the adapter wasn't asked" apart from "the adapter couldn't reach
+// its API." See EVENTS.md for the reporting rules.
+func TestLogMonitorReport_PropagatesReasonCode(t *testing.T) {
+	rec := &fakeRecorder{}
+	a := &recordingAdapter{id: "svc"}
+	logMonitorReport(context.Background(), rec, "run-1", a, adapter.RetrieveResult{
+		Status:     adapter.RetrieveUnknown,
+		Reason:     "scenario requires keyword monitoring; SupportsKeyword = false",
+		ReasonCode: adapter.ReasonCapabilityMismatch,
+	})
+	if len(rec.monitorReportRows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rec.monitorReportRows))
+	}
+	row := rec.monitorReportRows[0]
+	if row.ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("row.ReasonCode = %q, want %q", row.ReasonCode, adapter.ReasonCapabilityMismatch)
+	}
+	if row.RetrieveStatus != "unknown" {
+		t.Errorf("row.RetrieveStatus = %q, want unknown", row.RetrieveStatus)
+	}
+	if !strings.Contains(row.RetrieveUnknownReason, "SupportsKeyword") {
+		t.Errorf("row.RetrieveUnknownReason = %q, should retain free-form detail", row.RetrieveUnknownReason)
+	}
 }

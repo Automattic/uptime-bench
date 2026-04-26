@@ -44,10 +44,12 @@ import (
 // DefaultAPIURL is used when services.toml omits `url`.
 const DefaultAPIURL = "https://api.uptimerobot.com/v2"
 
-// Monitor type 1 is HTTP(s); 2 is keyword check; we always use 1 here and
-// rely on adapter-level keyword scenarios where the harness's failure-
-// injection target serves the (mis-)content directly.
-const monitorTypeHTTP = 1
+// Monitor type 1 is HTTP(s); 2 is keyword check. Provision picks one or
+// the other based on whether ProvisionConfig.Keyword is set.
+const (
+	monitorTypeHTTP    = 1
+	monitorTypeKeyword = 2
+)
 
 // UptimeRobot status codes returned by getMonitors.status.
 const (
@@ -95,10 +97,11 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		// Free tier is 5 min; paid plans go down to 30s. 5 min is the safe
 		// default so a free-tier scenario doesn't fail capability check.
-		MinCheckFrequency:     5 * time.Minute,
-		SupportsKeyword:       true,
-		SupportsAgentChecks:   false,
-		DefaultMaxCallsPerRun: 50, // typical 10 req/min on free; budget for ~5 minutes of polling
+		MinCheckFrequency:       5 * time.Minute,
+		SupportsKeyword:         true,
+		SupportsInvertedKeyword: true, // keyword_type=1 (alert when present)
+		SupportsAgentChecks:     false,
+		DefaultMaxCallsPerRun:   50, // typical 10 req/min on free; budget for ~5 minutes of polling
 	}
 }
 
@@ -160,8 +163,28 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	form.Set("format", "json")
 	form.Set("friendly_name", "uptime-bench: "+target.ID)
 	form.Set("url", target.URL)
-	form.Set("type", strconv.Itoa(monitorTypeHTTP))
 	form.Set("interval", strconv.Itoa(intervalSeconds(config.CheckFrequency)))
+	if config.Keyword != "" {
+		// Keyword monitors are a distinct type. keyword_type encodes
+		// presence (1 = exists; alert when found) vs. absence (2 = not
+		// exists; alert when missing). We invert the project-level
+		// vocabulary because UptimeRobot's flag describes the *alert
+		// trigger condition*, not the healthy expectation.
+		form.Set("type", strconv.Itoa(monitorTypeKeyword))
+		form.Set("keyword_value", config.Keyword)
+		switch config.KeywordCheck {
+		case adapter.KeywordCheckPresent, "":
+			// Keyword expected present; alert when not present.
+			form.Set("keyword_type", "2")
+		case adapter.KeywordCheckAbsent:
+			// Keyword expected absent; alert when present.
+			form.Set("keyword_type", "1")
+		default:
+			return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: unsupported KeywordCheck %q", config.KeywordCheck)
+		}
+	} else {
+		form.Set("type", strconv.Itoa(monitorTypeHTTP))
+	}
 
 	var resp newMonitorResponse
 	if err := a.postJSON(ctx, "/newMonitor", form, &resp); err != nil {

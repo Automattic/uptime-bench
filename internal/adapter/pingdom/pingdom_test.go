@@ -213,6 +213,74 @@ func TestProvision_RequestShape(t *testing.T) {
 	if handle.Fields["path"] != "/" {
 		t.Errorf("handle.Fields[path] = %q", handle.Fields["path"])
 	}
+	// No keyword config -> neither shouldcontain nor shouldnotcontain set.
+	if got.ShouldContain != "" || got.ShouldNotContain != "" {
+		t.Errorf("status-only check should not set keyword fields, got contain=%q notcontain=%q",
+			got.ShouldContain, got.ShouldNotContain)
+	}
+}
+
+// TestProvision_KeywordPresent: present-mode populates shouldcontain.
+func TestProvision_KeywordPresent(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"check":{"id":1,"status":"unknown"}}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: time.Minute,
+			Keyword:        "uptime-bench-canary",
+			KeywordCheck:   adapter.KeywordCheckPresent,
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newCheckRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ShouldContain != "uptime-bench-canary" {
+		t.Errorf("ShouldContain = %q, want uptime-bench-canary", got.ShouldContain)
+	}
+	if got.ShouldNotContain != "" {
+		t.Errorf("ShouldNotContain should be empty in present-mode, got %q", got.ShouldNotContain)
+	}
+	if got.Type != "http" {
+		t.Errorf("type = %q, want http (Pingdom keeps http for keyword checks)", got.Type)
+	}
+}
+
+// TestProvision_KeywordAbsent: absent-mode populates shouldnotcontain.
+func TestProvision_KeywordAbsent(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"check":{"id":1,"status":"unknown"}}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: time.Minute,
+			Keyword:        "HACKED",
+			KeywordCheck:   adapter.KeywordCheckAbsent,
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newCheckRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ShouldNotContain != "HACKED" {
+		t.Errorf("ShouldNotContain = %q, want HACKED", got.ShouldNotContain)
+	}
+	if got.ShouldContain != "" {
+		t.Errorf("ShouldContain should be empty in absent-mode, got %q", got.ShouldContain)
+	}
 }
 
 func TestProvision_RejectsTargetWithoutHost(t *testing.T) {

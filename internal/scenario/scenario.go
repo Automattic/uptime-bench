@@ -20,6 +20,23 @@ type Scenario struct {
 	Duration       time.Duration
 	Seed           *int64
 	Failures       []Failure
+
+	// Keyword and KeywordCheck configure body-content checks on the
+	// monitor side. Populated only when at least one failure is an
+	// http_body content type. KeywordCheck takes "present" or "absent":
+	//
+	//   - "present" — monitor alerts when Keyword is missing from the
+	//     response body (the canary case: defacement, ransomware,
+	//     malicious_script, spam_links, keyword_missing).
+	//   - "absent" — monitor alerts when Keyword is found in the response
+	//     body (the injected-bad-keyword case: keyword_injected).
+	//
+	// Defaults applied during validation: Keyword falls back to the
+	// canary string for non-keyword_injected content failures;
+	// KeywordCheck falls back to "absent" if any failure is
+	// keyword_injected, else "present".
+	Keyword      string
+	KeywordCheck string
 }
 
 // Failure is one failure block from a scenario file.
@@ -39,7 +56,6 @@ type Failure struct {
 	Variant            string
 	ChainLength        int
 	Content            string
-	Keyword            string
 
 	// TCP failure fields — no type-specific fields for tcp_refused / tcp_timeout
 
@@ -70,6 +86,8 @@ type raw struct {
 	GracePeriod    string       `toml:"grace_period"`
 	Duration       string       `toml:"duration"`
 	Seed           *int64       `toml:"seed"`
+	Keyword        string       `toml:"keyword"`
+	KeywordCheck   string       `toml:"keyword_check"`
 	Failures       []rawFailure `toml:"failures"`
 }
 
@@ -86,7 +104,6 @@ type rawFailure struct {
 	Variant            string   `toml:"variant"`
 	ChainLength        int      `toml:"chain_length"`
 	Content            string   `toml:"content"`
-	Keyword            string   `toml:"keyword"`
 	AddedLatency       string   `toml:"added_latency"`
 	Mode               string   `toml:"mode"`
 	DaysExpired        int      `toml:"days_expired"`
@@ -144,6 +161,8 @@ func validate(r raw) (*Scenario, error) {
 		GracePeriod:    gracePeriod,
 		Duration:       duration,
 		Seed:           r.Seed,
+		Keyword:        r.Keyword,
+		KeywordCheck:   r.KeywordCheck,
 	}
 
 	for i, rf := range r.Failures {
@@ -154,7 +173,58 @@ func validate(r raw) (*Scenario, error) {
 		s.Failures = append(s.Failures, f)
 	}
 
+	if err := applyKeywordDefaults(s); err != nil {
+		return nil, err
+	}
+
 	return s, nil
+}
+
+// CanaryKeyword is the marker string present in healthy responses from
+// the target fleet. Content scenarios default to alerting on its absence.
+const CanaryKeyword = "uptime-bench-canary"
+
+// applyKeywordDefaults fills in scenario-level Keyword / KeywordCheck for
+// content scenarios. See Scenario.Keyword for the rules.
+func applyKeywordDefaults(s *Scenario) error {
+	hasContentFailure := false
+	hasInjected := false
+	for _, f := range s.Failures {
+		if f.Type != "http_body" {
+			continue
+		}
+		hasContentFailure = true
+		if f.Content == "keyword_injected" {
+			hasInjected = true
+		}
+	}
+	if !hasContentFailure {
+		// No content failure — keyword fields, if set, are irrelevant.
+		// Validate them anyway so typos surface early.
+		if s.KeywordCheck != "" && s.KeywordCheck != "present" && s.KeywordCheck != "absent" {
+			return fmt.Errorf("scenario: keyword_check must be one of: present, absent (got %q)", s.KeywordCheck)
+		}
+		return nil
+	}
+
+	if s.Keyword == "" {
+		if hasInjected {
+			return fmt.Errorf("scenario: keyword is required at scenario level when any failure is content = keyword_injected (it is the string being injected, which the monitor must check for)")
+		}
+		s.Keyword = CanaryKeyword
+	}
+
+	if s.KeywordCheck == "" {
+		if hasInjected {
+			s.KeywordCheck = "absent"
+		} else {
+			s.KeywordCheck = "present"
+		}
+	}
+	if s.KeywordCheck != "present" && s.KeywordCheck != "absent" {
+		return fmt.Errorf("scenario: keyword_check must be one of: present, absent (got %q)", s.KeywordCheck)
+	}
+	return nil
 }
 
 func validateFailure(i int, rf rawFailure) (Failure, error) {
@@ -190,7 +260,6 @@ func validateFailure(i int, rf rawFailure) (Failure, error) {
 		Variant:            rf.Variant,
 		ChainLength:        rf.ChainLength,
 		Content:            rf.Content,
-		Keyword:            rf.Keyword,
 		Mode:               rf.Mode,
 		DaysExpired:        rf.DaysExpired,
 		DaysRemaining:      rf.DaysRemaining,
@@ -265,9 +334,10 @@ func validateFailureType(ctx string, f *Failure) error {
 		default:
 			return fmt.Errorf("%s: content must be one of: empty, error_page, keyword_missing, keyword_injected, ransomware, defacement, malicious_script, spam_links", ctx)
 		}
-		if (f.Content == "keyword_missing" || f.Content == "keyword_injected") && f.Keyword == "" {
-			return fmt.Errorf("%s: keyword is required when content = %s", ctx, f.Content)
-		}
+		// Keyword is configured at scenario level (see Scenario.Keyword and
+		// applyKeywordDefaults), not per-failure. The post-validation
+		// keyword-defaults pass enforces that scenarios containing
+		// keyword_injected supply an explicit keyword.
 	case "tcp_refused", "tcp_timeout":
 		// no type-specific fields
 	case "dns_nxdomain", "dns_servfail", "dns_timeout", "dns_cname_nxdomain":

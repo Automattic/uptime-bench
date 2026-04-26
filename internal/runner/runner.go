@@ -127,8 +127,27 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		if sc.CheckFrequency < caps.MinCheckFrequency {
 			log.Printf("runner: skip %s: check_frequency %v < min %v", a.ServiceID(), sc.CheckFrequency, caps.MinCheckFrequency)
 			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
-				Status: adapter.RetrieveUnknown,
-				Reason: fmt.Sprintf("capability_mismatch: check_frequency %v < min %v", sc.CheckFrequency, caps.MinCheckFrequency),
+				Status:     adapter.RetrieveUnknown,
+				Reason:     fmt.Sprintf("check_frequency %v < min %v", sc.CheckFrequency, caps.MinCheckFrequency),
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
+		if sc.Keyword != "" && !caps.SupportsKeyword {
+			log.Printf("runner: skip %s: scenario requires keyword monitoring (not supported)", a.ServiceID())
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     "scenario requires keyword monitoring; adapter SupportsKeyword = false",
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
+		if sc.KeywordCheck == adapter.KeywordCheckAbsent && !caps.SupportsInvertedKeyword {
+			log.Printf("runner: skip %s: scenario requires inverted keyword check (not supported)", a.ServiceID())
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     "scenario requires keyword_check = absent; adapter SupportsInvertedKeyword = false",
+				ReasonCode: adapter.ReasonCapabilityMismatch,
 			})
 			continue
 		}
@@ -141,7 +160,11 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			targetURL = fmt.Sprintf("http://%s/", target.Sites[0].Host)
 		}
 		tgt := adapter.Target{ID: sc.Target, URL: targetURL}
-		cfg := adapter.ProvisionConfig{CheckFrequency: sc.CheckFrequency}
+		cfg := adapter.ProvisionConfig{
+			CheckFrequency: sc.CheckFrequency,
+			Keyword:        sc.Keyword,
+			KeywordCheck:   sc.KeywordCheck,
+		}
 		handle, err := a.Provision(ctx, tgt, cfg)
 		if err != nil {
 			log.Printf("runner: provision %s: %v", a.ServiceID(), err)
@@ -196,7 +219,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 
 		f := e.failure
 		if e.activate {
-			fp := failureParams(f)
+			fp := failureParams(sc, f)
 			sourceCIDRs := collectCIDRs(f.Regions, svcCfg)
 			if len(f.Regions) > 0 && len(sourceCIDRs) == 0 {
 				log.Printf("runner: warning: failure %s has regions %v but no matching probe_ranges found in services.toml", f.Type, f.Regions)
@@ -347,6 +370,7 @@ func logMonitorReport(ctx context.Context, database recorder, runID string, a ad
 			ServiceID:             serviceID,
 			RetrieveStatus:        string(result.Status),
 			RetrieveUnknownReason: result.Reason,
+			ReasonCode:            result.ReasonCode,
 			RetrievedAt:           now,
 		}); err != nil {
 			log.Printf("runner: insert monitor_report (unknown): %v", err)
@@ -365,6 +389,7 @@ func logMonitorReport(ctx context.Context, database recorder, runID string, a ad
 			ServiceID:                serviceID,
 			RetrieveStatus:           string(result.Status),
 			RetrieveUnknownReason:    result.Reason,
+			ReasonCode:               result.ReasonCode,
 			EventType:                string(r.EventType),
 			RawClassification:        r.RawClassification,
 			NormalizedClassification: normalized,
@@ -377,7 +402,7 @@ func logMonitorReport(ctx context.Context, database recorder, runID string, a ad
 	}
 }
 
-func failureParams(f scenario.Failure) map[string]any {
+func failureParams(sc *scenario.Scenario, f scenario.Failure) map[string]any {
 	p := map[string]any{"rate": f.Rate}
 	if f.StatusCode != 0 {
 		p["status_code"] = f.StatusCode
@@ -400,8 +425,12 @@ func failureParams(f scenario.Failure) map[string]any {
 	if f.Content != "" {
 		p["content"] = f.Content
 	}
-	if f.Keyword != "" {
-		p["keyword"] = f.Keyword
+	// Keyword lives at scenario level. Forward it to the target only for
+	// content failure types that actually use it (keyword_missing removes
+	// the keyword from the body; keyword_injected adds it).
+	if sc != nil && sc.Keyword != "" && f.Type == "http_body" &&
+		(f.Content == "keyword_missing" || f.Content == "keyword_injected") {
+		p["keyword"] = sc.Keyword
 	}
 	if f.AddedLatency != 0 {
 		p["added_latency"] = f.AddedLatency.String()

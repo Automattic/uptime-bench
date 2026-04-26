@@ -78,10 +78,11 @@ func (a *Adapter) ServiceID() string { return a.id }
 func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		// Pingdom's minimum resolution is 1 minute on most plans.
-		MinCheckFrequency:     time.Minute,
-		SupportsKeyword:       true,
-		SupportsAgentChecks:   false,
-		DefaultMaxCallsPerRun: 50, // typical 10-100 req/min limit; budget conservatively
+		MinCheckFrequency:       time.Minute,
+		SupportsKeyword:         true,
+		SupportsInvertedKeyword: true, // shouldnotcontain field
+		SupportsAgentChecks:     false,
+		DefaultMaxCallsPerRun:   50, // typical 10-100 req/min limit; budget conservatively
 	}
 }
 
@@ -99,12 +100,19 @@ func (a *Adapter) Normalize(raw string) string {
 // `host` must be the hostname only; the path goes in `url`. For the bench
 // scenarios we always use HTTP type with a path and a 5xx-failed status
 // rule so monitors report down on the failure-injection responses.
+//
+// `shouldcontain` and `shouldnotcontain` enable Pingdom's keyword check
+// on the HTTP body. Setting `shouldcontain` makes Pingdom alert when the
+// string is missing; `shouldnotcontain` alerts when the string is found.
+// Both stay on `type = "http"` — there is no separate "keyword" type.
 type newCheckRequest struct {
-	Name       string `json:"name"`
-	Host       string `json:"host"`
-	Type       string `json:"type"`
-	URL        string `json:"url,omitempty"`
-	Resolution int    `json:"resolution,omitempty"` // minutes
+	Name             string `json:"name"`
+	Host             string `json:"host"`
+	Type             string `json:"type"`
+	URL              string `json:"url,omitempty"`
+	Resolution       int    `json:"resolution,omitempty"` // minutes
+	ShouldContain    string `json:"shouldcontain,omitempty"`
+	ShouldNotContain string `json:"shouldnotcontain,omitempty"`
 }
 
 type checkEnvelope struct {
@@ -191,6 +199,16 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		Type:       "http",
 		URL:        path,
 		Resolution: resolutionMinutes(config.CheckFrequency),
+	}
+	if config.Keyword != "" {
+		switch config.KeywordCheck {
+		case adapter.KeywordCheckPresent, "":
+			req.ShouldContain = config.Keyword
+		case adapter.KeywordCheckAbsent:
+			req.ShouldNotContain = config.Keyword
+		default:
+			return adapter.MonitorHandle{}, fmt.Errorf("pingdom: unsupported KeywordCheck %q", config.KeywordCheck)
+		}
 	}
 
 	var resp checkEnvelope

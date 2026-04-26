@@ -85,10 +85,11 @@ func (a *Adapter) ServiceID() string { return a.id }
 func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		// Datadog Synthetics minimum is 30 seconds.
-		MinCheckFrequency:     30 * time.Second,
-		SupportsKeyword:       true,
-		SupportsAgentChecks:   false,
-		DefaultMaxCallsPerRun: 100, // generous; Datadog rate limits per endpoint
+		MinCheckFrequency:       30 * time.Second,
+		SupportsKeyword:         true,
+		SupportsInvertedKeyword: true, // body assertion with operator=doesNotContain
+		SupportsAgentChecks:     false,
+		DefaultMaxCallsPerRun:   100, // generous; Datadog rate limits per endpoint
 	}
 }
 
@@ -128,13 +129,20 @@ type testRequest struct {
 	URL    string `json:"url"`
 }
 
-// testAssertion: status code must equal the configured value (default 200).
-// Failure injection scenarios produce 5xx, which violates this assertion
-// and triggers Datadog's alert.
+// testAssertion describes one validation Datadog applies to the response.
+// We use it for two cases:
+//
+//   - Status-code check: Type=statusCode, Operator=is, Target=200 (int).
+//   - Body keyword check: Type=body, Operator=contains|doesNotContain,
+//     Target=<keyword> (string).
+//
+// Target is `any` because Datadog uses different concrete types per
+// assertion (int for statusCode, string for body); the JSON encoder
+// preserves both correctly.
 type testAssertion struct {
-	Type     string `json:"type"`     // "statusCode"
-	Operator string `json:"operator"` // "is"
-	Target   int    `json:"target"`   // 200
+	Type     string `json:"type"`
+	Operator string `json:"operator"`
+	Target   any    `json:"target"`
 }
 
 type testOptions struct {
@@ -171,6 +179,24 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		return adapter.MonitorHandle{}, fmt.Errorf("datadog: api_key and app_key are both required")
 	}
 
+	assertions := []testAssertion{
+		{Type: "statusCode", Operator: "is", Target: 200},
+	}
+	if config.Keyword != "" {
+		switch config.KeywordCheck {
+		case adapter.KeywordCheckPresent, "":
+			assertions = append(assertions, testAssertion{
+				Type: "body", Operator: "contains", Target: config.Keyword,
+			})
+		case adapter.KeywordCheckAbsent:
+			assertions = append(assertions, testAssertion{
+				Type: "body", Operator: "doesNotContain", Target: config.Keyword,
+			})
+		default:
+			return adapter.MonitorHandle{}, fmt.Errorf("datadog: unsupported KeywordCheck %q", config.KeywordCheck)
+		}
+	}
+
 	req := newTestRequest{
 		Type:      "api",
 		Subtype:   "http",
@@ -183,9 +209,7 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 				Method: "GET",
 				URL:    target.URL,
 			},
-			Assertions: []testAssertion{
-				{Type: "statusCode", Operator: "is", Target: 200},
-			},
+			Assertions: assertions,
 		},
 		Options: testOptions{
 			TickEvery: tickEverySeconds(config.CheckFrequency),

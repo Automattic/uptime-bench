@@ -158,6 +158,75 @@ func TestProvision_RequestShape(t *testing.T) {
 	if handle.MonitorID != "42" {
 		t.Errorf("handle.MonitorID = %q, want 42", handle.MonitorID)
 	}
+	if got.MonitorType != "status" {
+		t.Errorf("monitor_type = %q, want status (no keyword config)", got.MonitorType)
+	}
+	if got.RequiredKeyword != "" {
+		t.Errorf("required_keyword should be empty for status check, got %q", got.RequiredKeyword)
+	}
+}
+
+// TestProvision_KeywordPresent: present-mode flips monitor_type to
+// "keyword" and sets required_keyword.
+func TestProvision_KeywordPresent(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 201, `{"data":{"id":"1","type":"monitor","attributes":{}}}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: 3 * time.Minute,
+			Keyword:        "uptime-bench-canary",
+			KeywordCheck:   adapter.KeywordCheckPresent,
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newMonitorRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.MonitorType != "keyword" {
+		t.Errorf("monitor_type = %q, want keyword", got.MonitorType)
+	}
+	if got.RequiredKeyword != "uptime-bench-canary" {
+		t.Errorf("required_keyword = %q", got.RequiredKeyword)
+	}
+}
+
+// TestProvision_KeywordAbsentRejected: absent-mode is unsupported for
+// Better Uptime; the adapter must fail loudly instead of silently
+// provisioning a present-mode monitor.
+func TestProvision_KeywordAbsentRejected(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 201, `{"data":{"id":"1"}}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: 3 * time.Minute,
+			Keyword:        "HACKED",
+			KeywordCheck:   adapter.KeywordCheckAbsent,
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error for absent-mode (SupportsInvertedKeyword = false)")
+	}
+	if !strings.Contains(err.Error(), "absent") {
+		t.Errorf("err = %v, want one mentioning absent", err)
+	}
+}
+
+func TestProvision_CapabilitiesMarkInvertedUnsupported(t *testing.T) {
+	c := newTestAdapter("http://x", "tok").Capabilities()
+	if c.SupportsInvertedKeyword {
+		t.Error("SupportsInvertedKeyword should be false (Better Uptime keyword type only supports the canary direction)")
+	}
 }
 
 func TestProvision_APIErrorEnvelope(t *testing.T) {

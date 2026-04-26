@@ -21,6 +21,8 @@ All duration fields use Go's `time.ParseDuration` format: a number followed by a
 | `grace_period` | duration string | yes | — | Time allowed after failure injection ends for monitors to resolve the incident. |
 | `duration` | duration string | yes | — | How long failure injection is active. All `[[failures]]` blocks run for this duration. |
 | `seed` | integer | no | random | Random seed for reproducible injection. If omitted, the runner generates a seed and records it in the run output. Always specify for formal comparison runs. |
+| `keyword` | string | conditional | canary string | Scenario-level keyword used by both target and monitor for `http_body` content scenarios. Required when any failure is `content = "keyword_injected"` (no default — it is the bad string being injected). Defaults to `"uptime-bench-canary"` for other content variants. |
+| `keyword_check` | string | no | inferred | One of `"present"` or `"absent"`. `"present"` means the monitor alerts when `keyword` is missing from the body (the canary case). `"absent"` means the monitor alerts when `keyword` is found (the injected-bad-keyword case). Defaults to `"absent"` if any failure is `keyword_injected`, otherwise `"present"`. |
 
 ---
 
@@ -118,7 +120,8 @@ Returns a modified response body with a 200 OK status, simulating silent applica
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `content` | string | yes | — | Content variant. See variant table below. |
-| `keyword` | string | conditional | — | Interpretation depends on variant. Required for `"keyword_missing"` and `"keyword_injected"`. |
+
+`http_body` failures coordinate with the scenario-level `keyword` and `keyword_check` fields (see the top-level Scenario section). The target uses `keyword` to know what string to remove (`keyword_missing`) or inject (`keyword_injected`); the monitor uses `keyword` + `keyword_check` to know what body content to alert on. They are not separate per-failure fields.
 
 #### Content variants
 
@@ -126,24 +129,27 @@ Returns a modified response body with a 200 OK status, simulating silent applica
 |-----------------|-------------|---------------|
 | `"empty"` | Near-empty body (`<html></html>`), 200 OK. Simulates white-screen-of-death. | Keyword check, body-size threshold |
 | `"error_page"` | CMS database error page ("Error establishing a database connection"), 200 OK. | Keyword check, error-page pattern |
-| `"keyword_missing"` | Otherwise-normal page body with the expected keyword absent. Use `keyword` to specify which keyword. | Keyword check |
-| `"keyword_injected"` | Otherwise-normal page body with an unexpected keyword injected (e.g., `"HACKED"`, `"BTC"`, `"ENCRYPTED"`). Use `keyword` to specify which keyword is injected. | Keyword check for unexpected term |
+| `"keyword_missing"` | Otherwise-normal page body with the expected keyword absent. The scenario-level `keyword` names which string is removed; defaults to the canary string. | Keyword check |
+| `"keyword_injected"` | Otherwise-normal page body with an unexpected keyword injected (e.g., `"HACKED"`, `"BTC"`, `"ENCRYPTED"`). The scenario-level `keyword` names what is injected; required (no default). | Keyword check for unexpected term |
 | `"ransomware"` | Complete page replacement with a ransomware/extortion notice. Simulates a full site takeover by malware. | Keyword check, content diff, page-text analysis |
 | `"defacement"` | Complete page replacement with hacktivist defacement content. Simulates a compromised web server. | Keyword check, content diff |
 | `"malicious_script"` | Otherwise-normal page with an injected `<script>` tag pointing to an external malicious-looking domain. Simulates an XSS/supply-chain compromise. | Script-injection check, external resource check |
 | `"spam_links"` | Otherwise-normal page with hidden SEO spam links injected (gambling, pharmacy, etc.). Simulates a blackhat SEO compromise. | Keyword check, link-injection check |
 
 ```toml
+keyword       = "Welcome"
+keyword_check = "present"
+
 [[failures]]
 type    = "http_body"
 content = "keyword_missing"
-keyword = "Welcome"
 ```
 
 ```toml
 [[failures]]
 type    = "http_body"
 content = "ransomware"
+# keyword and keyword_check default to "uptime-bench-canary" / "present"
 ```
 
 ```toml
@@ -153,10 +159,12 @@ content = "malicious_script"
 ```
 
 ```toml
+keyword       = "HACKED"
+keyword_check = "absent"
+
 [[failures]]
 type    = "http_body"
 content = "keyword_injected"
-keyword = "HACKED"
 ```
 
 ---
@@ -381,7 +389,8 @@ variant = "TLS11"
 - `status_code` for `http_status` must be a valid three-digit HTTP status code.
 - `days_remaining` for `tls_expiring` must be a positive integer.
 - `chain_length` for `http_redirect` with `variant = "chain"` must exceed the monitor's max-redirect follow limit (typically > 10) to actually trigger the failure.
-- `keyword` is required when `http_body.content = "keyword_missing"` or `"keyword_injected"`.
+- Scenario-level `keyword` is required when any failure has `http_body.content = "keyword_injected"` (it is the string being injected). For other content variants, it defaults to the canary string.
+- `keyword_check` is one of `"present"` or `"absent"`; defaults to `"absent"` when any failure is `keyword_injected`, otherwise `"present"`.
 - `mode` for `dns_ns_unavailable` must be `"silent"` or `"servfail"`.
 - `variant` for `tls_deprecated` must be `"TLS10"` or `"TLS11"`. Defaults to `"TLS11"`.
 - `dns_ns_unavailable` requires the fleet to have at least two authoritative nameservers for the target domain. The runner rejects this failure type if the fleet registry does not satisfy this requirement.

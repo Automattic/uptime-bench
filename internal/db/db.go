@@ -130,7 +130,8 @@ type MonitorReportRow struct {
 	RunID                    string
 	ServiceID                string
 	RetrieveStatus           string // "known" or "unknown"
-	RetrieveUnknownReason    string // populated when unknown
+	RetrieveUnknownReason    string // free-form detail, populated when unknown
+	ReasonCode               string // structured code, e.g. "capability_mismatch"; see EVENTS.md
 	EventType                string // may be empty when unknown
 	RawClassification        string
 	NormalizedClassification string
@@ -151,12 +152,13 @@ func (d *DB) InsertMonitorReport(ctx context.Context, r MonitorReportRow) error 
 	}
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO monitor_reports
-		 (run_id, service_id, retrieve_status, retrieve_unknown_reason,
+		 (run_id, service_id, retrieve_status, retrieve_unknown_reason, reason_code,
 		  event_type, raw_classification, normalized_classification,
 		  reported_at, retrieved_at, metadata)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.ServiceID, r.RetrieveStatus,
 		nullStr(r.RetrieveUnknownReason),
+		nullStr(r.ReasonCode),
 		nullStr(r.EventType),
 		nullStr(r.RawClassification),
 		nullStr(r.NormalizedClassification),
@@ -225,6 +227,7 @@ func (d *DB) MonitorReportsForRun(ctx context.Context, runID string) ([]MonitorR
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT run_id, service_id, retrieve_status,
 		        COALESCE(retrieve_unknown_reason,''),
+		        COALESCE(reason_code,''),
 		        COALESCE(event_type,''), COALESCE(raw_classification,''),
 		        COALESCE(normalized_classification,''),
 		        reported_at, retrieved_at
@@ -241,7 +244,7 @@ func (d *DB) MonitorReportsForRun(ctx context.Context, runID string) ([]MonitorR
 		var r MonitorReportRow
 		if err := rows.Scan(
 			&r.RunID, &r.ServiceID, &r.RetrieveStatus,
-			&r.RetrieveUnknownReason, &r.EventType,
+			&r.RetrieveUnknownReason, &r.ReasonCode, &r.EventType,
 			&r.RawClassification, &r.NormalizedClassification,
 			&r.ReportedAt, &r.RetrievedAt,
 		); err != nil {

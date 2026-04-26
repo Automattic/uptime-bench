@@ -83,10 +83,17 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		// Better Uptime supports 30-second checks on paid plans; 3-minute on free.
 		// Use 3 minutes as a defensive default that doesn't exclude free-tier users.
-		MinCheckFrequency:     3 * time.Minute,
-		SupportsKeyword:       true,
-		SupportsAgentChecks:   false,
-		DefaultMaxCallsPerRun: 60, // 60 req/min documented limit
+		MinCheckFrequency: 3 * time.Minute,
+		SupportsKeyword:   true,
+		// Better Uptime's monitor_type = "keyword" alerts only on the
+		// canary direction (alert when keyword missing). There is no
+		// known built-in "alert when keyword is present" mode on the
+		// keyword type. Until verified live, leave this false; the
+		// runner will gate keyword_check = absent scenarios as a
+		// capability_mismatch.
+		SupportsInvertedKeyword: false,
+		SupportsAgentChecks:     false,
+		DefaultMaxCallsPerRun:   60, // 60 req/min documented limit
 	}
 }
 
@@ -100,14 +107,16 @@ func (a *Adapter) Normalize(raw string) string {
 
 // ─── Provision ──────────────────────────────────────────────────────────────
 
-// newMonitorRequest mirrors POST /monitors. We always use the "status" check
-// which validates the HTTP status code — failure injection scenarios produce
-// 5xx responses, which is what we want this monitor to alert on.
+// newMonitorRequest mirrors POST /monitors. We use "status" for HTTP
+// status checks (failure injection scenarios produce 5xx responses, which
+// is what this monitor alerts on) and "keyword" when keyword monitoring
+// is requested (alerts when required_keyword is missing from the body).
 type newMonitorRequest struct {
 	URL               string `json:"url"`
-	MonitorType       string `json:"monitor_type"` // "status" for HTTP status checks
+	MonitorType       string `json:"monitor_type"` // "status" or "keyword"
 	PronounceableName string `json:"pronounceable_name,omitempty"`
 	CheckFrequency    int    `json:"check_frequency,omitempty"` // seconds; min 30 on paid
+	RequiredKeyword   string `json:"required_keyword,omitempty"`
 }
 
 // monitorResource is the JSON:API-style envelope Better Uptime returns.
@@ -168,6 +177,16 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		MonitorType:       "status",
 		PronounceableName: "uptime-bench: " + target.ID,
 		CheckFrequency:    checkFrequencySeconds(config.CheckFrequency),
+	}
+	if config.Keyword != "" {
+		// SupportsInvertedKeyword = false, so the runner should already
+		// have gated absent-mode out. If it hasn't, fail loudly rather
+		// than silently provisioning a present-mode monitor.
+		if config.KeywordCheck == adapter.KeywordCheckAbsent {
+			return adapter.MonitorHandle{}, fmt.Errorf("better-uptime: KeywordCheck = absent is not supported (SupportsInvertedKeyword = false)")
+		}
+		req.MonitorType = "keyword"
+		req.RequiredKeyword = config.Keyword
 	}
 
 	var resp monitorResource

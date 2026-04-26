@@ -8,9 +8,11 @@ grace_period    = "180s"
 duration        = "300s"
 seed            = 2006
 
-# "HACKED" is injected into the page body. Monitors configured to alert on
-# unexpected terms in the response body should fire.
+# "HACKED" is injected into the page body. Monitors configured to alert
+# when an unexpected term appears in the response body should fire.
+keyword       = "HACKED"
+keyword_check = "absent"
+
 [[failures]]
 type    = "http_body"
 content = "keyword_injected"
-keyword = "HACKED"

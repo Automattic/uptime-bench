@@ -151,7 +151,11 @@ func TestProvision_RequestShape(t *testing.T) {
 	if got.Options.TickEvery != 60 {
 		t.Errorf("options.tick_every = %d, want 60", got.Options.TickEvery)
 	}
-	if len(got.Config.Assertions) != 1 || got.Config.Assertions[0].Target != 200 {
+	// Target is `any` because Datadog accepts an int for statusCode and
+	// a string for body assertions; JSON-decodes statusCode into float64.
+	if len(got.Config.Assertions) != 1 ||
+		got.Config.Assertions[0].Type != "statusCode" ||
+		got.Config.Assertions[0].Target != float64(200) {
 		t.Errorf("assertions = %+v, want one statusCode=200", got.Config.Assertions)
 	}
 	if len(got.Locations) == 0 {
@@ -160,6 +164,70 @@ func TestProvision_RequestShape(t *testing.T) {
 
 	if handle.MonitorID != "abc-def-ghi" {
 		t.Errorf("handle.MonitorID = %q", handle.MonitorID)
+	}
+}
+
+// TestProvision_KeywordPresent: present-mode appends a body assertion
+// with operator=contains in addition to the statusCode assertion.
+func TestProvision_KeywordPresent(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"public_id":"a-b-c"}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "AK", "PK")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: time.Minute,
+			Keyword:        "uptime-bench-canary",
+			KeywordCheck:   adapter.KeywordCheckPresent,
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newTestRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Config.Assertions) != 2 {
+		t.Fatalf("want 2 assertions (statusCode + body), got %d", len(got.Config.Assertions))
+	}
+	body := got.Config.Assertions[1]
+	if body.Type != "body" || body.Operator != "contains" || body.Target != "uptime-bench-canary" {
+		t.Errorf("body assertion = %+v, want type=body operator=contains target=uptime-bench-canary", body)
+	}
+}
+
+// TestProvision_KeywordAbsent: absent-mode appends a body assertion with
+// operator=doesNotContain.
+func TestProvision_KeywordAbsent(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"public_id":"a-b-c"}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "AK", "PK")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: time.Minute,
+			Keyword:        "HACKED",
+			KeywordCheck:   adapter.KeywordCheckAbsent,
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newTestRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Config.Assertions) != 2 {
+		t.Fatalf("want 2 assertions, got %d", len(got.Config.Assertions))
+	}
+	body := got.Config.Assertions[1]
+	if body.Type != "body" || body.Operator != "doesNotContain" || body.Target != "HACKED" {
+		t.Errorf("body assertion = %+v, want type=body operator=doesNotContain target=HACKED", body)
 	}
 }
 

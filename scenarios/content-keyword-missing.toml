@@ -10,7 +10,11 @@ seed            = 2005
 
 # Monitors configured to verify the presence of "uptime-bench-canary" should
 # alert. This keyword is present in all healthy responses from the target.
+# Defaults applied: keyword = "uptime-bench-canary", keyword_check = "present".
+# Listed here explicitly so a reader doesn't need to chase the validator.
+keyword       = "uptime-bench-canary"
+keyword_check = "present"
+
 [[failures]]
 type    = "http_body"
 content = "keyword_missing"
-keyword = "uptime-bench-canary"
