@@ -139,69 +139,9 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		budgets[a.ServiceID()] = limit
 	}
 
-	// Provision adapters; skip those that fail capability checks.
-	var handles []provisioned
-	for _, a := range adapters {
-		caps := a.Capabilities()
-		if sc.CheckFrequency < caps.MinCheckFrequency {
-			log.Printf("runner: skip %s: check_frequency %v < min %v", a.ServiceID(), sc.CheckFrequency, caps.MinCheckFrequency)
-			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
-				Status:     adapter.RetrieveUnknown,
-				Reason:     fmt.Sprintf("check_frequency %v < min %v", sc.CheckFrequency, caps.MinCheckFrequency),
-				ReasonCode: adapter.ReasonCapabilityMismatch,
-			})
-			continue
-		}
-		if sc.Keyword != "" && !caps.SupportsKeyword {
-			log.Printf("runner: skip %s: scenario requires keyword monitoring (not supported)", a.ServiceID())
-			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
-				Status:     adapter.RetrieveUnknown,
-				Reason:     "scenario requires keyword monitoring; adapter SupportsKeyword = false",
-				ReasonCode: adapter.ReasonCapabilityMismatch,
-			})
-			continue
-		}
-		if sc.KeywordCheck == adapter.KeywordCheckAbsent && !caps.SupportsInvertedKeyword {
-			log.Printf("runner: skip %s: scenario requires inverted keyword check (not supported)", a.ServiceID())
-			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
-				Status:     adapter.RetrieveUnknown,
-				Reason:     "scenario requires keyword_check = absent; adapter SupportsInvertedKeyword = false",
-				ReasonCode: adapter.ReasonCapabilityMismatch,
-			})
-			continue
-		}
-		if sc.Maintenance != nil && !caps.SupportsMaintenanceWindows {
-			log.Printf("runner: skip %s: scenario requires a maintenance window (not supported)", a.ServiceID())
-			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
-				Status:     adapter.RetrieveUnknown,
-				Reason:     "scenario requires a [maintenance] block; adapter SupportsMaintenanceWindows = false",
-				ReasonCode: adapter.ReasonCapabilityMismatch,
-			})
-			continue
-		}
-
-		// Use the first site's hostname as the monitor URL so adapters register
-		// against the domain name (e.g. http://bench.local/) rather than the
-		// infrastructure address. Monitoring services check by domain, not by IP.
-		targetURL := fmt.Sprintf("http://%s", target.Address)
-		if len(target.Sites) > 0 {
-			targetURL = fmt.Sprintf("http://%s/", target.Sites[0].Host)
-		}
-		tgt := adapter.Target{ID: sc.Target, URL: targetURL}
-		cfg := adapter.ProvisionConfig{
-			CheckFrequency: sc.CheckFrequency,
-			Keyword:        sc.Keyword,
-			KeywordCheck:   sc.KeywordCheck,
-		}
-		cfg.MaintenanceWindow = maintenanceWindowFor(sc, startedAt)
-		handle, err := a.Provision(ctx, tgt, cfg)
-		if err != nil {
-			log.Printf("runner: provision %s: %v", a.ServiceID(), err)
-			resolutionReason = "adapter_error"
-			continue
-		}
-		handles = append(handles, provisioned{a: a, handle: handle})
-		log.Printf("runner: provisioned %s (monitor %s)", a.ServiceID(), handle.MonitorID)
+	handles, provisionErr := provisionAdapters(ctx, sc, target, adapters, database, runID, startedAt)
+	if provisionErr {
+		resolutionReason = "adapter_error"
 	}
 
 	// Deprovision unconditionally on exit, even on abort.
@@ -453,6 +393,91 @@ func logMonitorReport(ctx context.Context, database recorder, runID string, a ad
 // block. A few seconds of drift between startedAt and the actual first
 // failure activation is acceptable because vendor maintenance APIs are
 // minute-grained.
+// provisionAdapters walks the adapter list, applies capability gates,
+// and provisions adapters that pass. Capability mismatches produce a
+// monitor_reports row with reason_code = "capability_mismatch" and skip
+// Provision; adapters whose Provision call returns an error contribute
+// to provisionErr but produce no row (the runner's existing behaviour).
+//
+// Extracted from Run() so the gate logic is unit-testable without
+// spinning up the full Run() machinery (target HTTP plane, control
+// token files, etc.). Run() consumes the (handles, provisionErr) pair
+// and translates provisionErr=true into resolution_reason="adapter_error".
+func provisionAdapters(
+	ctx context.Context,
+	sc *scenario.Scenario,
+	target fleet.Target,
+	adapters []adapter.Adapter,
+	database recorder,
+	runID string,
+	startedAt time.Time,
+) (handles []provisioned, provisionErr bool) {
+	for _, a := range adapters {
+		caps := a.Capabilities()
+		if sc.CheckFrequency < caps.MinCheckFrequency {
+			log.Printf("runner: skip %s: check_frequency %v < min %v", a.ServiceID(), sc.CheckFrequency, caps.MinCheckFrequency)
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     fmt.Sprintf("check_frequency %v < min %v", sc.CheckFrequency, caps.MinCheckFrequency),
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
+		if sc.Keyword != "" && !caps.SupportsKeyword {
+			log.Printf("runner: skip %s: scenario requires keyword monitoring (not supported)", a.ServiceID())
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     "scenario requires keyword monitoring; adapter SupportsKeyword = false",
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
+		if sc.KeywordCheck == adapter.KeywordCheckAbsent && !caps.SupportsInvertedKeyword {
+			log.Printf("runner: skip %s: scenario requires inverted keyword check (not supported)", a.ServiceID())
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     "scenario requires keyword_check = absent; adapter SupportsInvertedKeyword = false",
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
+		if sc.Maintenance != nil && !caps.SupportsMaintenanceWindows {
+			log.Printf("runner: skip %s: scenario requires a maintenance window (not supported)", a.ServiceID())
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     "scenario requires a [maintenance] block; adapter SupportsMaintenanceWindows = false",
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
+
+		// Use the first site's hostname as the monitor URL so adapters
+		// register against the domain name (e.g. http://bench.local/)
+		// rather than the infrastructure address. Monitoring services
+		// check by domain, not by IP.
+		targetURL := fmt.Sprintf("http://%s", target.Address)
+		if len(target.Sites) > 0 {
+			targetURL = fmt.Sprintf("http://%s/", target.Sites[0].Host)
+		}
+		tgt := adapter.Target{ID: sc.Target, URL: targetURL}
+		cfg := adapter.ProvisionConfig{
+			CheckFrequency: sc.CheckFrequency,
+			Keyword:        sc.Keyword,
+			KeywordCheck:   sc.KeywordCheck,
+		}
+		cfg.MaintenanceWindow = maintenanceWindowFor(sc, startedAt)
+		handle, err := a.Provision(ctx, tgt, cfg)
+		if err != nil {
+			log.Printf("runner: provision %s: %v", a.ServiceID(), err)
+			provisionErr = true
+			continue
+		}
+		handles = append(handles, provisioned{a: a, handle: handle})
+		log.Printf("runner: provisioned %s (monitor %s)", a.ServiceID(), handle.MonitorID)
+	}
+	return handles, provisionErr
+}
+
 func maintenanceWindowFor(sc *scenario.Scenario, startedAt time.Time) *adapter.MaintenanceWindow {
 	if sc == nil || sc.Maintenance == nil {
 		return nil

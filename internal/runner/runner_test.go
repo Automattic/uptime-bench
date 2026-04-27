@@ -9,6 +9,7 @@ import (
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
 	"github.com/Automattic/uptime-bench/internal/db"
+	"github.com/Automattic/uptime-bench/internal/fleet"
 	"github.com/Automattic/uptime-bench/internal/scenario"
 )
 
@@ -374,6 +375,301 @@ func TestEffectiveSeed_ExplicitZeroIsRespected(t *testing.T) {
 	startedAt := time.Date(2026, 4, 27, 12, 0, 0, 999, time.UTC)
 	if got := effectiveSeed(sc, startedAt); got != 0 {
 		t.Errorf("effectiveSeed = %d, want 0 (explicit zero, not the wall-clock fallback)", got)
+	}
+}
+
+// ─── provisionAdapters: capability gates ─────────────────────────────────────
+//
+// These tests pin the runner's capability-gating behaviour: when a
+// scenario requires a feature an adapter doesn't support, the runner
+// must record a `monitor_reports` row tagged with reason_code =
+// "capability_mismatch" and skip that adapter's Provision call entirely.
+// The wire shape was already tested via logMonitorReport's reason_code
+// round-trip; these tests close the loop by exercising the gate logic
+// itself.
+
+// gateTestAdapter is a configurable Adapter used to drive the gate
+// tests. Each test sets the capabilities the adapter claims and the
+// optional Provision error, then inspects whether Provision was called
+// and what config it received.
+type gateTestAdapter struct {
+	id            string
+	caps          adapter.Capabilities
+	provisionedAs *adapter.ProvisionConfig // captures call; nil if Provision wasn't called
+	provisionErr  error                    // returned from Provision when non-nil
+}
+
+func (a *gateTestAdapter) ServiceID() string                  { return a.id }
+func (a *gateTestAdapter) Capabilities() adapter.Capabilities { return a.caps }
+func (a *gateTestAdapter) Normalize(string) string            { return adapter.UnrecognizedClassification }
+func (a *gateTestAdapter) Retrieve(context.Context, adapter.MonitorHandle, adapter.RunWindow) (adapter.RetrieveResult, error) {
+	return adapter.RetrieveResult{}, nil
+}
+func (a *gateTestAdapter) Deprovision(context.Context, adapter.MonitorHandle) error {
+	return nil
+}
+func (a *gateTestAdapter) Provision(_ context.Context, _ adapter.Target, c adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
+	cfg := c
+	a.provisionedAs = &cfg
+	if a.provisionErr != nil {
+		return adapter.MonitorHandle{}, a.provisionErr
+	}
+	return adapter.MonitorHandle{ServiceID: a.id, MonitorID: "fake-" + a.id}, nil
+}
+
+// gateTestTarget returns a fleet.Target sufficient for provisionAdapters
+// to construct a target URL. The adapter never connects to it (Provision
+// is mocked), so the address can be anything that round-trips through
+// fmt.Sprintf("http://%s/", host).
+func gateTestTarget() fleet.Target {
+	return fleet.Target{
+		ID:      "bench",
+		Address: "192.0.2.1",
+		Sites:   []fleet.Site{{ID: "bench-a", Host: "bench-a.example"}},
+	}
+}
+
+// TestProvisionAdapters_MinCheckFrequencyGate — adapter requires
+// MinCheckFrequency = 5m; scenario asks for 30s. Adapter should not be
+// provisioned; one capability_mismatch row should be written.
+func TestProvisionAdapters_MinCheckFrequencyGate(t *testing.T) {
+	a := &gateTestAdapter{
+		id: "svc",
+		caps: adapter.Capabilities{
+			MinCheckFrequency: 5 * time.Minute,
+		},
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{Target: "bench", CheckFrequency: 30 * time.Second}
+
+	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+
+	if provisionErr {
+		t.Errorf("provisionErr = true, want false (gate skip is not an adapter error)")
+	}
+	if len(handles) != 0 {
+		t.Errorf("handles = %d, want 0 (adapter was gated)", len(handles))
+	}
+	if a.provisionedAs != nil {
+		t.Errorf("Provision was called despite gate; got config %+v", a.provisionedAs)
+	}
+	if len(rec.monitorReportRows) != 1 {
+		t.Fatalf("expected 1 capability_mismatch row, got %d", len(rec.monitorReportRows))
+	}
+	row := rec.monitorReportRows[0]
+	if row.ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("row.ReasonCode = %q, want %q", row.ReasonCode, adapter.ReasonCapabilityMismatch)
+	}
+	if !strings.Contains(row.RetrieveUnknownReason, "check_frequency") {
+		t.Errorf("row.RetrieveUnknownReason = %q, should mention check_frequency", row.RetrieveUnknownReason)
+	}
+}
+
+// TestProvisionAdapters_KeywordGate — adapter SupportsKeyword=false,
+// scenario sets a keyword. Skip + capability_mismatch row.
+func TestProvisionAdapters_KeywordGate(t *testing.T) {
+	a := &gateTestAdapter{
+		id:   "svc",
+		caps: adapter.Capabilities{SupportsKeyword: false},
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{Target: "bench", Keyword: "uptime-bench-canary", KeywordCheck: "present"}
+
+	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+
+	if a.provisionedAs != nil {
+		t.Errorf("Provision should be skipped when keyword required and SupportsKeyword=false")
+	}
+	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("expected one capability_mismatch row, got %+v", rec.monitorReportRows)
+	}
+	if !strings.Contains(rec.monitorReportRows[0].RetrieveUnknownReason, "SupportsKeyword") {
+		t.Errorf("Reason should mention SupportsKeyword, got %q", rec.monitorReportRows[0].RetrieveUnknownReason)
+	}
+}
+
+// TestProvisionAdapters_InvertedKeywordGate — adapter SupportsKeyword=true
+// but SupportsInvertedKeyword=false; scenario uses keyword_check=absent.
+// Skip + capability_mismatch.
+func TestProvisionAdapters_InvertedKeywordGate(t *testing.T) {
+	a := &gateTestAdapter{
+		id: "svc",
+		caps: adapter.Capabilities{
+			SupportsKeyword:         true,
+			SupportsInvertedKeyword: false,
+		},
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{Target: "bench", Keyword: "HACKED", KeywordCheck: adapter.KeywordCheckAbsent}
+
+	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+
+	if a.provisionedAs != nil {
+		t.Error("Provision should be skipped when keyword_check=absent and SupportsInvertedKeyword=false")
+	}
+	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("expected one capability_mismatch row, got %+v", rec.monitorReportRows)
+	}
+	if !strings.Contains(rec.monitorReportRows[0].RetrieveUnknownReason, "SupportsInvertedKeyword") {
+		t.Errorf("Reason should mention SupportsInvertedKeyword, got %q", rec.monitorReportRows[0].RetrieveUnknownReason)
+	}
+}
+
+// TestProvisionAdapters_MaintenanceWindowGate — adapter
+// SupportsMaintenanceWindows=false; scenario has [maintenance]. Skip +
+// capability_mismatch.
+func TestProvisionAdapters_MaintenanceWindowGate(t *testing.T) {
+	a := &gateTestAdapter{
+		id:   "svc",
+		caps: adapter.Capabilities{SupportsMaintenanceWindows: false},
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{
+		Target:      "bench",
+		Maintenance: &scenario.Maintenance{StartOffset: 0, Duration: 5 * time.Minute},
+	}
+
+	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+
+	if a.provisionedAs != nil {
+		t.Error("Provision should be skipped when [maintenance] requested and SupportsMaintenanceWindows=false")
+	}
+	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("expected one capability_mismatch row, got %+v", rec.monitorReportRows)
+	}
+	if !strings.Contains(rec.monitorReportRows[0].RetrieveUnknownReason, "SupportsMaintenanceWindows") {
+		t.Errorf("Reason should mention SupportsMaintenanceWindows, got %q", rec.monitorReportRows[0].RetrieveUnknownReason)
+	}
+}
+
+// TestProvisionAdapters_HappyPath — adapter has every capability the
+// scenario requires; Provision is called with a fully-populated
+// ProvisionConfig and the handle is included in the return value.
+func TestProvisionAdapters_HappyPath(t *testing.T) {
+	a := &gateTestAdapter{
+		id: "svc",
+		caps: adapter.Capabilities{
+			MinCheckFrequency:          time.Minute,
+			SupportsKeyword:            true,
+			SupportsInvertedKeyword:    true,
+			SupportsMaintenanceWindows: true,
+		},
+	}
+	rec := &fakeRecorder{}
+	startedAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	sc := &scenario.Scenario{
+		Target:         "bench",
+		CheckFrequency: time.Minute,
+		Keyword:        "uptime-bench-canary",
+		KeywordCheck:   adapter.KeywordCheckPresent,
+		Maintenance:    &scenario.Maintenance{StartOffset: 0, Duration: 5 * time.Minute},
+	}
+
+	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+		[]adapter.Adapter{a}, rec, "run-1", startedAt)
+
+	if provisionErr {
+		t.Errorf("provisionErr = true, want false")
+	}
+	if len(handles) != 1 || handles[0].handle.MonitorID != "fake-svc" {
+		t.Errorf("handles = %+v, want one entry from svc", handles)
+	}
+	if a.provisionedAs == nil {
+		t.Fatal("Provision was not called despite all gates passing")
+	}
+	if a.provisionedAs.Keyword != "uptime-bench-canary" {
+		t.Errorf("ProvisionConfig.Keyword = %q", a.provisionedAs.Keyword)
+	}
+	if a.provisionedAs.MaintenanceWindow == nil {
+		t.Errorf("ProvisionConfig.MaintenanceWindow should be set when scenario.Maintenance != nil")
+	}
+	if len(rec.monitorReportRows) != 0 {
+		t.Errorf("happy path should produce no monitor_reports rows yet (those come from Retrieve), got %d", len(rec.monitorReportRows))
+	}
+}
+
+// TestProvisionAdapters_ProvisionErrorSetsFlag — adapter passes all
+// gates but Provision returns a Go error. Should set provisionErr=true,
+// produce no handle, and write no capability_mismatch row (the adapter
+// was tried; it just failed mid-call).
+func TestProvisionAdapters_ProvisionErrorSetsFlag(t *testing.T) {
+	a := &gateTestAdapter{
+		id:           "svc",
+		caps:         adapter.Capabilities{MinCheckFrequency: time.Minute},
+		provisionErr: errors.New("provider returned 500"),
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{Target: "bench", CheckFrequency: time.Minute}
+
+	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+
+	if !provisionErr {
+		t.Errorf("provisionErr = false, want true (Provision returned an error)")
+	}
+	if len(handles) != 0 {
+		t.Errorf("handles = %+v, want none (provision failed)", handles)
+	}
+	if len(rec.monitorReportRows) != 0 {
+		t.Errorf("no capability_mismatch row should be written for a Provision error; got %+v", rec.monitorReportRows)
+	}
+}
+
+// TestProvisionAdapters_MixedAdapters — three adapters: one passes all
+// gates and provisions, one fails the keyword gate, one passes gates
+// but errors in Provision. Each is recorded correctly; the runner
+// reports an adapter_error overall.
+func TestProvisionAdapters_MixedAdapters(t *testing.T) {
+	good := &gateTestAdapter{
+		id: "good",
+		caps: adapter.Capabilities{
+			MinCheckFrequency: time.Minute,
+			SupportsKeyword:   true,
+		},
+	}
+	gated := &gateTestAdapter{
+		id:   "gated",
+		caps: adapter.Capabilities{MinCheckFrequency: time.Minute, SupportsKeyword: false},
+	}
+	failing := &gateTestAdapter{
+		id:           "failing",
+		caps:         adapter.Capabilities{MinCheckFrequency: time.Minute, SupportsKeyword: true},
+		provisionErr: errors.New("nope"),
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{
+		Target:         "bench",
+		CheckFrequency: time.Minute,
+		Keyword:        "uptime-bench-canary",
+		KeywordCheck:   adapter.KeywordCheckPresent,
+	}
+
+	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+		[]adapter.Adapter{good, gated, failing}, rec, "run-1", time.Now())
+
+	if !provisionErr {
+		t.Errorf("provisionErr should be true because 'failing' errored")
+	}
+	if len(handles) != 1 || handles[0].handle.ServiceID != "good" {
+		t.Errorf("handles = %+v, want one entry from 'good'", handles)
+	}
+	// Exactly one capability_mismatch row, from 'gated'.
+	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ServiceID != "gated" {
+		t.Errorf("expected one capability_mismatch row from 'gated', got %+v", rec.monitorReportRows)
+	}
+	// 'good' was provisioned, 'gated' was not, 'failing' was attempted (Provision called).
+	if good.provisionedAs == nil {
+		t.Error("'good' should have been provisioned")
+	}
+	if gated.provisionedAs != nil {
+		t.Error("'gated' should not have been provisioned (failed gate)")
+	}
+	if failing.provisionedAs == nil {
+		t.Error("'failing' should have been attempted (Provision call) even though it errored")
 	}
 }
 
