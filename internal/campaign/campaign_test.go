@@ -323,3 +323,119 @@ delay_range   = { min = "5s", max = "60s" }
 		t.Errorf("PhaseChoices = %v", ft.PhaseChoices)
 	}
 }
+
+func TestParse_FailureTypeTLSChoices(t *testing.T) {
+	body := validHeader + `
+[[failure_types]]
+type                 = "tls_expired"
+days_expired_choices = [1, 7, 30]
+
+[[failure_types]]
+type                   = "tls_expiring"
+days_remaining_choices = [6, 13, 29]
+
+[[failure_types]]
+type            = "tls_invalid"
+variant_choices = ["self_signed", "hostname_mismatch"]
+
+[[failure_types]]
+type           = "tls_handshake"
+reason_choices = ["version_mismatch", "no_common_cipher"]
+
+[[failure_types]]
+type            = "tls_deprecated"
+variant_choices = ["TLS10", "TLS11"]
+`
+	c, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(c.FailureTypes) != 7 {
+		t.Fatalf("len(FailureTypes) = %d, want 7", len(c.FailureTypes))
+	}
+	byType := make(map[string]FailureType, len(c.FailureTypes))
+	for _, ft := range c.FailureTypes {
+		byType[ft.Type] = ft
+	}
+	if got := byType["tls_expired"].DaysExpiredChoices; len(got) != 3 || got[2] != 30 {
+		t.Fatalf("tls_expired DaysExpiredChoices = %v", got)
+	}
+	if got := byType["tls_expiring"].DaysRemainingChoices; len(got) != 3 || got[0] != 6 {
+		t.Fatalf("tls_expiring DaysRemainingChoices = %v", got)
+	}
+	if got := byType["tls_invalid"].VariantChoices; len(got) != 2 || got[1] != "hostname_mismatch" {
+		t.Fatalf("tls_invalid VariantChoices = %v", got)
+	}
+	if got := byType["tls_handshake"].ReasonChoices; len(got) != 2 || got[1] != "no_common_cipher" {
+		t.Fatalf("tls_handshake ReasonChoices = %v", got)
+	}
+	if got := byType["tls_deprecated"].VariantChoices; len(got) != 2 || got[0] != "TLS10" {
+		t.Fatalf("tls_deprecated VariantChoices = %v", got)
+	}
+}
+
+func TestParse_RejectsInvalidTLSChoices(t *testing.T) {
+	cases := []struct {
+		name       string
+		block      string
+		wantSubstr string
+	}{
+		{
+			name: "non-positive days expired",
+			block: `
+[[failure_types]]
+type                 = "tls_expired"
+days_expired_choices = [0]
+`,
+			wantSubstr: "days_expired_choices",
+		},
+		{
+			name: "non-positive days remaining",
+			block: `
+[[failure_types]]
+type                   = "tls_expiring"
+days_remaining_choices = [-1]
+`,
+			wantSubstr: "days_remaining_choices",
+		},
+		{
+			name: "invalid invalid-cert variant",
+			block: `
+[[failure_types]]
+type            = "tls_invalid"
+variant_choices = ["wrong-host"]
+`,
+			wantSubstr: "invalid tls_invalid variant",
+		},
+		{
+			name: "invalid deprecated variant",
+			block: `
+[[failure_types]]
+type            = "tls_deprecated"
+variant_choices = ["TLS13"]
+`,
+			wantSubstr: "invalid tls_deprecated variant",
+		},
+		{
+			name: "invalid handshake reason",
+			block: `
+[[failure_types]]
+type           = "tls_handshake"
+reason_choices = ["cert_required"]
+`,
+			wantSubstr: "reason_choices",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(validHeader + tc.block))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantSubstr)
+			}
+		})
+	}
+}

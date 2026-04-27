@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automattic/uptime-bench/internal/scenario"
 )
 
 // TestToScenario_HTTPStatusBasic — a non-escalating http_status
@@ -174,18 +176,121 @@ func TestToScenario_MissingRequiredParam(t *testing.T) {
 	}
 }
 
+func TestToScenario_TLSFailureParams(t *testing.T) {
+	cases := []struct {
+		name        string
+		failureType string
+		params      map[string]any
+		assert      func(t *testing.T, f scenario.Failure)
+	}{
+		{
+			name:        "tls_expired",
+			failureType: "tls_expired",
+			params:      map[string]any{"days_expired": 7},
+			assert: func(t *testing.T, f scenario.Failure) {
+				if f.DaysExpired != 7 {
+					t.Fatalf("DaysExpired = %d, want 7", f.DaysExpired)
+				}
+			},
+		},
+		{
+			name:        "tls_expiring",
+			failureType: "tls_expiring",
+			params:      map[string]any{"days_remaining": 6},
+			assert: func(t *testing.T, f scenario.Failure) {
+				if f.DaysRemaining != 6 {
+					t.Fatalf("DaysRemaining = %d, want 6", f.DaysRemaining)
+				}
+			},
+		},
+		{
+			name:        "tls_invalid",
+			failureType: "tls_invalid",
+			params:      map[string]any{"variant": "hostname_mismatch"},
+			assert: func(t *testing.T, f scenario.Failure) {
+				if f.Variant != "hostname_mismatch" {
+					t.Fatalf("Variant = %q, want hostname_mismatch", f.Variant)
+				}
+			},
+		},
+		{
+			name:        "tls_handshake",
+			failureType: "tls_handshake",
+			params:      map[string]any{"reason": "no_common_cipher"},
+			assert: func(t *testing.T, f scenario.Failure) {
+				if f.Reason != "no_common_cipher" {
+					t.Fatalf("Reason = %q, want no_common_cipher", f.Reason)
+				}
+			},
+		},
+		{
+			name:        "tls_deprecated",
+			failureType: "tls_deprecated",
+			params:      map[string]any{"variant": "TLS10"},
+			assert: func(t *testing.T, f scenario.Failure) {
+				if f.Variant != "TLS10" {
+					t.Fatalf("Variant = %q, want TLS10", f.Variant)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Design{
+				ID:          "d-tls",
+				Cell:        Cell{FailureType: tc.failureType, DurationBucket: "brief", HostPattern: HostPatternSingle},
+				Targets:     []string{"bench-a"},
+				FailureType: tc.failureType,
+				Duration:    time.Minute,
+				Params:      tc.params,
+				Seed:        5,
+			}
+
+			sc, err := d.ToScenario("c-1-r-0", []string{"pingdom"}, time.Minute, 30*time.Second)
+			if err != nil {
+				t.Fatalf("ToScenario: %v", err)
+			}
+			if got := sc.Failures[0].Type; got != tc.failureType {
+				t.Fatalf("Failure.Type = %q, want %q", got, tc.failureType)
+			}
+			tc.assert(t, sc.Failures[0])
+		})
+	}
+}
+
+func TestToScenario_TLSExpiringRequiresDaysRemaining(t *testing.T) {
+	d := &Design{
+		ID:          "d-tls-missing",
+		Cell:        Cell{FailureType: "tls_expiring", DurationBucket: "brief", HostPattern: HostPatternSingle},
+		Targets:     []string{"bench-a"},
+		FailureType: "tls_expiring",
+		Duration:    time.Minute,
+		Params:      map[string]any{},
+		Seed:        5,
+	}
+
+	_, err := d.ToScenario("c-1-r-0", []string{"pingdom"}, time.Minute, 30*time.Second)
+	if err == nil {
+		t.Fatal("expected error for missing days_remaining param")
+	}
+	if !strings.Contains(err.Error(), "days_remaining") {
+		t.Errorf("err = %v, want one mentioning days_remaining", err)
+	}
+}
+
 // TestToScenario_UnsupportedFailureType — for failure types that
-// haven't been wired yet (TLS, http_redirect, http_body), the
+// haven't been wired yet (http_redirect, http_body), the
 // translator should fail explicitly. Catches "campaign generator added
 // support for type X but translator wasn't updated."
 func TestToScenario_UnsupportedFailureType(t *testing.T) {
 	d := &Design{
 		ID:          "d-0006",
-		Cell:        Cell{FailureType: "tls_expired", DurationBucket: "brief", HostPattern: HostPatternSingle},
+		Cell:        Cell{FailureType: "http_redirect", DurationBucket: "brief", HostPattern: HostPatternSingle},
 		Targets:     []string{"bench-a"},
-		FailureType: "tls_expired",
+		FailureType: "http_redirect",
 		Duration:    time.Minute,
-		Params:      map[string]any{"days_expired": 1},
+		Params:      map[string]any{"variant": "loop"},
 		Seed:        5,
 	}
 

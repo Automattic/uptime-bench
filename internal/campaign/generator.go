@@ -256,6 +256,18 @@ func pickFailureParams(r *rand.Rand, ft *FailureType) map[string]any {
 	if ft.DelayRange != nil {
 		p["delay"] = durationIn(r, ft.DelayRange.Min, ft.DelayRange.Max)
 	}
+	if len(ft.DaysExpiredChoices) > 0 {
+		p["days_expired"] = ft.DaysExpiredChoices[r.IntN(len(ft.DaysExpiredChoices))]
+	}
+	if len(ft.DaysRemainingChoices) > 0 {
+		p["days_remaining"] = ft.DaysRemainingChoices[r.IntN(len(ft.DaysRemainingChoices))]
+	}
+	if len(ft.VariantChoices) > 0 {
+		p["variant"] = ft.VariantChoices[r.IntN(len(ft.VariantChoices))]
+	}
+	if len(ft.ReasonChoices) > 0 {
+		p["reason"] = ft.ReasonChoices[r.IntN(len(ft.ReasonChoices))]
+	}
 	return p
 }
 

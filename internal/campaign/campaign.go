@@ -100,6 +100,12 @@ type FailureType struct {
 	PhaseChoices      []string
 	DelayRange        *DurationRange
 
+	// TLS failure parameters
+	DaysExpiredChoices   []int
+	DaysRemainingChoices []int
+	VariantChoices       []string
+	ReasonChoices        []string
+
 	// Reserved for future failure-type parameters; add fields here as
 	// new types come online.
 }
@@ -189,10 +195,14 @@ type rawHighDiscrimTier struct {
 }
 
 type rawFailureType struct {
-	Type              string          `toml:"type"`
-	StatusCodeChoices []int           `toml:"status_code_choices"`
-	PhaseChoices      []string        `toml:"phase_choices"`
-	DelayRange        *rawDurationRng `toml:"delay_range"`
+	Type                 string          `toml:"type"`
+	StatusCodeChoices    []int           `toml:"status_code_choices"`
+	PhaseChoices         []string        `toml:"phase_choices"`
+	DelayRange           *rawDurationRng `toml:"delay_range"`
+	DaysExpiredChoices   []int           `toml:"days_expired_choices"`
+	DaysRemainingChoices []int           `toml:"days_remaining_choices"`
+	VariantChoices       []string        `toml:"variant_choices"`
+	ReasonChoices        []string        `toml:"reason_choices"`
 }
 
 type rawDurationRng struct {
@@ -358,13 +368,37 @@ func validateFailureTypes(rfs []rawFailureType, c *Campaign) error {
 		seen[rf.Type] = true
 
 		ft := FailureType{
-			Type:              rf.Type,
-			StatusCodeChoices: rf.StatusCodeChoices,
-			PhaseChoices:      rf.PhaseChoices,
+			Type:                 rf.Type,
+			StatusCodeChoices:    rf.StatusCodeChoices,
+			PhaseChoices:         rf.PhaseChoices,
+			DaysExpiredChoices:   rf.DaysExpiredChoices,
+			DaysRemainingChoices: rf.DaysRemainingChoices,
+			VariantChoices:       rf.VariantChoices,
+			ReasonChoices:        rf.ReasonChoices,
 		}
 		for _, code := range rf.StatusCodeChoices {
 			if code < 100 || code > 599 {
 				return fmt.Errorf("campaign: failure_types[%d] (%s): status_code_choices contains invalid code %d", i, rf.Type, code)
+			}
+		}
+		for _, days := range rf.DaysExpiredChoices {
+			if days <= 0 {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): days_expired_choices must be positive (got %d)", i, rf.Type, days)
+			}
+		}
+		for _, days := range rf.DaysRemainingChoices {
+			if days <= 0 {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): days_remaining_choices must be positive (got %d)", i, rf.Type, days)
+			}
+		}
+		for _, variant := range rf.VariantChoices {
+			if err := validateVariantChoice(rf.Type, variant); err != nil {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): %w", i, rf.Type, err)
+			}
+		}
+		for _, reason := range rf.ReasonChoices {
+			if err := validateReasonChoice(rf.Type, reason); err != nil {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): %w", i, rf.Type, err)
 			}
 		}
 		if rf.DelayRange != nil {
@@ -378,6 +412,38 @@ func validateFailureTypes(rfs []rawFailureType, c *Campaign) error {
 		c.FailureTypes = append(c.FailureTypes, ft)
 	}
 	return nil
+}
+
+func validateVariantChoice(failureType, variant string) error {
+	switch failureType {
+	case "tls_invalid":
+		switch variant {
+		case "self_signed", "hostname_mismatch":
+			return nil
+		}
+		return fmt.Errorf("variant_choices contains invalid tls_invalid variant %q", variant)
+	case "tls_deprecated":
+		switch variant {
+		case "TLS10", "TLS11":
+			return nil
+		}
+		return fmt.Errorf("variant_choices contains invalid tls_deprecated variant %q", variant)
+	default:
+		return nil
+	}
+}
+
+func validateReasonChoice(failureType, reason string) error {
+	switch failureType {
+	case "tls_handshake":
+		switch reason {
+		case "version_mismatch", "no_common_cipher":
+			return nil
+		}
+		return fmt.Errorf("reason_choices contains invalid tls_handshake reason %q", reason)
+	default:
+		return nil
+	}
 }
 
 func validateSampling(rs rawSampling, c *Campaign) error {

@@ -204,6 +204,14 @@ type = "http_timeout"
 phase_choices = ["ttfb", "body"]
 delay_range = { min = "5s", max = "60s" }
 
+[[failure_types]]
+type = "tls_expired"
+days_expired_choices = [1, 7, 30]
+
+[[failure_types]]
+type = "tls_expiring"
+days_remaining_choices = [6, 13, 29]
+
 [escalation]
 probability = 0.20                          # 20% of designs are multi-stage
 stages_range = { min = 2, max = 3 }

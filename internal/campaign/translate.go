@@ -128,6 +128,41 @@ func failureFrom(failureType string, params map[string]any, offset time.Duration
 		}
 		f.Mode = mode
 
+	case "tls_expired":
+		if days, ok, err := optionalParamInt(params, "days_expired"); err != nil {
+			return f, fmt.Errorf("tls_expired: %w", err)
+		} else if ok {
+			f.DaysExpired = days
+		}
+
+	case "tls_expiring":
+		days, err := paramInt(params, "days_remaining")
+		if err != nil {
+			return f, fmt.Errorf("tls_expiring: %w", err)
+		}
+		f.DaysRemaining = days
+
+	case "tls_invalid":
+		if variant, ok, err := optionalParamString(params, "variant"); err != nil {
+			return f, fmt.Errorf("tls_invalid: %w", err)
+		} else if ok {
+			f.Variant = variant
+		}
+
+	case "tls_handshake":
+		if reason, ok, err := optionalParamString(params, "reason"); err != nil {
+			return f, fmt.Errorf("tls_handshake: %w", err)
+		} else if ok {
+			f.Reason = reason
+		}
+
+	case "tls_deprecated":
+		if variant, ok, err := optionalParamString(params, "variant"); err != nil {
+			return f, fmt.Errorf("tls_deprecated: %w", err)
+		} else if ok {
+			f.Variant = variant
+		}
+
 	default:
 		return f, fmt.Errorf("unsupported failure_type %q", failureType)
 	}
@@ -158,6 +193,14 @@ func paramInt(params map[string]any, key string) (int, error) {
 	}
 }
 
+func optionalParamInt(params map[string]any, key string) (int, bool, error) {
+	if _, ok := params[key]; !ok {
+		return 0, false, nil
+	}
+	v, err := paramInt(params, key)
+	return v, true, err
+}
+
 func paramString(params map[string]any, key string) (string, error) {
 	v, ok := params[key]
 	if !ok {
@@ -168,6 +211,14 @@ func paramString(params map[string]any, key string) (string, error) {
 		return "", fmt.Errorf("param %q has type %T, want string", key, v)
 	}
 	return s, nil
+}
+
+func optionalParamString(params map[string]any, key string) (string, bool, error) {
+	if _, ok := params[key]; !ok {
+		return "", false, nil
+	}
+	v, err := paramString(params, key)
+	return v, true, err
 }
 
 func paramDuration(params map[string]any, key string) (time.Duration, error) {

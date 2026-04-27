@@ -208,6 +208,86 @@ func TestGenerate_StatusCodeWithinChoices(t *testing.T) {
 	}
 }
 
+func TestGenerate_TLSParamsWithinChoices(t *testing.T) {
+	c, err := Parse([]byte(`
+id              = "tls-gen"
+duration        = "1h"
+seed            = 0
+check_frequency = "60s"
+
+[targets]
+pool     = ["bench-a"]
+patterns = ["single"]
+
+[duration_buckets]
+brief = { min = "1m", max = "2m" }
+
+[sampling]
+samples_per_cell_default = 8
+
+[[failure_types]]
+type                 = "tls_expired"
+days_expired_choices = [1, 7]
+
+[[failure_types]]
+type                   = "tls_expiring"
+days_remaining_choices = [6, 13]
+
+[[failure_types]]
+type            = "tls_invalid"
+variant_choices = ["self_signed", "hostname_mismatch"]
+
+[[failure_types]]
+type           = "tls_handshake"
+reason_choices = ["version_mismatch", "no_common_cipher"]
+
+[[failure_types]]
+type            = "tls_deprecated"
+variant_choices = ["TLS10", "TLS11"]
+
+[cooldown]
+per_target_minimum = "0s"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, err := Generate(c, 42)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, d := range plan.Designs {
+		switch d.FailureType {
+		case "tls_expired":
+			got, ok := d.Params["days_expired"].(int)
+			if !ok || (got != 1 && got != 7) {
+				t.Fatalf("%s days_expired = %T %v, want 1 or 7", d.ID, d.Params["days_expired"], d.Params["days_expired"])
+			}
+		case "tls_expiring":
+			got, ok := d.Params["days_remaining"].(int)
+			if !ok || (got != 6 && got != 13) {
+				t.Fatalf("%s days_remaining = %T %v, want 6 or 13", d.ID, d.Params["days_remaining"], d.Params["days_remaining"])
+			}
+		case "tls_invalid":
+			got, ok := d.Params["variant"].(string)
+			if !ok || (got != "self_signed" && got != "hostname_mismatch") {
+				t.Fatalf("%s variant = %T %v, want tls_invalid choice", d.ID, d.Params["variant"], d.Params["variant"])
+			}
+		case "tls_handshake":
+			got, ok := d.Params["reason"].(string)
+			if !ok || (got != "version_mismatch" && got != "no_common_cipher") {
+				t.Fatalf("%s reason = %T %v, want tls_handshake choice", d.ID, d.Params["reason"], d.Params["reason"])
+			}
+		case "tls_deprecated":
+			got, ok := d.Params["variant"].(string)
+			if !ok || (got != "TLS10" && got != "TLS11") {
+				t.Fatalf("%s variant = %T %v, want tls_deprecated choice", d.ID, d.Params["variant"], d.Params["variant"])
+			}
+		default:
+			t.Fatalf("unexpected failure type %q", d.FailureType)
+		}
+	}
+}
+
 // TestGenerate_DurationWithinBucket — designs' duration falls in the
 // declared range for their cell's bucket.
 func TestGenerate_DurationWithinBucket(t *testing.T) {
