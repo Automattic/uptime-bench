@@ -110,6 +110,30 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		return runID, err
 	}
 
+	// If the scenario declares a maintenance window, persist it as a
+	// pair of ground-truth events (maintenance_start at window.Start,
+	// maintenance_end at window.End) so the measurement engine can read
+	// the window back the same way it reads failure_start / failure_end.
+	// Both rows are written now, at startedAt; their occurred_at fields
+	// carry the *configured* window times (which may be in the future).
+	if sc.Maintenance != nil {
+		mw := maintenanceWindowFor(sc, startedAt)
+		if mw != nil {
+			if err := database.InsertGroundTruthEvent(ctx, db.GroundTruthEvent{
+				RunID: runID, EventType: "maintenance_start", TargetID: sc.Target, OccurredAt: mw.Start,
+			}); err != nil {
+				resolutionReason = "ground_truth_log_failure"
+				return runID, fmt.Errorf("ground_truth_log_failure: maintenance_start: %w", err)
+			}
+			if err := database.InsertGroundTruthEvent(ctx, db.GroundTruthEvent{
+				RunID: runID, EventType: "maintenance_end", TargetID: sc.Target, OccurredAt: mw.End,
+			}); err != nil {
+				resolutionReason = "ground_truth_log_failure"
+				return runID, fmt.Errorf("ground_truth_log_failure: maintenance_end: %w", err)
+			}
+		}
+	}
+
 	// Determine effective call budget per adapter.
 	budgets := make(map[string]int, len(adapters))
 	for _, a := range adapters {

@@ -40,7 +40,7 @@ Ground-truth events record what the target fleet actually did. Written by the sc
 | `id` | identifier | Stable, deterministic — see Identity below. |
 | `run_id` | FK | The scenario run this event belongs to. |
 | `target_id` | FK | Which target endpoint was affected. |
-| `event_type` | enum | `failure_start`, `failure_end`, `run_start`, `run_end` |
+| `event_type` | enum | `failure_start`, `failure_end`, `run_start`, `run_end`, `maintenance_start`, `maintenance_end` |
 | `failure_mode` | string | What kind of failure was injected (e.g., `http_5xx`, `dns_nxdomain`, `tcp_timeout`). |
 | `failure_params` | JSON | Injection parameters: rate, region, status code, duration, etc. |
 | `timestamp` | timestamp | When this event occurred. |
