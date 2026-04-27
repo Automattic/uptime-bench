@@ -129,7 +129,9 @@ SELECT * FROM derived_metrics WHERE run_id = '<run-id>';
 | `content-malicious-script.toml` | Malicious JS | Content integrity |
 
 > Note: content scenarios require the monitoring service to support keyword monitoring
-> (`SupportsKeyword`). Services that don't will record these as `false_negative`.
+> (`Capabilities.SupportsKeyword`). Services that don't are skipped at provision time
+> and recorded as `reason_code = "capability_mismatch"` in `monitor_reports` —
+> never counted as false negatives. See `EVENTS.md` for the reporting rules.
 
 ## 7. Stopping
 

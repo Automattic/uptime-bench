@@ -102,7 +102,7 @@ Required by Phase 1 once we have multiple virtual hosts, but ordering with the p
 
 ## Maintenance window suppression
 
-**Status:** Not implemented. Active — schedule a design pass.
+**Status:** Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26. Reviewed/approved → ready to implement. Combined with alert-cooldown work below since they share infrastructure.
 
 Monitors commonly support scheduled maintenance windows during which alerts are suppressed. Testing whether a monitor correctly silences alerts during a declared window is a meaningful accuracy dimension — a monitor that still alerts during maintenance produces false positives; a monitor that never alerts afterward may have also cleared state it shouldn't have.
 
@@ -129,7 +129,7 @@ The capability flag for this is new; add `SupportsMaintenanceWindows` to `Capabi
 
 ## Alert cooldown interaction between runs
 
-**Status:** Not implemented. Active — second piece of the cross-run-state design.
+**Status:** Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26. Designed alongside maintenance windows above; implementation gated on user review of the spec.
 
 Most monitors suppress repeated alerts for the same site within a cooldown window (commonly 30 minutes). When uptime-bench runs multiple consecutive scenarios against the same provisioned monitor, the second run's alert may be suppressed by the cooldown from the first — producing a result that looks like a missed detection but is actually the monitor working correctly.
 
