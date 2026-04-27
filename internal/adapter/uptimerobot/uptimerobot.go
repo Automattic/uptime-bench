@@ -97,11 +97,17 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		// Free tier is 5 min; paid plans go down to 30s. 5 min is the safe
 		// default so a free-tier scenario doesn't fail capability check.
-		MinCheckFrequency:       5 * time.Minute,
-		SupportsKeyword:         true,
-		SupportsInvertedKeyword: true, // keyword_type=1 (alert when present)
-		SupportsAgentChecks:     false,
-		DefaultMaxCallsPerRun:   50, // typical 10 req/min on free; budget for ~5 minutes of polling
+		MinCheckFrequency:          5 * time.Minute,
+		SupportsKeyword:            true,
+		SupportsInvertedKeyword:    true, // keyword_type=1 (alert when present)
+		SupportsAgentChecks:        false,
+		SupportsMaintenanceWindows: true,
+		// Cooldown resets naturally because Deprovision deletes the
+		// monitor; the next Provision creates a fresh one. UptimeRobot
+		// emits notifications per state change with no separate
+		// cooldown-reset endpoint, so deletion is the reset path.
+		SupportsCooldownReset: true,
+		DefaultMaxCallsPerRun: 50, // typical 10 req/min on free; budget for ~5 minutes of polling
 	}
 }
 
@@ -196,13 +202,142 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	if resp.Monitor.ID == 0 {
 		return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: newMonitor: response missing monitor id")
 	}
-	return adapter.MonitorHandle{
+	monitorID := resp.Monitor.ID
+	handle := adapter.MonitorHandle{
 		ServiceID: a.id,
-		MonitorID: strconv.FormatInt(resp.Monitor.ID, 10),
+		MonitorID: strconv.FormatInt(monitorID, 10),
 		Fields: map[string]string{
 			"url": target.URL,
 		},
-	}, nil
+	}
+
+	if config.MaintenanceWindow != nil {
+		mwID, err := a.createMWindow(ctx, target.ID, config.MaintenanceWindow)
+		if err != nil {
+			// Roll back the just-created monitor.
+			_ = a.deleteMonitor(context.Background(), monitorID)
+			return adapter.MonitorHandle{}, err
+		}
+		if err := a.attachMWindow(ctx, monitorID, mwID); err != nil {
+			// Roll back both.
+			_ = a.deleteMWindow(context.Background(), mwID)
+			_ = a.deleteMonitor(context.Background(), monitorID)
+			return adapter.MonitorHandle{}, err
+		}
+		handle.Fields["maintenance_id"] = strconv.FormatInt(mwID, 10)
+	}
+
+	return handle, nil
+}
+
+// newMWindowResponse mirrors POST /v2/newMWindow.
+type newMWindowResponse struct {
+	Stat    string `json:"stat"`
+	MWindow struct {
+		ID     int64 `json:"id"`
+		Status int   `json:"status"`
+	} `json:"mwindow"`
+	Error *apiError `json:"error,omitempty"`
+}
+
+// editMonitorResponse mirrors POST /v2/editMonitor — used to attach a
+// maintenance window to a monitor via the `mwindows` field.
+type editMonitorResponse struct {
+	Stat    string `json:"stat"`
+	Monitor struct {
+		ID int64 `json:"id"`
+	} `json:"monitor"`
+	Error *apiError `json:"error,omitempty"`
+}
+
+// createMWindow posts a one-shot maintenance window covering the absolute
+// [Start, End] interval. UptimeRobot's `start_time` for type=1 (Once) is
+// a Unix timestamp; `duration` is in minutes. Cross-midnight UTC windows
+// are rejected because the type=1 semantics around midnight aren't
+// reliably documented and we'd rather fail loudly than silently
+// misconfigure (see docs/inter-run-state-design.md).
+func (a *Adapter) createMWindow(ctx context.Context, targetID string, window *adapter.MaintenanceWindow) (int64, error) {
+	startUTC := window.Start.UTC()
+	endUTC := window.End.UTC()
+	if startUTC.Year() != endUTC.Year() ||
+		startUTC.Month() != endUTC.Month() ||
+		startUTC.Day() != endUTC.Day() {
+		return 0, fmt.Errorf("uptimerobot: maintenance window %s → %s crosses midnight UTC; not supported (type=1 cross-midnight semantics are unverified)",
+			startUTC.Format(time.RFC3339), endUTC.Format(time.RFC3339))
+	}
+	durationMinutes := int(endUTC.Sub(startUTC).Round(time.Minute).Minutes())
+	if durationMinutes < 1 {
+		return 0, fmt.Errorf("uptimerobot: maintenance window duration %v rounds to less than 1 minute (UptimeRobot's smallest unit)", endUTC.Sub(startUTC))
+	}
+
+	form := url.Values{}
+	form.Set("api_key", a.apiKey)
+	form.Set("format", "json")
+	form.Set("friendly_name", "uptime-bench: "+targetID)
+	form.Set("type", "1") // 1 = Once
+	form.Set("start_time", strconv.FormatInt(startUTC.Unix(), 10))
+	form.Set("duration", strconv.Itoa(durationMinutes))
+
+	var resp newMWindowResponse
+	if err := a.postJSON(ctx, "/newMWindow", form, &resp); err != nil {
+		return 0, fmt.Errorf("uptimerobot: newMWindow: %w", err)
+	}
+	if resp.Stat != "ok" {
+		return 0, fmt.Errorf("uptimerobot: newMWindow: %s", resp.Error)
+	}
+	if resp.MWindow.ID == 0 {
+		return 0, fmt.Errorf("uptimerobot: newMWindow: response missing mwindow id")
+	}
+	return resp.MWindow.ID, nil
+}
+
+// attachMWindow associates a maintenance window with a monitor via
+// editMonitor's `mwindows` field. UptimeRobot expects the field as a
+// dash-separated list of window IDs (e.g. "345-2986-71"); we only ever
+// attach one per monitor so it's a single ID.
+func (a *Adapter) attachMWindow(ctx context.Context, monitorID, mwindowID int64) error {
+	form := url.Values{}
+	form.Set("api_key", a.apiKey)
+	form.Set("format", "json")
+	form.Set("id", strconv.FormatInt(monitorID, 10))
+	form.Set("mwindows", strconv.FormatInt(mwindowID, 10))
+
+	var resp editMonitorResponse
+	if err := a.postJSON(ctx, "/editMonitor", form, &resp); err != nil {
+		return fmt.Errorf("uptimerobot: editMonitor (attach mwindow): %w", err)
+	}
+	if resp.Stat != "ok" {
+		return fmt.Errorf("uptimerobot: editMonitor (attach mwindow): %s", resp.Error)
+	}
+	return nil
+}
+
+// deleteMonitor is a rollback helper. Errors are logged but not returned
+// because the caller's primary error is what matters.
+func (a *Adapter) deleteMonitor(ctx context.Context, monitorID int64) error {
+	form := url.Values{}
+	form.Set("api_key", a.apiKey)
+	form.Set("format", "json")
+	form.Set("id", strconv.FormatInt(monitorID, 10))
+	var resp struct {
+		Stat  string    `json:"stat"`
+		Error *apiError `json:"error,omitempty"`
+	}
+	return a.postJSON(ctx, "/deleteMonitor", form, &resp)
+}
+
+// deleteMWindow is the symmetric rollback / Deprovision helper for
+// maintenance windows.
+func (a *Adapter) deleteMWindow(ctx context.Context, mwindowID int64) error {
+	form := url.Values{}
+	form.Set("api_key", a.apiKey)
+	form.Set("format", "json")
+	form.Set("id", strconv.FormatInt(mwindowID, 10))
+	var resp struct {
+		Stat  string    `json:"stat"`
+		Error *apiError `json:"error,omitempty"`
+	}
+	return a.postJSON(ctx, "/deleteMWindow", form, &resp)
 }
 
 // ─── Retrieve ───────────────────────────────────────────────────────────────
@@ -371,6 +506,17 @@ func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle)
 	}
 	if handle.MonitorID == "" {
 		return nil // nothing to delete; Provision didn't succeed
+	}
+
+	// Delete the maintenance window first if one was attached. Failures
+	// here are tolerated — a one-shot type=1 window expires at its
+	// start_time + duration anyway, so a leak is a dashboard nuisance,
+	// not corruption. Skip the empty-string check by reading directly.
+	if mwID := handle.Fields["maintenance_id"]; mwID != "" {
+		mwIDInt, parseErr := strconv.ParseInt(mwID, 10, 64)
+		if parseErr == nil {
+			_ = a.deleteMWindow(ctx, mwIDInt)
+		}
 	}
 
 	form := url.Values{}

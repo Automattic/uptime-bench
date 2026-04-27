@@ -49,6 +49,46 @@ func newTestAdapter(srvURL, apiKey string) *Adapter {
 	return a
 }
 
+// requestRecord captures one inbound request for tests that exercise
+// multi-call provision flows (e.g. /newMonitor + /newMWindow + /editMonitor).
+type requestRecord struct {
+	method string
+	path   string
+	form   url.Values
+}
+
+type routedResponse struct {
+	method     string
+	pathPrefix string
+	status     int
+	body       string
+}
+
+// newRoutedFake routes responses by (method, pathPrefix) and records every
+// inbound request in order.
+func newRoutedFake(t *testing.T, responses []routedResponse) (*httptest.Server, *[]requestRecord) {
+	t.Helper()
+	var requests []requestRecord
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		v, err := url.ParseQuery(string(raw))
+		if err != nil {
+			t.Errorf("server: bad form body: %v", err)
+		}
+		requests = append(requests, requestRecord{method: r.Method, path: r.URL.Path, form: v})
+		for _, resp := range responses {
+			if resp.method == r.Method && strings.HasPrefix(r.URL.Path, resp.pathPrefix) {
+				w.WriteHeader(resp.status)
+				_, _ = w.Write([]byte(resp.body))
+				return
+			}
+		}
+		t.Errorf("routedFake: no response matched %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	return srv, &requests
+}
+
 // ─── Adapter interface conformance ──────────────────────────────────────────
 
 func TestImplementsAdapterInterface(t *testing.T) {
@@ -576,5 +616,245 @@ func TestIntervalSeconds(t *testing.T) {
 		if got := intervalSeconds(d); got != want {
 			t.Errorf("intervalSeconds(%v) = %d, want %d", d, got, want)
 		}
+	}
+}
+
+// ─── Maintenance windows ────────────────────────────────────────────────────
+
+// TestCapabilities_MaintenanceAndCooldown — both Phase B flags true.
+func TestCapabilities_MaintenanceAndCooldown(t *testing.T) {
+	c := newTestAdapter("http://x", "u123-XXX").Capabilities()
+	if !c.SupportsMaintenanceWindows {
+		t.Error("SupportsMaintenanceWindows should be true (newMWindow + editMonitor flow)")
+	}
+	if !c.SupportsCooldownReset {
+		t.Error("SupportsCooldownReset should be true (delete-recreate cycles state)")
+	}
+}
+
+// TestProvision_NoMaintenanceWindow — nil window means a single
+// /newMonitor call.
+func TestProvision_NoMaintenanceWindow(t *testing.T) {
+	srv, requests := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "u123-XXX")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{CheckFrequency: 5 * time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(*requests) != 1 {
+		t.Errorf("expected 1 request without maintenance, got %d", len(*requests))
+	}
+}
+
+// TestProvision_WithMaintenanceWindow — three-call sequence with the
+// right shapes: /newMonitor → /newMWindow → /editMonitor (mwindows=ID).
+func TestProvision_WithMaintenanceWindow(t *testing.T) {
+	srv, requests := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+		{method: "POST", pathPrefix: "/newMWindow", status: 200, body: `{"stat":"ok","mwindow":{"id":9000,"status":1}}`},
+		{method: "POST", pathPrefix: "/editMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777}}`},
+	})
+	defer srv.Close()
+
+	start := time.Date(2026, 4, 28, 14, 30, 0, 0, time.UTC)
+	end := start.Add(45 * time.Minute) // 45 minutes, well within the day
+
+	a := newTestAdapter(srv.URL, "u123-XXX")
+	handle, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    5 * time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: start, End: end},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(*requests) != 3 {
+		t.Fatalf("expected 3 requests (newMonitor + newMWindow + editMonitor), got %d", len(*requests))
+	}
+	if (*requests)[0].path != "/newMonitor" {
+		t.Errorf("requests[0].path = %q, want /newMonitor", (*requests)[0].path)
+	}
+	if (*requests)[1].path != "/newMWindow" {
+		t.Errorf("requests[1].path = %q, want /newMWindow", (*requests)[1].path)
+	}
+	if (*requests)[2].path != "/editMonitor" {
+		t.Errorf("requests[2].path = %q, want /editMonitor", (*requests)[2].path)
+	}
+
+	mw := (*requests)[1].form
+	if mw.Get("type") != "1" {
+		t.Errorf("newMWindow type = %q, want 1 (Once)", mw.Get("type"))
+	}
+	if mw.Get("start_time") != strconv.FormatInt(start.Unix(), 10) {
+		t.Errorf("start_time = %q, want %d", mw.Get("start_time"), start.Unix())
+	}
+	if mw.Get("duration") != "45" {
+		t.Errorf("duration = %q, want 45 (minutes)", mw.Get("duration"))
+	}
+	if !strings.Contains(mw.Get("friendly_name"), "bench-a") {
+		t.Errorf("friendly_name = %q, should contain target id", mw.Get("friendly_name"))
+	}
+
+	em := (*requests)[2].form
+	if em.Get("id") != "777" {
+		t.Errorf("editMonitor id = %q, want 777 (the monitor id)", em.Get("id"))
+	}
+	if em.Get("mwindows") != "9000" {
+		t.Errorf("editMonitor mwindows = %q, want 9000 (the new window id)", em.Get("mwindows"))
+	}
+
+	if handle.Fields["maintenance_id"] != "9000" {
+		t.Errorf("handle.Fields[maintenance_id] = %q, want 9000", handle.Fields["maintenance_id"])
+	}
+}
+
+// TestProvision_MaintenanceCrossingMidnightRejected — type=1 (Once)
+// cross-midnight semantics aren't reliably documented; reject and roll
+// back the just-created monitor.
+func TestProvision_MaintenanceCrossingMidnightRejected(t *testing.T) {
+	srv, requests := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+		{method: "POST", pathPrefix: "/deleteMonitor", status: 200, body: `{"stat":"ok"}`},
+	})
+	defer srv.Close()
+
+	start := time.Date(2026, 4, 28, 23, 30, 0, 0, time.UTC)
+	end := start.Add(1 * time.Hour) // crosses midnight UTC
+
+	a := newTestAdapter(srv.URL, "u123-XXX")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    5 * time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: start, End: end},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error for cross-midnight window")
+	}
+	if !strings.Contains(err.Error(), "crosses midnight") {
+		t.Errorf("err = %v, want one mentioning cross-midnight", err)
+	}
+	sawDelete := false
+	for _, r := range *requests {
+		if r.path == "/deleteMonitor" && r.form.Get("id") == "777" {
+			sawDelete = true
+		}
+	}
+	if !sawDelete {
+		t.Errorf("expected /deleteMonitor rollback after rejection; got requests: %+v", *requests)
+	}
+}
+
+// TestProvision_MWindowCreateFailureRollsBackMonitor — if /newMWindow
+// fails after /newMonitor succeeded, the adapter must delete the just-
+// created monitor.
+func TestProvision_MWindowCreateFailureRollsBackMonitor(t *testing.T) {
+	srv, requests := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+		{method: "POST", pathPrefix: "/newMWindow", status: 200, body: `{"stat":"fail","error":{"type":"invalid_parameter","message":"bad start_time"}}`},
+		{method: "POST", pathPrefix: "/deleteMonitor", status: 200, body: `{"stat":"ok"}`},
+	})
+	defer srv.Close()
+
+	start := time.Date(2026, 4, 28, 14, 30, 0, 0, time.UTC)
+	a := newTestAdapter(srv.URL, "u123-XXX")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    5 * time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: start, End: start.Add(30 * time.Minute)},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error from newMWindow failure")
+	}
+	sawMonitorDelete := false
+	for _, r := range *requests {
+		if r.path == "/deleteMonitor" && r.form.Get("id") == "777" {
+			sawMonitorDelete = true
+		}
+	}
+	if !sawMonitorDelete {
+		t.Errorf("expected /deleteMonitor rollback; got %+v", *requests)
+	}
+}
+
+// TestProvision_AttachFailureRollsBackBoth — if /editMonitor fails after
+// the window was already created, both window and monitor get cleaned up.
+func TestProvision_AttachFailureRollsBackBoth(t *testing.T) {
+	srv, requests := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+		{method: "POST", pathPrefix: "/newMWindow", status: 200, body: `{"stat":"ok","mwindow":{"id":9000,"status":1}}`},
+		{method: "POST", pathPrefix: "/editMonitor", status: 200, body: `{"stat":"fail","error":{"type":"invalid_parameter","message":"unknown mwindow"}}`},
+		{method: "POST", pathPrefix: "/deleteMWindow", status: 200, body: `{"stat":"ok"}`},
+		{method: "POST", pathPrefix: "/deleteMonitor", status: 200, body: `{"stat":"ok"}`},
+	})
+	defer srv.Close()
+
+	start := time.Date(2026, 4, 28, 14, 30, 0, 0, time.UTC)
+	a := newTestAdapter(srv.URL, "u123-XXX")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    5 * time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: start, End: start.Add(30 * time.Minute)},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error from editMonitor failure")
+	}
+	sawMWindowDelete := false
+	sawMonitorDelete := false
+	for _, r := range *requests {
+		if r.path == "/deleteMWindow" && r.form.Get("id") == "9000" {
+			sawMWindowDelete = true
+		}
+		if r.path == "/deleteMonitor" && r.form.Get("id") == "777" {
+			sawMonitorDelete = true
+		}
+	}
+	if !sawMWindowDelete {
+		t.Errorf("expected /deleteMWindow rollback for window 9000; got %+v", *requests)
+	}
+	if !sawMonitorDelete {
+		t.Errorf("expected /deleteMonitor rollback for monitor 777; got %+v", *requests)
+	}
+}
+
+// TestDeprovision_DeletesMaintenanceFirst — when handle has
+// maintenance_id, Deprovision sends /deleteMWindow before /deleteMonitor.
+func TestDeprovision_DeletesMaintenanceFirst(t *testing.T) {
+	srv, requests := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/deleteMWindow", status: 200, body: `{"stat":"ok"}`},
+		{method: "POST", pathPrefix: "/deleteMonitor", status: 200, body: `{"stat":"ok"}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "u123-XXX")
+	handle := adapter.MonitorHandle{
+		MonitorID: "777",
+		Fields:    map[string]string{"maintenance_id": "9000"},
+	}
+	if err := a.Deprovision(context.Background(), handle); err != nil {
+		t.Fatalf("Deprovision: %v", err)
+	}
+	if len(*requests) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(*requests))
+	}
+	if (*requests)[0].path != "/deleteMWindow" {
+		t.Errorf("first request = %q, want /deleteMWindow (must come first)", (*requests)[0].path)
+	}
+	if (*requests)[1].path != "/deleteMonitor" {
+		t.Errorf("second request = %q, want /deleteMonitor", (*requests)[1].path)
 	}
 }
