@@ -2,7 +2,7 @@
 
 A benchmark suite for evaluating uptime monitoring services — by being deliberately and reproducibly mean to a fleet of webservers, then grading the watchers on whether they noticed.
 
-`uptime-bench` runs controlled failure scenarios against target endpoints and measures how each monitoring service detects, classifies, and reports each failure. It produces structured, apples-to-apples comparisons across services that otherwise expose very different dashboards, alerting semantics, and terminology.
+`uptime-bench` runs controlled failure scenarios against target endpoints and measures how each monitoring service detects, classifies, and reports each failure. It can run one targeted scenario at a time or run a randomized campaign that builds a statistically useful comparison set. The output is structured, apples-to-apples data across services that otherwise expose very different dashboards, alerting semantics, and terminology.
 
 ## Why
 
@@ -16,6 +16,7 @@ So we built a controlled environment where the failures are scripted, the timest
 - Points monitoring services at those targets and waits for detection
 - Records what each service detected, when it detected it, and how it classified it
 - Produces structured comparison data: detection latency, accuracy, false-positive rate, and classification fidelity
+- Runs deterministic randomized campaigns and reports aggregate per-service results
 
 A handful of the eleven shipped scenarios involve serving a fully-rendered ransomware demand, a hacktivist defacement, or hidden SEO spam — all with a `200 OK` status. A monitor that only watches status codes is going to have a rough time. The full menu lives in [`SCENARIOS.md`](SCENARIOS.md); the per-scenario file format in [`SCHEMA.md`](SCHEMA.md).
 
@@ -34,7 +35,11 @@ Adding a new adapter is a small, well-defined exercise — implement the [`adapt
 
 ## Status
 
-The end-to-end pipeline runs: target server, DNS server, control plane, harness, runner, MySQL event log, and the Jetmon 1 adapter. CI (`go vet`, `gofmt`, `go test -race`) is green on every push. Eleven scenarios across HTTP, TCP, DNS, and content failures are defined and runnable; TLS scenarios are schema-defined, the target has a self-signed HTTPS listener, and `tls_expired` / `tls_expiring` can select certs from a certmint manifest. `tls_invalid` supports the schema's self-signed and hostname-mismatch variants, `tls_deprecated` clamps the HTTPS listener to TLS 1.0 or 1.1, and `tls_handshake` aborts the handshake before certificate selection. Remaining TLS acceptance work is tracked in [`ROADMAP.md`](ROADMAP.md).
+The end-to-end pipeline runs: target server, DNS server, control plane, harness, runner, MySQL event log, metric derivation, and reporting. Five service adapters are implemented and live-tested against their public APIs where applicable: Jetmon 1, UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. Jetmon 2 is present as a stub until a public API is available.
+
+Eleven shipped scenarios across HTTP, TCP, DNS, and content failures are defined and runnable. TLS scenarios are schema-defined and target-backed: the target has an HTTPS listener, SNI-aware certificate selection, certmint manifest loading for `tls_expired` / `tls_expiring`, self-signed and hostname-mismatch variants for `tls_invalid`, TLS 1.0 / 1.1 clamping for `tls_deprecated`, and deterministic handshake aborts for `tls_handshake`. Remaining TLS work is mostly external probe acceptance coverage and production cert-library operations; see [`ROADMAP.md`](ROADMAP.md) and [`docs/certmint-dns01-handoff.md`](docs/certmint-dns01-handoff.md).
+
+Campaign mode is implemented for serial execution: the harness accepts `-campaign=<config.toml>`, records a `campaign_runs` audit row, runs scheduled scenario replays, derives campaign metrics, and `uptime-bench-report` summarizes results as table, TSV, or JSON. Multi-host campaign designs are still deferred because the scenario format is single-target; for now, practical campaigns should use `patterns = ["single"]`.
 
 Notable design choices, all enforced by the code or the tests:
 
@@ -54,10 +59,13 @@ Notable design choices, all enforced by the code or the tests:
 - [`OPERATIONS.md`](OPERATIONS.md) — fleet provisioning, deployment, and operations
 - [`TESTING.md`](TESTING.md) — local POC quick-start
 - [`ROADMAP.md`](ROADMAP.md) — deferred features and unfinished work
+- [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md) — maintenance windows and cooldown reset design
+- [`docs/certmint-dns01-handoff.md`](docs/certmint-dns01-handoff.md) — certmint / DNS-01 integration notes
+- [`deploy/acme-hooks/README.md`](deploy/acme-hooks/README.md) — certbot manual DNS hook scripts for certmint
 
 ## Local development
 
-Requires Go 1.26+ and Docker.
+Requires Go 1.26+ and Docker Compose v2.
 
 ```sh
 cp .env.example .env                       # configure local credentials
@@ -69,15 +77,62 @@ make build                                 # build all binaries
 
 Adminer (database UI) is available at `http://localhost:8081` after `make dev`.
 
+For an end-to-end local fleet in Docker:
+
+```sh
+cp .env.example .env
+cp services.example.toml services.toml
+make dev-fleet
+make run-scenario SCENARIO=scenarios/http-503.toml
+```
+
+`make dev-fleet` starts MySQL, Adminer, the target, and the DNS members. The local target is available as HTTP on `localhost:8080` and HTTPS on `localhost:8443` from the host, and as `http://bench.local/` inside the Docker network. `make logs` tails the fleet logs; `make dev-fleet-down` stops the containers while keeping volumes.
+
+Scenario runs require `services.toml` to have at least one enabled service matching the scenario's `monitors` list. Campaign runs use every enabled service in `services.toml`.
+
 For the full local POC including Jetmon and the bridge, see [`TESTING.md`](TESTING.md).
+
+## Campaigns
+
+Single-scenario mode is useful for targeted checks:
+
+```sh
+uptime-bench-harness \
+  -fleet=fleet.toml \
+  -services=services.toml \
+  -scenario=scenarios/http-503.toml
+```
+
+Campaign mode generates and schedules many deterministic scenario designs from one campaign config:
+
+```sh
+uptime-bench-harness \
+  -fleet=fleet.toml \
+  -services=services.toml \
+  -campaign=campaign.toml
+```
+
+At campaign end, the harness derives metrics for the whole campaign run. Reports can be generated by run ID or stable campaign config ID:
+
+```sh
+make report-campaign CAMPAIGN=<campaign-run-id-or-config-id>
+make report-campaign CAMPAIGN=<campaign-run-id-or-config-id> REPORT_FORMAT=json
+```
+
+Current campaign scope is serial execution over single-target scenarios. The generator understands `single`, `two_random`, and `all` host patterns, but translation and runner execution currently support only one target per scenario; configure runnable campaigns with `patterns = ["single"]` until multi-host scenario support lands.
 
 ## Testing
 
 ```sh
+go test ./...
+go vet ./...
+go build ./...
 go test -race ./...
 ```
 
-Over a hundred and fifty test cases across fifteen packages, including a corpus check that asserts every shipped scenario file parses cleanly and every documented config example loads without error. The DNS server and control plane are tested as units (the partial-read, latency-parallelism, and timing-attack regression tests are doing real work). Live build-tagged smoke tests under each adapter (`internal/adapter/<name>/live_test.go`) exercise the full Provision/Retrieve/Deprovision contract against the real APIs; CI compiles them but never runs them, since they require credentials.
+CI verifies `go.mod` tidiness, `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags live ./...`, and `go test -race ./...`. The repo currently has hundreds of test functions across the harness, runner, adapters, campaign generator, reporting, DNS server, target server, scenario parser, and cert-library selection code.
+
+Corpus tests assert every shipped scenario parses cleanly and the documented config examples stay loadable. Live build-tagged smoke tests under each adapter (`internal/adapter/<name>/live_test.go`) exercise the Provision/Retrieve/Deprovision contract against real APIs; CI compiles them but does not run them because they require credentials.
 
 ## Deployment
 
