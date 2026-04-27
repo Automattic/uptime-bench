@@ -19,20 +19,20 @@ func BenchmarkSummarizeCampaignMetricRows(b *testing.B) {
 }
 
 func BenchmarkWriteTSV(b *testing.B) {
-	summaries := Summarize(benchmarkCampaignMetricRows())
+	r := Report{Summaries: Summarize(benchmarkCampaignMetricRows())}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if err := Write(io.Discard, "tsv", summaries); err != nil {
+		if err := Write(io.Discard, "tsv", r); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
 func BenchmarkWriteJSON(b *testing.B) {
-	summaries := Summarize(benchmarkCampaignMetricRows())
+	r := Report{Summaries: Summarize(benchmarkCampaignMetricRows())}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if err := Write(io.Discard, "json", summaries); err != nil {
+		if err := Write(io.Discard, "json", r); err != nil {
 			b.Fatal(err)
 		}
 	}

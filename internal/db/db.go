@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -267,6 +268,72 @@ type CampaignMetricRow struct {
 	MetricText  string
 }
 
+// CampaignRunSummary describes one campaign_runs row resolved by
+// ResolveCampaign — the audit-trail metadata the report tool needs to
+// disclose how an aggregated report was scoped.
+type CampaignRunSummary struct {
+	ID         string
+	CampaignID string
+	StartedAt  time.Time
+	EndedAt    *time.Time // nil for an in-progress campaign
+}
+
+// CampaignLookup is the result of resolving a user-supplied campaign
+// identifier to one or more campaign_runs rows. Either a concrete
+// campaign_runs.id or the stable campaign_id from the campaign TOML
+// is accepted; the report tool uses this to log which interpretation
+// hit and to surface the aggregation depth in the output.
+type CampaignLookup struct {
+	Input             string
+	Runs              []CampaignRunSummary
+	MatchedAsRunID    bool // input matched a campaign_runs.id
+	MatchedAsConfigID bool // input matched at least one campaign_runs.campaign_id
+}
+
+// ResolveCampaign finds every campaign_runs row matching the input as
+// either a concrete id or a stable campaign_id. Returns a lookup with
+// MatchedAsRunID / MatchedAsConfigID flags so the caller can tell the
+// user which interpretation hit (and warn when the answer is "neither
+// — your report will be empty"). Rows are ordered by started_at, id
+// for deterministic downstream consumption.
+func (d *DB) ResolveCampaign(ctx context.Context, input string) (*CampaignLookup, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, campaign_id, started_at, ended_at
+		   FROM campaign_runs
+		  WHERE id = ? OR campaign_id = ?
+		  ORDER BY started_at, id`,
+		input, input,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("db: ResolveCampaign: %w", err)
+	}
+	defer rows.Close()
+
+	out := &CampaignLookup{Input: input}
+	for rows.Next() {
+		var r CampaignRunSummary
+		var endedAt sql.NullTime
+		if err := rows.Scan(&r.ID, &r.CampaignID, &r.StartedAt, &endedAt); err != nil {
+			return nil, fmt.Errorf("db: ResolveCampaign: scan: %w", err)
+		}
+		if endedAt.Valid {
+			t := endedAt.Time
+			r.EndedAt = &t
+		}
+		if r.ID == input {
+			out.MatchedAsRunID = true
+		}
+		if r.CampaignID == input {
+			out.MatchedAsConfigID = true
+		}
+		out.Runs = append(out.Runs, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: ResolveCampaign: %w", err)
+	}
+	return out, nil
+}
+
 // UpsertDerivedMetric inserts or replaces one derived_metrics row.
 // The UNIQUE KEY on (run_id, service_id, metric_name) makes this idempotent.
 func (d *DB) UpsertDerivedMetric(ctx context.Context, r DerivedMetricRow) error {
@@ -286,35 +353,41 @@ func (d *DB) UpsertDerivedMetric(ctx context.Context, r DerivedMetricRow) error 
 	return nil
 }
 
-// CampaignMetricRows returns derived metrics for every scenario run in
-// a campaign. campaign may be either a concrete campaign_runs.id or the
-// stable campaign_id from the campaign TOML; the latter aggregates all
-// matching campaign_runs rows.
-func (d *DB) CampaignMetricRows(ctx context.Context, campaign string) ([]CampaignMetricRow, error) {
-	rows, err := d.db.QueryContext(ctx,
-		`SELECT sr.id,
-		        COALESCE(ft.failure_types, ''),
-		        dm.service_id,
-		        dm.metric_name,
-		        dm.metric_value,
-		        COALESCE(dm.metric_text, '')
-		   FROM scenario_runs sr
-		   JOIN derived_metrics dm ON dm.run_id = sr.id
-		   LEFT JOIN (
-		     SELECT run_id,
-		            GROUP_CONCAT(DISTINCT failure_type ORDER BY failure_type SEPARATOR '+') AS failure_types
-		       FROM ground_truth_events
-		      WHERE event_type = 'failure_start'
-		        AND failure_type IS NOT NULL
-		      GROUP BY run_id
-		   ) ft ON ft.run_id = sr.id
-		  WHERE sr.campaign_id = ?
-		     OR sr.campaign_id IN (
-		          SELECT id FROM campaign_runs WHERE campaign_id = ?
-		        )
-		  ORDER BY COALESCE(ft.failure_types, ''), dm.service_id, sr.started_at, sr.id, dm.metric_name`,
-		campaign, campaign,
-	)
+// CampaignMetricRows returns derived metrics for every scenario run
+// belonging to the given campaign_runs.id values. Callers first resolve
+// a user-supplied identifier via ResolveCampaign so the report path can
+// log which interpretation matched and how many runs were aggregated;
+// passing the run-id list explicitly here keeps that signal out of band
+// from the data fetch.
+func (d *DB) CampaignMetricRows(ctx context.Context, campaignRunIDs []string) ([]CampaignMetricRow, error) {
+	if len(campaignRunIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.Repeat("?,", len(campaignRunIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(campaignRunIDs))
+	for i, id := range campaignRunIDs {
+		args[i] = id
+	}
+	query := `SELECT sr.id,
+	        COALESCE(ft.failure_types, ''),
+	        dm.service_id,
+	        dm.metric_name,
+	        dm.metric_value,
+	        COALESCE(dm.metric_text, '')
+	   FROM scenario_runs sr
+	   JOIN derived_metrics dm ON dm.run_id = sr.id
+	   LEFT JOIN (
+	     SELECT run_id,
+	            GROUP_CONCAT(DISTINCT failure_type ORDER BY failure_type SEPARATOR '+') AS failure_types
+	       FROM ground_truth_events
+	      WHERE event_type = 'failure_start'
+	        AND failure_type IS NOT NULL
+	      GROUP BY run_id
+	   ) ft ON ft.run_id = sr.id
+	  WHERE sr.campaign_id IN (` + placeholders + `)
+	  ORDER BY COALESCE(ft.failure_types, ''), dm.service_id, sr.started_at, sr.id, dm.metric_name`
+	rows, err := d.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: CampaignMetricRows: %w", err)
 	}

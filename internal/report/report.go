@@ -10,9 +10,88 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Automattic/uptime-bench/internal/db"
 )
+
+// failureTypeUnrecorded is the sentinel a Summary row carries when the
+// underlying scenario_runs row had no failure_start ground-truth events
+// to derive a failure_type from. Deliberately not the literal string
+// "unknown" because that name is already in use as a metric name (the
+// Unknown retrieve outcome) and we don't want the two namespaces to
+// collide if a future schema introduces a literal failure type called
+// "unknown".
+const failureTypeUnrecorded = "<no_failure>"
+
+// Report is the full reporter output: aggregated rows plus the
+// aggregation metadata downstream readers need to interpret the
+// numbers (how many campaign_runs were folded together, the time
+// span). Required for the methodology disclosure called out in
+// ROADMAP.md.
+type Report struct {
+	Meta      Meta      `json:"meta"`
+	Summaries []Summary `json:"summaries"`
+}
+
+// Meta describes how a Report was assembled. CampaignRuns counts how
+// many campaign_runs rows the data spans; when > 1 the report is an
+// aggregate across multiple executions of the same stable campaign id
+// (see ROADMAP — repeated runs of one config are intentionally
+// aggregated). EarliestStartedAt / LatestEndedAt frame the wall-clock
+// window; LatestEndedAt is nil while at least one campaign in the set
+// is still running.
+//
+// Future: a `--by-run` flag would let operators drill into per-run
+// numbers when an aggregate would obscure a regression. Today the
+// metadata header is enough disclosure for the headline summary.
+type Meta struct {
+	Input             string     `json:"input"`
+	MatchedAsRunID    bool       `json:"matched_as_run_id"`
+	MatchedAsConfigID bool       `json:"matched_as_config_id"`
+	CampaignRuns      int        `json:"campaign_runs"`
+	EarliestStartedAt *time.Time `json:"earliest_started_at,omitempty"`
+	LatestEndedAt     *time.Time `json:"latest_ended_at,omitempty"`
+}
+
+// MetaFromLookup builds report metadata from a db.CampaignLookup.
+// Pure helper; no I/O. Computing this here (rather than in db) keeps
+// db focused on row shapes and the report package focused on what
+// gets disclosed in published output.
+//
+// LatestEndedAt is suppressed (left nil) if any matched run is still
+// in flight — reporting an end time that isn't actually the latest
+// would mislead readers comparing two reports.
+func MetaFromLookup(l *db.CampaignLookup) Meta {
+	m := Meta{}
+	if l == nil {
+		return m
+	}
+	m.Input = l.Input
+	m.MatchedAsRunID = l.MatchedAsRunID
+	m.MatchedAsConfigID = l.MatchedAsConfigID
+	m.CampaignRuns = len(l.Runs)
+
+	anyInFlight := false
+	for i, r := range l.Runs {
+		if i == 0 || r.StartedAt.Before(*m.EarliestStartedAt) {
+			t := r.StartedAt
+			m.EarliestStartedAt = &t
+		}
+		if r.EndedAt == nil {
+			anyInFlight = true
+			continue
+		}
+		if m.LatestEndedAt == nil || r.EndedAt.After(*m.LatestEndedAt) {
+			t := *r.EndedAt
+			m.LatestEndedAt = &t
+		}
+	}
+	if anyInFlight {
+		m.LatestEndedAt = nil
+	}
+	return m
+}
 
 // Summary is one campaign report row for a failure type and service.
 type Summary struct {
@@ -56,7 +135,7 @@ func Summarize(rows []db.CampaignMetricRow) []Summary {
 	for _, row := range rows {
 		failureType := row.FailureType
 		if failureType == "" {
-			failureType = "unknown"
+			failureType = failureTypeUnrecorded
 		}
 		key := summaryKey{failureType: failureType, serviceID: row.ServiceID}
 		acc := byKey[key]
@@ -115,6 +194,14 @@ func Summarize(rows []db.CampaignMetricRow) []Summary {
 	return out
 }
 
+// metricValue coerces a nullable derived_metrics row into a float so
+// the boolean metric switch can run uniformly. NULL → 0 is intentional
+// today: every current writer in internal/measurement upserts a
+// concrete 0 or 1 for the boolean metric names. If a future migration
+// introduces a NULL-bearing metric where 0 means something other than
+// "not detected" (e.g. a "skipped" outcome carrying its reason in
+// metric_text), revisit — the better rule then is to skip NULL rows
+// for the boolean accumulators rather than counting them as zero.
 func metricValue(row db.CampaignMetricRow) float64 {
 	if row.MetricValue == nil {
 		return 0
@@ -150,6 +237,15 @@ func applyLatencyStats(s *Summary, latencies []float64) {
 	s.LatencyMaxSeconds = &max
 }
 
+// percentileNearest returns the value at percentile p using the
+// nearest-rank method (NIST / Wikipedia "C = 1": idx = ⌈p·N⌉ − 1, on
+// the sorted array). This is *not* linear interpolation — R's default
+// quantile() (type 7) and numpy's default percentile() will produce
+// slightly different numbers for the same data. The choice is
+// methodological, not arbitrary: nearest-rank always returns an
+// observed sample value, so the reported p95 is a number that actually
+// occurred in the campaign. Document the choice in any published
+// methodology section so skeptics can reproduce.
 func percentileNearest(sorted []float64, p float64) float64 {
 	if len(sorted) == 0 {
 		return 0
@@ -170,20 +266,66 @@ func percentileNearest(sorted []float64, p float64) float64 {
 	return sorted[idx]
 }
 
-// Write renders summaries in table, tsv, or json format.
-func Write(w io.Writer, format string, summaries []Summary) error {
+// Write renders a Report in table, tsv, or json format. Table format
+// emits a `# ...` comment line documenting how the data was scoped
+// (resolved interpretation, campaign_runs count, time span); JSON
+// wraps the same metadata as a top-level `meta` field. TSV stays
+// metadata-free so machine pipelines that already consume it don't
+// have to skip a header line.
+func Write(w io.Writer, format string, r Report) error {
 	switch strings.ToLower(format) {
 	case "", "table":
-		return writeDelimited(w, summaries, "\t", true)
+		return writeTable(w, r)
 	case "tsv":
-		return writeDelimited(w, summaries, "\t", false)
+		return writeDelimited(w, r.Summaries, "\t", false)
 	case "json":
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		return enc.Encode(summaries)
+		return enc.Encode(r)
 	default:
 		return fmt.Errorf("report: unknown output format %q", format)
 	}
+}
+
+func writeTable(w io.Writer, r Report) error {
+	if line := metaCommentLine(r.Meta); line != "" {
+		if _, err := fmt.Fprintln(w, line); err != nil {
+			return err
+		}
+	}
+	return writeDelimited(w, r.Summaries, "\t", true)
+}
+
+// metaCommentLine renders Meta as a one-line `#`-prefixed comment for
+// the table format. Returns empty when there's nothing useful to
+// disclose (e.g. the input matched nothing).
+func metaCommentLine(m Meta) string {
+	if m.CampaignRuns == 0 {
+		return ""
+	}
+	var match string
+	switch {
+	case m.MatchedAsRunID && m.MatchedAsConfigID:
+		match = "campaign_run_id+config_id"
+	case m.MatchedAsRunID:
+		match = "campaign_run_id"
+	case m.MatchedAsConfigID:
+		match = "config_id"
+	default:
+		match = "unknown"
+	}
+	parts := []string{
+		fmt.Sprintf("# input=%q matched_as=%s campaign_runs=%d", m.Input, match, m.CampaignRuns),
+	}
+	if m.EarliestStartedAt != nil {
+		parts = append(parts, fmt.Sprintf("earliest_started_at=%s", m.EarliestStartedAt.UTC().Format(time.RFC3339)))
+	}
+	if m.LatestEndedAt != nil {
+		parts = append(parts, fmt.Sprintf("latest_ended_at=%s", m.LatestEndedAt.UTC().Format(time.RFC3339)))
+	} else if m.CampaignRuns > 0 {
+		parts = append(parts, "latest_ended_at=in_progress")
+	}
+	return strings.Join(parts, " ")
 }
 
 func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) error {
@@ -205,6 +347,10 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 		fields := []string{
 			s.FailureType,
 			s.ServiceID,
+			// strconv.Itoa is intentional throughout this hot loop —
+			// fmt.Sprintf("%d", n) re-runs the format-state machine on
+			// every value and is ~3× slower per row at TSV scale. See
+			// BenchmarkWriteTSV; don't "clean up" to fmt.Sprintf.
 			strconv.Itoa(s.Samples),
 			formatRatio(s.DetectionRate),
 			strconv.Itoa(s.TruePositive),
@@ -228,6 +374,9 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 	return nil
 }
 
+// formatRatio / formatSeconds use strconv rather than fmt.Sprintf for
+// the same reason as the integer fields above: hot path, allocation
+// sensitive. See BenchmarkWriteTSV.
 func formatRatio(v *float64) string {
 	if v == nil {
 		return ""

@@ -319,6 +319,8 @@ When campaign data is published, the methodology section must include, at minimu
 - Total wall-clock duration and any campaign interruptions.
 - Confidence intervals on all reported percentiles.
 - The full count of `capability_mismatch`, `adapter_error`, and `maintenance_suppressed` outcomes per service — these are part of the data, not filtered out.
+- The percentile method used. `cmd/uptime-bench-report` uses the **nearest-rank** convention (`idx = ⌈p·N⌉ − 1` on the sorted sample, NIST / Wikipedia "C = 1"). Different from R's default `quantile()` (type 7, linear interpolation) and numpy's default `percentile()`, which produce slightly different numbers for the same data. Nearest-rank always returns an observed sample value — the published p95 is a number that actually occurred in the campaign — but skeptics recomputing with a different method will see ±1-bucket drift.
+- The aggregation depth. `cmd/uptime-bench-report` accepts either a concrete `campaign_runs.id` (one run) or a stable `campaign_id` from the campaign TOML (every matching run aggregated). The report header line discloses which interpretation matched and how many runs were folded together — quote that line in any published post so readers know the numbers span N runs, not 1.
 
 The methodology choices (which failure types are high-discrimination, what the sample-count target is) are explicit human judgments and should be argued for in any published post — different operators will care about different failures, and a transparent methodology lets them re-weight from the raw data if their concerns differ.
 
