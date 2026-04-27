@@ -15,6 +15,7 @@ import (
 	"github.com/Automattic/uptime-bench-certmint/internal/certbot"
 	"github.com/Automattic/uptime-bench-certmint/internal/config"
 	"github.com/Automattic/uptime-bench-certmint/internal/library"
+	"github.com/Automattic/uptime-bench-certmint/internal/lockfile"
 	"github.com/Automattic/uptime-bench-certmint/internal/manifest"
 	"github.com/Automattic/uptime-bench-certmint/internal/planner"
 )
@@ -83,6 +84,11 @@ func runOnceCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	lock, err := acquireLock(cfg)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 	return runOnce(ctx, cfg, current, *dryRun)
 }
 
@@ -97,6 +103,11 @@ func runDaemon(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	lock, err := acquireLock(cfg)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -175,6 +186,15 @@ func runOnce(ctx context.Context, cfg config.Config, current manifest.Manifest, 
 		log.Printf("certmint: archived %s not_after=%s fingerprint=%s", entry.ID, entry.NotAfter.Format(time.RFC3339), entry.FingerprintSHA256)
 	}
 	return nil
+}
+
+func acquireLock(cfg config.Config) (*lockfile.Lock, error) {
+	lock, err := lockfile.Acquire(cfg.LockPath)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("certmint: acquired lock %s", lock.Path)
+	return lock, nil
 }
 
 func loadConfigAndManifest(configPath string) (config.Config, manifest.Manifest, error) {

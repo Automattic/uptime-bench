@@ -1,6 +1,7 @@
 {
   "library_dir": "/var/lib/uptime-bench/certs",
   "state_dir": "/var/lib/uptime-bench-certmint",
+  "lock_path": "/var/lib/uptime-bench-certmint/certmint.lock",
   "poll_interval": "15m",
   "certbot": {
     "binary": "certbot",

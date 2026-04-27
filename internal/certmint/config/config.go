@@ -41,6 +41,7 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 type Config struct {
 	LibraryDir   string         `json:"library_dir"`
 	StateDir     string         `json:"state_dir"`
+	LockPath     string         `json:"lock_path"`
 	PollInterval Duration       `json:"poll_interval"`
 	Certbot      CertbotConfig  `json:"certbot"`
 	Domains      []DomainConfig `json:"domains"`
@@ -100,6 +101,9 @@ func (c *Config) ApplyDefaults() {
 	if c.StateDir == "" {
 		c.StateDir = "/var/lib/uptime-bench-certmint"
 	}
+	if c.LockPath == "" {
+		c.LockPath = filepath.Join(c.StateDir, "certmint.lock")
+	}
 	if c.PollInterval.Duration == 0 {
 		c.PollInterval.Duration = 15 * time.Minute
 	}
@@ -127,6 +131,9 @@ func (c Config) Validate() error {
 	var errs []error
 	if c.LibraryDir == "" {
 		errs = append(errs, errors.New("config: library_dir is required"))
+	}
+	if c.LockPath == "" {
+		errs = append(errs, errors.New("config: lock_path is required"))
 	}
 	if c.PollInterval.Duration <= 0 {
 		errs = append(errs, errors.New("config: poll_interval must be positive"))

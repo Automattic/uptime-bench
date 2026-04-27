@@ -60,12 +60,15 @@ This changes the exact set of identifiers for each order while preserving wildca
 - `README.md`: operator-facing overview and commands
 - `PROJECT.md`: boundary/contract with `uptime-bench`
 - `configs/example.json`: example daemon config
+- `configs/rfc2136.ini.example`: placeholder RFC2136 credential template
+- `docs/operator.md`: install, staging verification, production cutover, and systemd notes
 - `deploy/systemd/uptime-bench-certmint.service`: starting systemd unit
 - `cmd/certmint/main.go`: CLI entry point; commands are `plan`, `once`, `daemon`, `inspect`
 - `internal/config`: JSON config loader/validator
 - `internal/planner`: due-slot planner and unique SAN/cert-name generation
 - `internal/certbot`: certbot argv construction and execution
 - `internal/library`: archives certbot live PEM files into immutable library snapshots
+- `internal/lockfile`: advisory lock used by `once` and `daemon`
 - `internal/manifest`: manifest load/save and slot tracking
 - `internal/certutil`: PEM certificate metadata parsing
 
@@ -83,6 +86,10 @@ The generated shortlived certbot command includes:
 ```
 
 `once -dry-run` prints due certbot commands without issuing certs or writing snapshots.
+
+`once` and `daemon` acquire `lock_path`, defaulting to
+`<state_dir>/certmint.lock`, before planning or archiving due orders. This keeps
+manual and daemon runs from overlapping.
 
 `once` without `-dry-run`:
 
@@ -117,14 +124,12 @@ The target side in `uptime-bench` should use the manifest, not parse directory n
 
 ## Suggested Next Tasks
 
-1. Add tests for `internal/certbot.Args`, especially `--preferred-profile shortlived`, `--staging`, custom `--server`, and identifier ordering.
-2. Add config loader/validation tests.
-3. Add an archive test that generates a local test certificate fixture and verifies manifest metadata, copied files, permissions, and ID shape.
-4. Decide whether to commit this scaffold locally before deeper work.
-5. Add operator install docs for certbot + DNS plugin setup.
-6. Add a sample RFC2136 credentials template with clear permission guidance, but do not include real secrets.
-7. Decide whether to add a lock file around `once`/`daemon` so overlapping systemd/manual invocations cannot race.
-8. Later, implement the `uptime-bench` consumer: TLS listener, SNI cert loading, manifest selection by `days_remaining`/`days_expired`, and selected cert metadata in ground truth.
+1. Review and commit the cook-mode working tree if it looks good.
+2. Add CLI-level tests around `plan`, `inspect`, and `once -dry-run`.
+3. Consider a small integration test for manifest save/load plus planner skip behavior.
+4. Decide whether the daemon should sleep until the next due slot instead of polling at a fixed interval.
+5. Add GitHub Actions or another CI entrypoint for `go test`, `go vet`, and build.
+6. Later, implement the `uptime-bench` consumer: TLS listener, SNI cert loading, manifest selection by `days_remaining`/`days_expired`, and selected cert metadata in ground truth.
 
 ## Useful Constraints
 
