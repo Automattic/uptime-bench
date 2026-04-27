@@ -53,7 +53,8 @@ type RunRecord struct {
 	ScenarioVersion  string
 	Seed             int64
 	TargetID         string
-	Parameters       any // will be JSON-encoded
+	CampaignID       string // empty for direct (non-campaign) runs
+	Parameters       any    // will be JSON-encoded
 	StartedAt        time.Time
 	EndedAt          *time.Time
 	ResolutionReason *string
@@ -67,12 +68,64 @@ func (d *DB) InsertRun(ctx context.Context, r RunRecord) error {
 	}
 	_, err = d.db.ExecContext(ctx,
 		`INSERT INTO scenario_runs
-		 (id, scenario_id, scenario_version, seed, target_id, parameters, started_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.ScenarioID, r.ScenarioVersion, r.Seed, r.TargetID, params, r.StartedAt,
+		 (id, scenario_id, scenario_version, seed, target_id, campaign_id, parameters, started_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.ScenarioID, r.ScenarioVersion, r.Seed, r.TargetID,
+		nullStr(r.CampaignID), params, r.StartedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("db: InsertRun: %w", err)
+	}
+	return nil
+}
+
+// CampaignRunRecord is a campaign_runs row. The audit-trail fields
+// (ConfigTOML, MasterSeed, AdapterVersions, TargetFleetVersion) let a
+// reader of a published comparison post regenerate the campaign
+// deterministically. See ROADMAP.md "Automated randomized testing
+// campaigns" → "Methodology audit trail".
+type CampaignRunRecord struct {
+	ID                 string
+	CampaignID         string // from campaign TOML's `id` field
+	ConfigTOML         string // verbatim campaign config
+	MasterSeed         int64
+	StartedAt          time.Time
+	AdapterVersions    any    // map[string]string of service_id → SHA, JSON-encoded
+	TargetFleetVersion string // commit SHA of target/dns binaries
+}
+
+// InsertCampaignRun writes a new campaign_runs row at campaign start.
+func (d *DB) InsertCampaignRun(ctx context.Context, r CampaignRunRecord) error {
+	var versions []byte
+	if r.AdapterVersions != nil {
+		var err error
+		versions, err = json.Marshal(r.AdapterVersions)
+		if err != nil {
+			return fmt.Errorf("db: InsertCampaignRun: marshal adapter_versions: %w", err)
+		}
+	}
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO campaign_runs
+		 (id, campaign_id, config_toml, master_seed, started_at, adapter_versions, target_fleet_version)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.CampaignID, r.ConfigTOML, r.MasterSeed, r.StartedAt,
+		versions, nullStr(r.TargetFleetVersion),
+	)
+	if err != nil {
+		return fmt.Errorf("db: InsertCampaignRun: %w", err)
+	}
+	return nil
+}
+
+// CloseCampaignRun sets ended_at and resolution_reason on an existing
+// campaign row, mirroring CloseRun's shape for individual runs.
+func (d *DB) CloseCampaignRun(ctx context.Context, campaignRunID string, endedAt time.Time, reason string) error {
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE campaign_runs SET ended_at = ?, resolution_reason = ? WHERE id = ?`,
+		endedAt, reason, campaignRunID,
+	)
+	if err != nil {
+		return fmt.Errorf("db: CloseCampaignRun: %w", err)
 	}
 	return nil
 }
