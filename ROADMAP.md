@@ -103,11 +103,65 @@ Required by Phase 1 once we have multiple virtual hosts, but ordering with the p
 
 ## Automated randomized testing campaigns
 
-**Status:** Not implemented. Design needed before implementation. Foundational for the project's statistical-comparison value proposition; promote when the maintenance/cooldown work above lands.
+**Status:** Not implemented. Methodology locked 2026-04-27 (this entry). Implementation gated on the maintenance/cooldown work above. Foundational for the project's statistical-comparison value proposition.
 
 The harness today runs one scripted scenario at a time. That model is fine for *targeted* tests ("does Pingdom detect a 503?") but it can't produce the data the project actually exists to publish: **min, max, and average detection times of specific kinds of failures across the different services**, computed from enough samples that the numbers are defensible.
 
 A campaign is a long-running orchestration mode where the harness self-generates randomized scenarios for hours or days against the live fleet, accumulating thousands of `scenario_runs` rows that can be aggregated into per-(failure_type, service) statistics. Existing single-scenario mode remains for targeted testing.
+
+### Methodology: stratified random sampling
+
+Pure weighted-random ("Chaos Monkey style") was considered and rejected. It's the right tool for *resilience testing in production* but produces a Poisson-like sample distribution across failure modes that breaks every requirement of a benchmark: reproducibility, coverage parity, comparability, and statistical power. Some cells get oversampled; others undersampled; per-service comparisons over different distributions become meaningless.
+
+Instead, every campaign uses **stratified random sampling**:
+
+- A **cell** is one combination of `(failure_type, duration_bucket, host_pattern)`. Every scenario generated for a cell tests **all enabled services simultaneously** — same target, same timing, all monitors fanout — so per-service comparisons are over an identical distribution by construction.
+- Each cell receives a target sample count (n=20 default; see two-tier rule below). The campaign generates exactly that many scenario *designs* per cell, deterministically from the master seed.
+- Each design is **replayed** N times across the campaign duration, with the replay times distributed across hour-of-day and day-of-week to break cadence-alignment bias. This is the part that picks up the Chaos-Monkey instinct: same logical scenario, run at unpredictable absolute times, so a service whose internal scheduling happens to align (or misalign) with our cadence can't get a systematically wrong-looking number.
+- Within each cell, the *details* are randomized per-design: which exact duration in the bucket's range, which exact status code, which target from the pool — but the cell totals and the global structure are not.
+
+Net effect: campaigns are reproducible (same master seed → same design set → same execution sequence), comparable (every service sees the same distribution), and resistant to cadence/parameter-alignment bias.
+
+### Two-tier sampling: default + high-discrimination
+
+Not every cell needs the same number of samples. The driver isn't real-world frequency of the failure mode — it's the **expected size of inter-service differences** in the resulting numbers. Counter-intuitively, "common" failures often need *more* samples, not fewer:
+
+- **Wide-margin cells** (e.g., content tampering, certificate revocation): some services support them, some don't. The interesting result is the support matrix and the fact-of-detection. n=20 is plenty to establish "service A detects, service B doesn't, service C is `capability_mismatch`."
+- **Narrow-margin cells** (e.g., HTTP 5xx, TLS expiration): every service detects these. Differences are seconds, not orders of magnitude. To say "service A is faster than service B" with confidence, you need enough samples that the confidence intervals don't overlap — typically n ≥ 50.
+
+So the campaign config specifies a **default tier** (n=20 per cell) and an explicit **high-discrimination tier** (n=60 per cell) for failure types where service-to-service differences are expected to be small.
+
+### Baseline budget
+
+For a first-iteration campaign, the methodology locks in:
+
+- **K = 50 scenario designs** total (across all cells in both tiers).
+- **N = 20 default replays per design** for default-tier cells; **N = 60 replays per design** for high-discrimination-tier cells.
+- Per-campaign run total: roughly 1,000–1,500 scenario runs depending on the tier split.
+- **Diminishing returns hit around n=60–80**. Beyond that, extra samples don't visibly tighten confidence intervals on a typical detection-latency distribution. n=60 is the cap for the high-discrimination tier; pushing it higher mostly buys smugness, not signal.
+
+These numbers can be re-evaluated after the first real campaign produces data showing where the actual noise floor lies.
+
+### Anti-favoritism: in-code, not policy
+
+This project is open-source, public, and intended to evaluate Jetmon (the maintainer's product) honestly against the competition. To make the benchmark trustworthy for everyone — readers, competing services, and the maintainer — anti-favoritism must be enforced **mechanically in the code**, not relied on as a policy:
+
+- The campaign generator and reporter contain **no service-specific branches**. No `if serviceID == "jetmon-v1"` anywhere in the campaign or reporting code, ever. A simple lint test in CI grepping for known service IDs in those files would enforce this.
+- The reporter's **bias self-checks run before any latency numbers**: per-service sample counts, per-cell sample counts, and any service whose count deviates from the others by more than a stated threshold is flagged in the output. If Jetmon ran 100× and Pingdom 80× because of budget differences, that's the *first* line of the report, not buried.
+- **Confidence intervals are mandatory**, not optional. Every percentile in the output ships with a CI so readers can judge whether differences are meaningful. "Pingdom 70s ± 12s, UptimeRobot 95s ± 18s" is publishable; "Pingdom 70, UptimeRobot 95" is not.
+- **Errors are part of the data, not retried away.** If a campaign run got `adapter_error` because a vendor's API was flaky that day, that's the truth — not retried, not filtered out, not silently dropped. The report shows it. Same principle as `capability_mismatch` rows: they're queryable categories, not noise.
+
+### Methodology audit trail
+
+Every published result must be regenerable from a small set of pinned inputs. The schema needs to make these queryable:
+
+- `campaign_runs.config_toml` — the full campaign config, stored verbatim.
+- `campaign_runs.master_seed` — the seed that generated the design set.
+- `campaign_runs.adapter_versions` — JSON map of each adapter's commit SHA at campaign start.
+- `campaign_runs.target_fleet_version` — commit SHA of the target/DNS binaries.
+- `campaign_runs.started_at`, `ended_at` — wall-clock dates.
+
+Anyone reading a published comparison post should be able to clone the repo at the recorded SHAs, run the recorded campaign config with the recorded seed, and verify the numbers (modulo external-service flakiness on the day they re-run).
 
 ### Campaign config format
 
@@ -119,31 +173,39 @@ description = "..."
 duration    = "24h"   # campaign wall-clock cap; runner stops after this
 seed        = 42      # master seed; per-run seeds derive deterministically
 
-[[targets]]
-pool = ["bench-a", "bench-b", "probe-a"]   # randomly chosen per run
+[targets]
+pool = ["bench-a", "bench-b", "probe-a"]
+patterns = ["single", "two_random", "all"]   # which host_pattern values to stratify on
+
+[duration_buckets]
+brief  = { min = "30s",  max = "2m"  }
+medium = { min = "2m",   max = "10m" }
+long   = { min = "10m",  max = "1h"  }
+
+[sampling]
+samples_per_cell_default = 20
+
+# High-discrimination tier: failure modes where service-to-service
+# differences are expected to be small enough that n=20 won't reliably
+# separate them. Extra samples buy tighter confidence intervals.
+[[sampling.high_discrimination]]
+failure_types = ["http_status", "tls_expired", "tls_expiring"]
+samples_per_cell = 60
 
 [[failure_types]]
 type = "http_status"
-weight = 3                                  # picked 3× as often as weight=1
-status_code_choices = [503, 502, 504]       # one chosen per run
+status_code_choices = [503, 502, 504]
 
 [[failure_types]]
 type = "tcp_refused"
-weight = 1
 
 [[failure_types]]
 type = "http_timeout"
 phase_choices = ["ttfb", "body"]
 delay_range = { min = "5s", max = "60s" }
-weight = 2
-
-[duration_buckets]
-brief    = { min = "30s",  max = "2m",  weight = 5 }
-medium   = { min = "2m",   max = "10m", weight = 3 }
-long     = { min = "10m",  max = "1h",  weight = 1 }
 
 [escalation]
-probability = 0.20                          # 20% of runs are multi-stage
+probability = 0.20                          # 20% of designs are multi-stage
 stages_range = { min = 2, max = 3 }
 inter_stage_range = { min = "30s", max = "5m" }
 
@@ -156,10 +218,7 @@ jetmon-v1          = {}                          # unlimited (self-hosted)
 
 [cooldown]
 per_target_minimum = "10m"   # don't hit the same target more often than this
-                              # (interacts with vendor-side cooldown reset)
 ```
-
-Open questions for the design pass: per-failure-type parameter ranges (how to express "random delay between 5s and 60s" cleanly across all failure types); whether escalation chains use the existing `[[failures]]` list with offsets (likely yes) or a new structure.
 
 ### Failure escalation
 
@@ -169,67 +228,98 @@ A *single* run with multiple chained failures, not a sequence of separate runs. 
 - **Replacement**: HTTP 503 at t=0 → escalates to TCP refused at t=2m. Stage 1 ends when stage 2 begins.
 - **Recovery test**: failure at t=0..t=2m → silence until t=5m → second failure at t=5m..t=7m. Tests whether the monitor cleared the first incident before the second arrived.
 
-The current scenario format's `[[failures]]` blocks with `offset` already handle the "layered" pattern. "Replacement" needs either a way to set a failure's `duration` independent of the scenario duration, or a new "stage" abstraction. "Recovery test" works today by setting `offset` and `duration` on each block.
+The current scenario format's `[[failures]]` blocks with `offset` already handle the "layered" pattern. "Recovery test" works today by setting `offset` and `duration` on each block. **"Replacement" doesn't fit cleanly** — every failure currently runs for the scenario's full duration from its activation, so stage 1 can't be terminated when stage 2 begins. This needs either a per-failure `duration` override or a new "stage" abstraction; design to be resolved before the escalation phase implements it.
+
+### Two-tier execution: designs and replays
+
+The campaign generator produces two artifacts deterministically from the master seed:
+
+1. **Design set** — K scenario designs. Each design is a fully-specified (failure params, host set, escalation timing) artifact. Designs are written to `campaign_runs.designs` for audit.
+2. **Schedule** — for each design, a list of N replay times distributed across the campaign duration. Distribution isn't strictly random; it's quasi-random with constraints that no two replays of the same design fall in the same hour-of-day bucket, no two replays of *any* design overlap on the same target within `cooldown.per_target_minimum`, and replays are spread across weekday/weekend if the campaign spans both.
+
+Each replay invokes the existing single-scenario `Run()` once — campaigns are an orchestrator over many ordinary runs, not a new scenario shape. The per-replay `scenario_runs.parameters` records the design-id and replay-index for join-back.
 
 ### Random scenario generator
 
-Inside the runner, given a campaign config, produce an in-memory `*scenario.Scenario` per iteration:
+Pure function: `(config, masterSeed) → ([]Design, []ReplayPlan)`. No I/O. Heavily unit-testable; fix-seed → fixed design set and schedule. The generator runs once per campaign; the runner consumes its output.
 
-1. Sample a failure type by weight.
-2. Sample a duration bucket by weight, then a duration uniformly within the bucket's range.
-3. Sample any failure-specific params (status code, phase, delay…).
-4. Sample a target from the pool.
-5. With `escalation.probability`, sample 2–3 stages and stitch them onto the same scenario.
-6. Derive the per-run seed from `master_seed XOR run_index` for reproducibility.
+For each design, generation proceeds as:
 
-The generator emits an in-memory Scenario; the existing pipeline runs it. No new "campaign-only" code path through Provision/Activate/Retrieve.
+1. Pick a cell `(failure_type, duration_bucket, host_pattern)` from the cell list (cells are enumerated, not randomly sampled — every cell gets its declared sample count).
+2. Pick a duration uniformly within the bucket's range.
+3. Pick failure-specific params (status code, phase, delay…) randomly within their declared choices.
+4. Pick a host set matching the host_pattern (single random target, two random targets, all targets, …).
+5. With `escalation.probability`, append additional stages on the same scenario per the escalation rules.
+6. Assign a per-design seed derived from `masterSeed XOR designIndex`.
+
+For each design's replays, schedule generation picks N times within the campaign duration that satisfy the distribution constraints above. The schedule is pinned at campaign start, not generated lazily, so the audit trail shows "this design was supposed to run at times T1…TN" even if the campaign was interrupted.
 
 ### Runner extensions
 
 - New CLI flag: `-campaign=<config.toml>` mutually exclusive with `-scenario=…`.
-- Outer loop: while campaign duration not elapsed, generate a scenario, run it, sleep until the next slot per budget rules, repeat.
-- Per-target cooldown enforced at scheduling: don't pick a target whose most-recent run ended less than `cooldown.per_target_minimum` ago.
-- Failure isolation: one bad scenario (adapter error, target unreachable) records a `resolution_reason` and the campaign continues. Don't kill the whole campaign for transient issues.
-- Persist a `campaign_runs` row (or similar) so the campaign itself is queryable, not just the individual scenario_runs it produced.
+- Campaign loop: walk the schedule (pre-generated and time-sorted), run each replay via the existing `Run()`, advance to the next scheduled time.
+- Per-target cooldown enforced at scheduling time (not at execution): the schedule generator already respects `cooldown.per_target_minimum`.
+- Failure isolation: one bad scenario (adapter error, target unreachable) records its `resolution_reason` and the campaign continues with the next scheduled replay. The bad row is *kept*, not retried.
+- Persist a `campaign_runs` row at campaign start with the audit-trail columns above; update `ended_at` at campaign end.
 
-### Reporting / aggregation
+### Reporting
 
 A new `cmd/uptime-bench-report` tool that aggregates `derived_metrics` for a campaign:
 
 ```sh
 uptime-bench-report -campaign=weekly-comparison-2026-q2
 
-failure_type    | service           | runs | tp_rate | min_lat | avg_lat | p50_lat | p95_lat | max_lat
-http_status     | pingdom           |  142 | 0.98    |  41s    |  72s    |  68s    |  120s   |  180s
-http_status     | uptimerobot       |   24 | 0.96    |  62s    |  98s    |  95s    |  145s   |  220s
-http_timeout    | pingdom           |  118 | 0.91    |  35s    |  85s    |  80s    |  150s   |  240s
+# Bias self-checks (printed first):
+#   - sample counts per service (flagged if any deviation > 5%)
+#   - sample counts per cell (flagged if any cell short of target n)
+#   - any failure_type/service pairs with elevated capability_mismatch or
+#     adapter_error rates
+
+failure_type | service     | n  | tp_rate | min | avg | p50 | p95 (CI)        | max
+http_status  | pingdom     | 60 | 0.98    | 41s | 72s | 68s | 120s (±15s)     | 180s
+http_status  | uptimerobot | 60 | 0.96    | 62s | 98s | 95s | 145s (±19s)     | 220s
 ...
 ```
 
-Output formats: human-readable table (default), TSV, JSON. Backed by a single SQL query joining `scenario_runs` ↔ `derived_metrics` filtered on the campaign's run-id list.
+Output formats: human-readable table (default), TSV, JSON. Backed by SQL queries joining `scenario_runs` ↔ `derived_metrics` filtered on the campaign's run-id list.
 
-Statistics worth computing per (failure_type, service) pair:
+Per (failure_type, service) statistics:
 
 - Detection rate (true_positive / (true_positive + false_negative), excluding capability_mismatch and maintenance_suppressed).
-- Detection latency: min, max, avg, p50, p95.
+- Detection latency min/max/avg/p50/p95, each with 95% confidence interval.
 - False-positive rate.
-- Sample count (so readers can judge the confidence interval).
+- `capability_mismatch` count (separately surfaced; not folded into detection rate).
+- Sample count (so readers can judge meaning of the percentiles).
 
 ### Implementation phases
 
-1. **Campaign config format + parser** — new `internal/campaign` package mirroring `internal/scenario`. Validation rules. Tests.
-2. **Random scenario generator** — pure function: `(config, runIndex, seed) → *scenario.Scenario`. Heavily unit-testable; fix-seed → fixed scenario. No I/O.
-3. **Runner outer loop** — campaign mode flag; budget+cooldown scheduler; resilience to per-run errors. Reuses existing `Run()` for each iteration.
-4. **Escalation support** — extends the generator to emit multi-stage scenarios. Decide whether escalation needs scenario-format changes or only generator-level chaining.
-5. **`cmd/uptime-bench-report`** — aggregation tool with the metrics listed above. Output flags for table / TSV / JSON.
+1. **Campaign config format + parser** — new `internal/campaign` package mirroring `internal/scenario`. Validation rules including "every named failure_type in `high_discrimination` must appear in `[[failure_types]]`." Tests.
+2. **Pure design + schedule generator** — `(config, masterSeed) → (designs, schedule)`. Deterministic, no I/O. Heavy unit-test coverage including fixed-seed regression tests.
+3. **Schema migration for `campaign_runs`** — table creation plus a `campaign_id` foreign key on `scenario_runs`.
+4. **Runner outer loop** — `-campaign` mode flag; schedule walker; resilience to per-run errors. Reuses existing `Run()` for each replay.
+5. **Escalation support** — resolves the "replacement" pattern in the scenario format (per-failure `duration` override or new stage abstraction); generator emits multi-stage scenarios.
+6. **`cmd/uptime-bench-report`** — aggregation tool with the bias self-checks, statistics, and CI computation. Output flags for table / TSV / JSON.
 
-Each phase is independently mergeable.
+Each phase is independently mergeable. Phases 1–4 deliver the "campaigns work, no escalation" milestone — that alone produces useful comparison data.
 
 ### Cross-cutting concerns
 
-- **Budget interplay with vendor cooldowns**: even with `cooldown.per_target_minimum`, vendor-side alert cooldowns may suppress the second of two same-target runs that fire close together. The cooldown-reset capability flag (already designed) handles this; campaigns should require `SupportsCooldownReset` on every adapter they touch, or accept that some runs get classified as `cooldown_suppressed`.
-- **Reproducibility under randomness**: every campaign records its master seed in `campaign_runs.parameters`. Re-running with the same seed produces the same sequence of generated scenarios — the project's existing reproducibility invariant scales to campaigns.
-- **Cost ceiling**: a 24-hour campaign at the budgets above is on the order of ~480 runs across all enabled services. Some scenarios run 8 minutes each; running all sequentially would take ~64 hours, so campaigns must run scenarios concurrently across non-overlapping (target, service) pairs. The runner currently runs one scenario at a time end-to-end; concurrent campaign mode is an explicit extension. (Single-scenario mode remains serial.)
+- **Budget interplay with vendor cooldowns**: even with `cooldown.per_target_minimum`, vendor-side alert cooldowns may suppress the second of two same-target runs that fire close together. The cooldown-reset capability flag (already designed; Phase B implementations in progress) handles this. Campaigns require `SupportsCooldownReset = true` on every adapter they touch; adapters where it's false get gated as `capability_mismatch` for the campaign's runs. Currently all probe-based adapters with Phase B set this true (delete-recreate cycles state); Jetmon-v1 needs bridge work to do the same.
+- **Concurrent execution**: a 1,000-run campaign at ~8 minutes per scenario is ~133 sequential hours. Campaigns must run scenarios concurrently across non-overlapping (target, service) pairs. The runner currently runs one scenario at a time end-to-end; concurrent campaign mode is an explicit extension. Open question for the design pass: where the parallelism axis lives (per-target, per-service, per-(target,service) pair). Single-scenario mode remains serial.
+- **Reproducibility under randomness**: every campaign records its master seed and config in `campaign_runs`. Re-running with the same seed against the same fleet+adapter versions produces the same design set and schedule. The project's existing reproducibility invariant scales to campaigns.
+
+### Methodology disclosure (to be in published results)
+
+When campaign data is published, the methodology section must include, at minimum:
+
+- The full campaign config (TOML) and master seed.
+- Per-cell sample counts (showing where high-discrimination depth was applied and where it wasn't).
+- Adapter and target-fleet commit SHAs.
+- Total wall-clock duration and any campaign interruptions.
+- Confidence intervals on all reported percentiles.
+- The full count of `capability_mismatch`, `adapter_error`, and `maintenance_suppressed` outcomes per service — these are part of the data, not filtered out.
+
+The methodology choices (which failure types are high-discrimination, what the sample-count target is) are explicit human judgments and should be argued for in any published post — different operators will care about different failures, and a transparent methodology lets them re-weight from the raw data if their concerns differ.
 
 ---
 
