@@ -91,9 +91,14 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 		// keyword type. Until verified live, leave this false; the
 		// runner will gate keyword_check = absent scenarios as a
 		// capability_mismatch.
-		SupportsInvertedKeyword: false,
-		SupportsAgentChecks:     false,
-		DefaultMaxCallsPerRun:   60, // 60 req/min documented limit
+		SupportsInvertedKeyword:    false,
+		SupportsAgentChecks:        false,
+		SupportsMaintenanceWindows: true,
+		// Cooldown resets naturally because Deprovision deletes the
+		// monitor; the next Provision creates a fresh one with no
+		// inherited incident state. No vendor-side reset call needed.
+		SupportsCooldownReset: true,
+		DefaultMaxCallsPerRun: 60, // 60 req/min documented limit
 	}
 }
 
@@ -199,13 +204,80 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	if resp.Data.ID == "" {
 		return adapter.MonitorHandle{}, fmt.Errorf("better-uptime: POST /monitors: response missing monitor id")
 	}
-	return adapter.MonitorHandle{
+	handle := adapter.MonitorHandle{
 		ServiceID: a.id,
 		MonitorID: resp.Data.ID,
 		Fields: map[string]string{
 			"url": target.URL,
 		},
-	}, nil
+	}
+
+	if config.MaintenanceWindow != nil {
+		if err := a.applyMaintenance(ctx, resp.Data.ID, config.MaintenanceWindow); err != nil {
+			// Roll back the just-created monitor so the run doesn't leak.
+			// Use context.Background() so a cancelled outer ctx doesn't
+			// skip cleanup.
+			_ = a.Deprovision(context.Background(), handle)
+			return adapter.MonitorHandle{}, err
+		}
+	}
+
+	return handle, nil
+}
+
+// updateMonitorRequest is the body for PATCH /api/v2/monitors/{id} when
+// configuring a maintenance window. Better Uptime's maintenance primitive
+// is a recurring daily window in HH:MM:SS form, not a one-shot absolute
+// range; the adapter converts the scenario's absolute window to today's
+// HH:MM:SS plus today's day-name and sets the timezone to UTC. Empty
+// fields elsewhere on the monitor are omitted (omitempty) so this PATCH
+// only modifies maintenance-related attributes.
+type updateMonitorRequest struct {
+	MaintenanceFrom     string   `json:"maintenance_from,omitempty"`
+	MaintenanceTo       string   `json:"maintenance_to,omitempty"`
+	MaintenanceDays     []string `json:"maintenance_days,omitempty"`
+	MaintenanceTimezone string   `json:"maintenance_timezone,omitempty"`
+}
+
+// dayAbbreviations maps Go's time.Weekday to the lowercase 3-letter form
+// Better Uptime accepts in maintenance_days.
+var dayAbbreviations = map[time.Weekday]string{
+	time.Sunday:    "sun",
+	time.Monday:    "mon",
+	time.Tuesday:   "tue",
+	time.Wednesday: "wed",
+	time.Thursday:  "thu",
+	time.Friday:    "fri",
+	time.Saturday:  "sat",
+}
+
+// applyMaintenance configures the monitor's maintenance window. Returns
+// an error for cross-midnight UTC windows since Better Uptime's recurring
+// model can't express a one-shot range that straddles a day boundary
+// without committing to "every day at this UTC time," which would also
+// suppress alerts on subsequent days. Caller rolls back the monitor on
+// error.
+func (a *Adapter) applyMaintenance(ctx context.Context, monitorID string, window *adapter.MaintenanceWindow) error {
+	startUTC := window.Start.UTC()
+	endUTC := window.End.UTC()
+	if startUTC.Year() != endUTC.Year() ||
+		startUTC.Month() != endUTC.Month() ||
+		startUTC.Day() != endUTC.Day() {
+		return fmt.Errorf("better-uptime: maintenance window %s → %s crosses midnight UTC; not supported (Better Uptime's maintenance primitive is recurring-daily, not one-shot)",
+			startUTC.Format(time.RFC3339), endUTC.Format(time.RFC3339))
+	}
+
+	req := updateMonitorRequest{
+		MaintenanceFrom:     startUTC.Format("15:04:05"),
+		MaintenanceTo:       endUTC.Format("15:04:05"),
+		MaintenanceDays:     []string{dayAbbreviations[startUTC.Weekday()]},
+		MaintenanceTimezone: "UTC",
+	}
+	path := "/monitors/" + monitorID
+	if err := a.do(ctx, http.MethodPatch, path, req, nil); err != nil {
+		return fmt.Errorf("better-uptime: PATCH %s (maintenance): %w", path, err)
+	}
+	return nil
 }
 
 // ─── Retrieve ───────────────────────────────────────────────────────────────

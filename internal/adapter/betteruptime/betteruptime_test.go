@@ -40,6 +40,43 @@ func newTestAdapter(srvURL, token string) *Adapter {
 	return a
 }
 
+// requestRecord captures one inbound request for tests that need to
+// inspect multi-call sequences (e.g. POST /monitors followed by
+// PATCH /monitors/{id} for maintenance).
+type requestRecord struct {
+	method string
+	path   string
+	body   []byte
+}
+
+type routedResponse struct {
+	method     string
+	pathPrefix string
+	status     int
+	body       string
+}
+
+// newRoutedFake serves responses chosen by (method, pathPrefix) and
+// records every inbound request in order.
+func newRoutedFake(t *testing.T, responses []routedResponse) (*httptest.Server, *[]requestRecord) {
+	t.Helper()
+	var requests []requestRecord
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests = append(requests, requestRecord{method: r.Method, path: r.URL.Path, body: body})
+		for _, resp := range responses {
+			if resp.method == r.Method && strings.HasPrefix(r.URL.Path, resp.pathPrefix) {
+				w.WriteHeader(resp.status)
+				_, _ = w.Write([]byte(resp.body))
+				return
+			}
+		}
+		t.Errorf("routedFake: no response matched %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	return srv, &requests
+}
+
 // ─── Conformance ────────────────────────────────────────────────────────────
 
 func TestImplementsAdapterInterface(t *testing.T) {
@@ -424,5 +461,135 @@ func TestDeprovision_EmptyHandleIsNoop(t *testing.T) {
 	a := newTestAdapter("http://nope", "tok")
 	if err := a.Deprovision(context.Background(), adapter.MonitorHandle{}); err != nil {
 		t.Fatalf("empty handle: %v", err)
+	}
+}
+
+// ─── Maintenance windows ────────────────────────────────────────────────────
+
+// TestCapabilities_MaintenanceAndCooldown confirms both flags flipped to
+// true in Phase B. SupportsCooldownReset is true because Deprovision
+// already deletes the monitor — no extra reset call needed.
+func TestCapabilities_MaintenanceAndCooldown(t *testing.T) {
+	c := newTestAdapter("http://x", "tok").Capabilities()
+	if !c.SupportsMaintenanceWindows {
+		t.Error("SupportsMaintenanceWindows should be true")
+	}
+	if !c.SupportsCooldownReset {
+		t.Error("SupportsCooldownReset should be true (delete-recreate cycles state)")
+	}
+}
+
+// TestProvision_NoMaintenanceWindow: nil window means a single POST
+// /monitors call and no PATCH.
+func TestProvision_NoMaintenanceWindow(t *testing.T) {
+	srv, requests := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/monitors", status: 201, body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{CheckFrequency: 3 * time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(*requests) != 1 {
+		t.Errorf("expected 1 request without maintenance, got %d", len(*requests))
+	}
+}
+
+// TestProvision_WithMaintenanceWindow: in-day window produces a PATCH
+// with HH:MM:SS UTC, today's day name, and timezone=UTC.
+func TestProvision_WithMaintenanceWindow(t *testing.T) {
+	srv, requests := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/monitors", status: 201, body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
+		{method: "PATCH", pathPrefix: "/monitors/42", status: 200, body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
+	})
+	defer srv.Close()
+
+	// Pick a Tuesday in UTC, well inside a single calendar day.
+	start := time.Date(2026, 4, 28, 14, 30, 0, 0, time.UTC)
+	end := start.Add(45 * time.Minute) // 15:15:00 UTC same Tuesday
+
+	a := newTestAdapter(srv.URL, "tok")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    3 * time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: start, End: end},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(*requests) != 2 {
+		t.Fatalf("expected 2 requests (POST /monitors + PATCH /monitors/42), got %d", len(*requests))
+	}
+	if (*requests)[0].method != "POST" || (*requests)[0].path != "/monitors" {
+		t.Errorf("first request = %s %s, want POST /monitors", (*requests)[0].method, (*requests)[0].path)
+	}
+	if (*requests)[1].method != "PATCH" || (*requests)[1].path != "/monitors/42" {
+		t.Errorf("second request = %s %s, want PATCH /monitors/42", (*requests)[1].method, (*requests)[1].path)
+	}
+
+	var got updateMonitorRequest
+	if err := json.Unmarshal((*requests)[1].body, &got); err != nil {
+		t.Fatalf("PATCH body unmarshal: %v", err)
+	}
+	if got.MaintenanceFrom != "14:30:00" {
+		t.Errorf("maintenance_from = %q, want 14:30:00", got.MaintenanceFrom)
+	}
+	if got.MaintenanceTo != "15:15:00" {
+		t.Errorf("maintenance_to = %q, want 15:15:00", got.MaintenanceTo)
+	}
+	if got.MaintenanceTimezone != "UTC" {
+		t.Errorf("maintenance_timezone = %q, want UTC", got.MaintenanceTimezone)
+	}
+	if len(got.MaintenanceDays) != 1 || got.MaintenanceDays[0] != "tue" {
+		t.Errorf("maintenance_days = %v, want [tue] (2026-04-28 is a Tuesday)", got.MaintenanceDays)
+	}
+}
+
+// TestProvision_MaintenanceCrossingMidnightRejected: Better Uptime's
+// recurring-day model can't express a one-shot cross-midnight window
+// without also affecting the next day's same range. Adapter must reject
+// rather than silently mis-configuring.
+func TestProvision_MaintenanceCrossingMidnightRejected(t *testing.T) {
+	srv, requests := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/monitors", status: 201, body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
+		// Rollback delete after the failed PATCH attempt.
+		{method: "DELETE", pathPrefix: "/monitors/42", status: 204, body: ``},
+	})
+	defer srv.Close()
+
+	// 23:30 UTC + 1 hour spans into the next UTC day.
+	start := time.Date(2026, 4, 28, 23, 30, 0, 0, time.UTC)
+	end := start.Add(1 * time.Hour)
+
+	a := newTestAdapter(srv.URL, "tok")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    3 * time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: start, End: end},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error for cross-midnight window")
+	}
+	if !strings.Contains(err.Error(), "crosses midnight") {
+		t.Errorf("err = %v, want one mentioning cross-midnight", err)
+	}
+	// Verify rollback: monitor created → maintenance failed → monitor deleted.
+	sawDelete := false
+	for _, r := range *requests {
+		if r.method == "DELETE" && r.path == "/monitors/42" {
+			sawDelete = true
+		}
+	}
+	if !sawDelete {
+		t.Errorf("expected DELETE /monitors/42 rollback after rejection; requests = %+v", *requests)
 	}
 }
