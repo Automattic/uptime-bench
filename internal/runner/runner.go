@@ -151,6 +151,15 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			})
 			continue
 		}
+		if sc.Maintenance != nil && !caps.SupportsMaintenanceWindows {
+			log.Printf("runner: skip %s: scenario requires a maintenance window (not supported)", a.ServiceID())
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     "scenario requires a [maintenance] block; adapter SupportsMaintenanceWindows = false",
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
 
 		// Use the first site's hostname as the monitor URL so adapters register
 		// against the domain name (e.g. http://bench.local/) rather than the
@@ -165,6 +174,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			Keyword:        sc.Keyword,
 			KeywordCheck:   sc.KeywordCheck,
 		}
+		cfg.MaintenanceWindow = maintenanceWindowFor(sc, startedAt)
 		handle, err := a.Provision(ctx, tgt, cfg)
 		if err != nil {
 			log.Printf("runner: provision %s: %v", a.ServiceID(), err)
@@ -399,6 +409,23 @@ func logMonitorReport(ctx context.Context, database recorder, runID string, a ad
 		}); err != nil {
 			log.Printf("runner: insert monitor_report (%s/%s): %v", serviceID, r.EventType, err)
 		}
+	}
+}
+
+// maintenanceWindowFor converts a scenario's relative [maintenance]
+// offsets into absolute timestamps anchored at startedAt (the run's
+// canonical start). Returns nil when the scenario has no [maintenance]
+// block. A few seconds of drift between startedAt and the actual first
+// failure activation is acceptable because vendor maintenance APIs are
+// minute-grained.
+func maintenanceWindowFor(sc *scenario.Scenario, startedAt time.Time) *adapter.MaintenanceWindow {
+	if sc == nil || sc.Maintenance == nil {
+		return nil
+	}
+	windowStart := startedAt.Add(sc.Maintenance.StartOffset)
+	return &adapter.MaintenanceWindow{
+		Start: windowStart,
+		End:   windowStart.Add(sc.Maintenance.Duration),
 	}
 }
 

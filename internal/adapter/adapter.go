@@ -84,6 +84,20 @@ type Capabilities struct {
 	// capable of running reverse-check scenarios.
 	SupportsAgentChecks bool
 
+	// SupportsMaintenanceWindows indicates whether the adapter can configure
+	// a vendor-side suppression window so the monitor still runs but does
+	// not fire alerts during the declared interval. When false, the runner
+	// gates scenarios with a [maintenance] block as capability_mismatch.
+	// See docs/inter-run-state-design.md.
+	SupportsMaintenanceWindows bool
+
+	// SupportsCooldownReset indicates whether Deprovision (or a separate
+	// reset path) can clear vendor-side alert cooldown so the next run's
+	// first alert is not suppressed by the previous run. When false, the
+	// measurement engine flags suspect rows as cooldown_uncertain.
+	// See docs/inter-run-state-design.md.
+	SupportsCooldownReset bool
+
 	// DefaultMaxCallsPerRun is the adapter's default API call budget per run.
 	// 0 means unlimited. The fleet.toml value takes precedence when present.
 	DefaultMaxCallsPerRun int
@@ -116,6 +130,24 @@ type ProvisionConfig struct {
 	// the adapter.
 	Keyword      string
 	KeywordCheck string
+
+	// MaintenanceWindow, when non-nil, requests a vendor-side maintenance
+	// window covering [Start, End]. The adapter must configure the
+	// service so alerts during this interval are suppressed without
+	// pausing the underlying check. The runner gates this against
+	// Capabilities.SupportsMaintenanceWindows: adapters where the flag
+	// is false never see a non-nil MaintenanceWindow because the runner
+	// has already skipped Provision and written a capability_mismatch
+	// row. See docs/inter-run-state-design.md.
+	MaintenanceWindow *MaintenanceWindow
+}
+
+// MaintenanceWindow describes a vendor-side alert-suppression window.
+// Times are absolute (UTC); the runner converts the scenario's relative
+// offsets to absolutes at provision time.
+type MaintenanceWindow struct {
+	Start time.Time
+	End   time.Time
 }
 
 // KeywordCheck values for ProvisionConfig.KeywordCheck.
@@ -165,12 +197,32 @@ type RetrieveResult struct {
 // monitor_reports.reason_code column. Empty means "not categorised"
 // (typically a Known result, or an Unknown without a code attached).
 //
-// See EVENTS.md for the reporting rules. capability_mismatch is the
-// support-matrix code: the harness skipped Provision because the
-// scenario required a capability the adapter doesn't support; never
-// counted as a false negative.
+// See EVENTS.md for the reporting rules and
+// docs/inter-run-state-design.md for the maintenance/cooldown codes.
 const (
+	// ReasonCapabilityMismatch: the harness skipped Provision because
+	// the scenario required a capability the adapter doesn't support.
+	// Never counted as a false negative; queryable as the support matrix.
 	ReasonCapabilityMismatch = "capability_mismatch"
+
+	// ReasonMaintenanceSuppressed: failure was active and the monitor
+	// returned no alerts, but a maintenance window covered the failure
+	// period. Correct behaviour, not a false negative. Written by the
+	// measurement engine, not the runner.
+	ReasonMaintenanceSuppressed = "maintenance_suppressed"
+
+	// ReasonCooldownSuppressed: failure was active, the monitor returned
+	// no alerts, no maintenance window applied, and a recent prior run
+	// on the same monitor had alerted. Probably the cooldown working;
+	// uninformative for benchmark purposes. Written by the measurement
+	// engine.
+	ReasonCooldownSuppressed = "cooldown_suppressed"
+
+	// ReasonCooldownResetFailed: Deprovision attempted to reset the
+	// vendor-side alert cooldown and got a non-fatal error. Recorded so
+	// the next run's data can be flagged as potentially-cooldown-affected.
+	// Written by the runner.
+	ReasonCooldownResetFailed = "cooldown_reset_failed"
 )
 
 // RetrieveStatus indicates whether the adapter could determine the service's state.

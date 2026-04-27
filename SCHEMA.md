@@ -24,6 +24,23 @@ All duration fields use Go's `time.ParseDuration` format: a number followed by a
 | `keyword` | string | conditional | canary string | Scenario-level keyword used by both target and monitor for `http_body` content scenarios. Required when any failure is `content = "keyword_injected"` (no default — it is the bad string being injected). Defaults to `"uptime-bench-canary"` for other content variants. |
 | `keyword_check` | string | no | inferred | One of `"present"` or `"absent"`. `"present"` means the monitor alerts when `keyword` is missing from the body (the canary case). `"absent"` means the monitor alerts when `keyword` is found (the injected-bad-keyword case). Defaults to `"absent"` if any failure is `keyword_injected`, otherwise `"present"`. |
 
+### Optional `[maintenance]` block
+
+Declares a vendor-side alert-suppression window the harness asks the monitor to honour during this run. Tests whether the monitor correctly silences alerts during the declared window. Adapters that lack this capability are skipped at provision time with `reason_code = "capability_mismatch"`. See [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md) for the full design.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `start_offset` | duration string | no | `"0s"` | How far after scenario start the window opens. Must be non-negative. |
+| `duration` | duration string | yes | — | How long the window stays open. Must be positive. |
+
+```toml
+[maintenance]
+start_offset = "0s"
+duration     = "300s"
+```
+
+The window is converted to absolute timestamps at provision time using the run's recorded start time as the reference; a few seconds of drift between scenario activation and window start is expected because vendor maintenance APIs are minute-grained.
+
 ---
 
 ## Failure blocks
@@ -391,6 +408,7 @@ variant = "TLS11"
 - `chain_length` for `http_redirect` with `variant = "chain"` must exceed the monitor's max-redirect follow limit (typically > 10) to actually trigger the failure.
 - Scenario-level `keyword` is required when any failure has `http_body.content = "keyword_injected"` (it is the string being injected). For other content variants, it defaults to the canary string.
 - `keyword_check` is one of `"present"` or `"absent"`; defaults to `"absent"` when any failure is `keyword_injected`, otherwise `"present"`.
+- `[maintenance]` block: `start_offset` must be non-negative; `duration` must be positive.
 - `mode` for `dns_ns_unavailable` must be `"silent"` or `"servfail"`.
 - `variant` for `tls_deprecated` must be `"TLS10"` or `"TLS11"`. Defaults to `"TLS11"`.
 - `dns_ns_unavailable` requires the fleet to have at least two authoritative nameservers for the target domain. The runner rejects this failure type if the fleet registry does not satisfy this requirement.

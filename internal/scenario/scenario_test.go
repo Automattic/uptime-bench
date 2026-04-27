@@ -3,6 +3,7 @@ package scenario
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestValidateFailureType_DefaultsApplied is a regression test for a bug where
@@ -247,6 +248,132 @@ status_code = 503
 			}
 			if sc.KeywordCheck != tc.wantCheck {
 				t.Errorf("KeywordCheck = %q, want %q", sc.KeywordCheck, tc.wantCheck)
+			}
+		})
+	}
+}
+
+// TestMaintenanceBlock_HappyPath verifies a [maintenance] block parses
+// into a non-nil Scenario.Maintenance with the right offsets, and that
+// scenarios without the block leave it nil.
+func TestMaintenanceBlock_HappyPath(t *testing.T) {
+	const header = `
+id              = "x"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "300s"
+`
+	const body = `
+[[failures]]
+type        = "http_status"
+status_code = 503
+`
+
+	t.Run("no block leaves Maintenance nil", func(t *testing.T) {
+		sc, err := Parse([]byte(header + body))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if sc.Maintenance != nil {
+			t.Fatalf("Maintenance should be nil when block absent, got %+v", sc.Maintenance)
+		}
+	})
+
+	t.Run("block parses fields", func(t *testing.T) {
+		toml := header + `
+[maintenance]
+start_offset = "30s"
+duration     = "120s"
+` + body
+		sc, err := Parse([]byte(toml))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if sc.Maintenance == nil {
+			t.Fatal("Maintenance should be non-nil when block present")
+		}
+		if sc.Maintenance.StartOffset != 30*time.Second {
+			t.Errorf("StartOffset = %v, want 30s", sc.Maintenance.StartOffset)
+		}
+		if sc.Maintenance.Duration != 120*time.Second {
+			t.Errorf("Duration = %v, want 120s", sc.Maintenance.Duration)
+		}
+	})
+
+	t.Run("start_offset omitted defaults to 0", func(t *testing.T) {
+		toml := header + `
+[maintenance]
+duration = "60s"
+` + body
+		sc, err := Parse([]byte(toml))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if sc.Maintenance == nil || sc.Maintenance.StartOffset != 0 {
+			t.Fatalf("StartOffset should default to 0, got %+v", sc.Maintenance)
+		}
+	})
+}
+
+// TestMaintenanceBlock_ValidationErrors covers the rejection paths.
+func TestMaintenanceBlock_ValidationErrors(t *testing.T) {
+	const header = `
+id              = "x"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "300s"
+`
+	const body = `
+[[failures]]
+type        = "http_status"
+status_code = 503
+`
+
+	cases := []struct {
+		name       string
+		block      string
+		wantSubstr string
+	}{
+		{
+			name: "duration is required",
+			block: `
+[maintenance]
+start_offset = "30s"
+`,
+			wantSubstr: "maintenance.duration",
+		},
+		{
+			name: "duration must be positive",
+			block: `
+[maintenance]
+duration = "0s"
+`,
+			wantSubstr: "maintenance.duration",
+		},
+		{
+			name: "start_offset must be non-negative",
+			block: `
+[maintenance]
+start_offset = "-10s"
+duration     = "60s"
+`,
+			wantSubstr: "start_offset must be non-negative",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(header + tc.block + body))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantSubstr)
 			}
 		})
 	}

@@ -338,6 +338,67 @@ func TestLogMonitorReport_LogsErrorButContinues(t *testing.T) {
 	// No assertion on Go error: this function intentionally swallows.
 }
 
+// TestMaintenanceWindowFor_NilScenario covers the no-op cases.
+func TestMaintenanceWindowFor_NilScenario(t *testing.T) {
+	if w := maintenanceWindowFor(nil, time.Now()); w != nil {
+		t.Errorf("nil scenario should yield nil window, got %+v", w)
+	}
+	sc := &scenario.Scenario{Maintenance: nil}
+	if w := maintenanceWindowFor(sc, time.Now()); w != nil {
+		t.Errorf("scenario without [maintenance] should yield nil window, got %+v", w)
+	}
+}
+
+// TestMaintenanceWindowFor_AbsoluteTimestamps verifies that relative
+// scenario offsets convert to absolute timestamps anchored at startedAt.
+// This is the bit the runner relies on to call vendor maintenance APIs
+// with concrete from/to values.
+func TestMaintenanceWindowFor_AbsoluteTimestamps(t *testing.T) {
+	startedAt := time.Date(2026, 4, 26, 18, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		offset    time.Duration
+		dur       time.Duration
+		wantStart time.Time
+		wantEnd   time.Time
+	}{
+		{
+			name:      "zero offset, window opens at startedAt",
+			offset:    0,
+			dur:       5 * time.Minute,
+			wantStart: startedAt,
+			wantEnd:   startedAt.Add(5 * time.Minute),
+		},
+		{
+			name:      "positive offset shifts both ends",
+			offset:    30 * time.Second,
+			dur:       2 * time.Minute,
+			wantStart: startedAt.Add(30 * time.Second),
+			wantEnd:   startedAt.Add(150 * time.Second),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := &scenario.Scenario{
+				Maintenance: &scenario.Maintenance{
+					StartOffset: tc.offset,
+					Duration:    tc.dur,
+				},
+			}
+			w := maintenanceWindowFor(sc, startedAt)
+			if w == nil {
+				t.Fatal("got nil window, want non-nil")
+			}
+			if !w.Start.Equal(tc.wantStart) {
+				t.Errorf("Start = %v, want %v", w.Start, tc.wantStart)
+			}
+			if !w.End.Equal(tc.wantEnd) {
+				t.Errorf("End = %v, want %v", w.End, tc.wantEnd)
+			}
+		})
+	}
+}
+
 // TestLogMonitorReport_PropagatesReasonCode pins the contract that
 // RetrieveResult.ReasonCode reaches the database row. Capability gating
 // depends on this — without it, support-matrix queries can't tell

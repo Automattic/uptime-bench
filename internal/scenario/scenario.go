@@ -37,6 +37,26 @@ type Scenario struct {
 	// keyword_injected, else "present".
 	Keyword      string
 	KeywordCheck string
+
+	// Maintenance, when non-nil, declares a vendor-side alert-suppression
+	// window the harness asks the monitor to honour during this run. The
+	// scenario tests whether the monitor correctly silences alerts during
+	// the declared window. See docs/inter-run-state-design.md.
+	Maintenance *Maintenance
+}
+
+// Maintenance is the parsed [maintenance] block from a scenario TOML.
+// All offsets are relative to scenario start; the runner converts them
+// to absolute timestamps at provision time.
+type Maintenance struct {
+	// StartOffset is how far after scenario start the window opens.
+	// Defaults to 0 if the [maintenance] block is present but the field
+	// is omitted.
+	StartOffset time.Duration
+
+	// Duration is how long the window stays open. Required when the
+	// [maintenance] block is present (must be positive).
+	Duration time.Duration
 }
 
 // Failure is one failure block from a scenario file.
@@ -77,18 +97,24 @@ type Failure struct {
 
 // raw mirrors the TOML structure for unmarshalling before validation.
 type raw struct {
-	ID             string       `toml:"id"`
-	Version        string       `toml:"version"`
-	Description    string       `toml:"description"`
-	Target         string       `toml:"target"`
-	Monitors       []string     `toml:"monitors"`
-	CheckFrequency string       `toml:"check_frequency"`
-	GracePeriod    string       `toml:"grace_period"`
-	Duration       string       `toml:"duration"`
-	Seed           *int64       `toml:"seed"`
-	Keyword        string       `toml:"keyword"`
-	KeywordCheck   string       `toml:"keyword_check"`
-	Failures       []rawFailure `toml:"failures"`
+	ID             string          `toml:"id"`
+	Version        string          `toml:"version"`
+	Description    string          `toml:"description"`
+	Target         string          `toml:"target"`
+	Monitors       []string        `toml:"monitors"`
+	CheckFrequency string          `toml:"check_frequency"`
+	GracePeriod    string          `toml:"grace_period"`
+	Duration       string          `toml:"duration"`
+	Seed           *int64          `toml:"seed"`
+	Keyword        string          `toml:"keyword"`
+	KeywordCheck   string          `toml:"keyword_check"`
+	Maintenance    *rawMaintenance `toml:"maintenance"`
+	Failures       []rawFailure    `toml:"failures"`
+}
+
+type rawMaintenance struct {
+	StartOffset string `toml:"start_offset"`
+	Duration    string `toml:"duration"`
 }
 
 type rawFailure struct {
@@ -177,7 +203,34 @@ func validate(r raw) (*Scenario, error) {
 		return nil, err
 	}
 
+	if r.Maintenance != nil {
+		m, err := validateMaintenance(r.Maintenance)
+		if err != nil {
+			return nil, err
+		}
+		s.Maintenance = m
+	}
+
 	return s, nil
+}
+
+// validateMaintenance parses and validates the [maintenance] block.
+func validateMaintenance(rm *rawMaintenance) (*Maintenance, error) {
+	startOffset, err := parseDuration("maintenance.start_offset", rm.StartOffset, false)
+	if err != nil {
+		return nil, err
+	}
+	if startOffset < 0 {
+		return nil, fmt.Errorf("scenario: maintenance.start_offset must be non-negative")
+	}
+	dur, err := parseDuration("maintenance.duration", rm.Duration, true)
+	if err != nil {
+		return nil, err
+	}
+	if dur <= 0 {
+		return nil, fmt.Errorf("scenario: maintenance.duration must be positive")
+	}
+	return &Maintenance{StartOffset: startOffset, Duration: dur}, nil
 }
 
 // CanaryKeyword is the marker string present in healthy responses from
