@@ -472,15 +472,7 @@ func provisionAdapters(
 			continue
 		}
 
-		// Use the first site's hostname as the monitor URL so adapters
-		// register against the domain name (e.g. http://bench.local/)
-		// rather than the infrastructure address. Monitoring services
-		// check by domain, not by IP.
-		targetURL := fmt.Sprintf("http://%s", target.Address)
-		if len(target.Sites) > 0 {
-			targetURL = fmt.Sprintf("http://%s/", target.Sites[0].Host)
-		}
-		tgt := adapter.Target{ID: sc.Target, URL: targetURL}
+		tgt := adapter.Target{ID: sc.Target, URL: monitorTargetURL(sc, target)}
 		cfg := adapter.ProvisionConfig{
 			CheckFrequency: sc.CheckFrequency,
 			Keyword:        sc.Keyword,
@@ -497,6 +489,32 @@ func provisionAdapters(
 		log.Printf("runner: provisioned %s (monitor %s)", a.ServiceID(), handle.MonitorID)
 	}
 	return handles, provisionErr
+}
+
+func monitorTargetURL(sc *scenario.Scenario, target fleet.Target) string {
+	// Use the first site's hostname so adapters register against the
+	// domain name rather than the infrastructure address. Monitoring
+	// services check by domain, not by IP.
+	scheme := "http"
+	if scenarioUsesTLS(sc) {
+		scheme = "https"
+	}
+	if len(target.Sites) > 0 {
+		return fmt.Sprintf("%s://%s/", scheme, target.Sites[0].Host)
+	}
+	return fmt.Sprintf("%s://%s", scheme, target.Address)
+}
+
+func scenarioUsesTLS(sc *scenario.Scenario) bool {
+	if sc == nil {
+		return false
+	}
+	for _, f := range sc.Failures {
+		if strings.HasPrefix(f.Type, "tls_") {
+			return true
+		}
+	}
+	return false
 }
 
 func maintenanceWindowFor(sc *scenario.Scenario, startedAt time.Time) *adapter.MaintenanceWindow {

@@ -420,12 +420,54 @@ func (a *gateTestAdapter) Provision(_ context.Context, _ adapter.Target, c adapt
 // gateTestTarget returns a fleet.Target sufficient for provisionAdapters
 // to construct a target URL. The adapter never connects to it (Provision
 // is mocked), so the address can be anything that round-trips through
-// fmt.Sprintf("http://%s/", host).
+// monitorTargetURL.
 func gateTestTarget() fleet.Target {
 	return fleet.Target{
 		ID:      "bench",
 		Address: "192.0.2.1",
 		Sites:   []fleet.Site{{ID: "bench-a", Host: "bench-a.example"}},
+	}
+}
+
+func TestMonitorTargetURLUsesHTTPSForTLSScenarios(t *testing.T) {
+	tlsTypes := []string{
+		"tls_expired",
+		"tls_expiring",
+		"tls_invalid",
+		"tls_handshake",
+		"tls_deprecated",
+	}
+	for _, typ := range tlsTypes {
+		t.Run(typ, func(t *testing.T) {
+			sc := &scenario.Scenario{
+				Target:   "bench",
+				Failures: []scenario.Failure{{Type: typ}},
+			}
+			if got, want := monitorTargetURL(sc, gateTestTarget()), "https://bench-a.example/"; got != want {
+				t.Fatalf("monitorTargetURL = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestMonitorTargetURLUsesHTTPForNonTLSScenarios(t *testing.T) {
+	sc := &scenario.Scenario{
+		Target:   "bench",
+		Failures: []scenario.Failure{{Type: "http_status"}},
+	}
+	if got, want := monitorTargetURL(sc, gateTestTarget()), "http://bench-a.example/"; got != want {
+		t.Fatalf("monitorTargetURL = %q, want %q", got, want)
+	}
+}
+
+func TestMonitorTargetURLFallsBackToAddress(t *testing.T) {
+	target := fleet.Target{ID: "bench", Address: "192.0.2.1"}
+	sc := &scenario.Scenario{
+		Target:   "bench",
+		Failures: []scenario.Failure{{Type: "tls_expired"}},
+	}
+	if got, want := monitorTargetURL(sc, target), "https://192.0.2.1"; got != want {
+		t.Fatalf("monitorTargetURL = %q, want %q", got, want)
 	}
 }
 

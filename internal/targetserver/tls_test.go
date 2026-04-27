@@ -211,6 +211,103 @@ func TestCertificateSelectorTLSInvalidHostnameMismatch(t *testing.T) {
 	}
 }
 
+func TestTLSConfigSelectorUsesBaseConfigWithoutProtocolFailure(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)
+	if err != nil {
+		t.Fatalf("SelfSignedCertificate: %v", err)
+	}
+	certSelector := &CertificateSelector{
+		Registry: control.NewRegistry(),
+		Fallback: fallback,
+		Now:      func() time.Time { return now },
+	}
+	selector := &TLSConfigSelector{
+		Registry:     control.NewRegistry(),
+		Certificates: certSelector,
+		Base: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			MaxVersion: tls.VersionTLS13,
+		},
+	}
+
+	cfg, err := selector.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
+	if err != nil {
+		t.Fatalf("GetConfigForClient: %v", err)
+	}
+	if cfg.MinVersion != tls.VersionTLS12 || cfg.MaxVersion != tls.VersionTLS13 {
+		t.Fatalf("versions = min %x max %x, want TLS12/TLS13", cfg.MinVersion, cfg.MaxVersion)
+	}
+	if cfg.GetConfigForClient != nil {
+		t.Fatal("returned TLS config should not recursively carry GetConfigForClient")
+	}
+	if cfg.GetCertificate == nil {
+		t.Fatal("GetCertificate is nil")
+	}
+	got, err := cfg.GetCertificate(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	if got != &certSelector.Fallback {
+		t.Fatal("GetCertificate returned non-fallback cert")
+	}
+}
+
+func TestTLSConfigSelectorTLSDeprecatedVariants(t *testing.T) {
+	cases := []struct {
+		name    string
+		variant string
+		wantMin uint16
+		wantMax uint16
+	}{
+		{name: "default TLS11", variant: "", wantMin: tls.VersionTLS10, wantMax: tls.VersionTLS11},
+		{name: "TLS11", variant: "TLS11", wantMin: tls.VersionTLS10, wantMax: tls.VersionTLS11},
+		{name: "TLS10", variant: "TLS10", wantMin: tls.VersionTLS10, wantMax: tls.VersionTLS10},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := control.NewRegistry()
+			registry.Set(control.FailureSpec{
+				Type:     "tls_deprecated",
+				Host:     "target.bench.example.com",
+				Duration: time.Hour,
+				Params:   map[string]any{"variant": tc.variant},
+			}, 1)
+			selector := &TLSConfigSelector{
+				Registry: registry,
+				Base: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					MaxVersion: tls.VersionTLS13,
+				},
+			}
+
+			cfg, err := selector.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
+			if err != nil {
+				t.Fatalf("GetConfigForClient: %v", err)
+			}
+			if cfg.MinVersion != tc.wantMin || cfg.MaxVersion != tc.wantMax {
+				t.Fatalf("versions = min %x max %x, want min %x max %x", cfg.MinVersion, cfg.MaxVersion, tc.wantMin, tc.wantMax)
+			}
+		})
+	}
+}
+
+func TestTLSConfigSelectorRejectsUnsupportedTLSDeprecatedVariant(t *testing.T) {
+	registry := control.NewRegistry()
+	registry.Set(control.FailureSpec{
+		Type:     "tls_deprecated",
+		Host:     "target.bench.example.com",
+		Duration: time.Hour,
+		Params:   map[string]any{"variant": "SSL30"},
+	}, 1)
+	selector := &TLSConfigSelector{Registry: registry}
+
+	if _, err := selector.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"}); err == nil {
+		t.Fatal("GetConfigForClient returned nil error for unsupported tls_deprecated variant")
+	}
+}
+
 func TestCertificateSelectorUsesFallbackWithoutTLSFailure(t *testing.T) {
 	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 	fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)

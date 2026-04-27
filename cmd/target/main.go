@@ -88,12 +88,19 @@ func main() {
 			Fallback:         cert,
 			HostnameMismatch: mismatchCert,
 		}
+		baseTLS := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+		configSelector := &targetserver.TLSConfigSelector{
+			Registry:     registry,
+			Certificates: selector,
+			Base:         baseTLS,
+		}
 		httpsHTTP = &http.Server{
 			Addr:    fmt.Sprintf(":%d", *httpsPort),
 			Handler: dataHandler,
 			TLSConfig: &tls.Config{
-				GetCertificate: selector.GetCertificate,
-				MinVersion:     tls.VersionTLS12,
+				GetConfigForClient: configSelector.GetConfigForClient,
 			},
 		}
 	}

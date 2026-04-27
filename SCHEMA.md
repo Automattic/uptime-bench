@@ -393,7 +393,7 @@ type    = "tls_deprecated"
 variant = "TLS11"
 ```
 
-**Note:** Requires TLS support in the target binary. See [ROADMAP.md](ROADMAP.md).
+**Note:** The target HTTPS listener implements this by selecting a per-handshake TLS configuration. End-to-end monitor acceptance coverage is tracked in [ROADMAP.md](ROADMAP.md).
 
 ---
 

@@ -38,6 +38,57 @@ type CertificateSelector struct {
 	cache map[string]*tls.Certificate
 }
 
+// TLSConfigSelector chooses the per-ClientHello TLS protocol configuration.
+// Certificate selection still lives in CertificateSelector; this type owns
+// failures that alter the handshake protocol rather than the presented cert.
+type TLSConfigSelector struct {
+	Registry     *control.FailureRegistry
+	Certificates *CertificateSelector
+	Base         *tls.Config
+}
+
+// GetConfigForClient implements tls.Config.GetConfigForClient.
+func (s *TLSConfigSelector) GetConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+	if s == nil {
+		return nil, fmt.Errorf("target: tls config selector is nil")
+	}
+	cfg := s.baseConfig()
+	host := ""
+	if hello != nil {
+		host = hello.ServerName
+	}
+	host = normalizeTLSHost(host)
+	if host == "" || s.Registry == nil {
+		return cfg, nil
+	}
+	if spec, ok := s.Registry.Lookup("tls_deprecated", host, ""); ok {
+		variant, _ := spec.Params["variant"].(string)
+		switch variant {
+		case "", "TLS11":
+			cfg.MinVersion = tls.VersionTLS10
+			cfg.MaxVersion = tls.VersionTLS11
+		case "TLS10":
+			cfg.MinVersion = tls.VersionTLS10
+			cfg.MaxVersion = tls.VersionTLS10
+		default:
+			return nil, fmt.Errorf("target: unsupported tls_deprecated variant %q", variant)
+		}
+	}
+	return cfg, nil
+}
+
+func (s *TLSConfigSelector) baseConfig() *tls.Config {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if s.Base != nil {
+		cfg = s.Base.Clone()
+	}
+	cfg.GetConfigForClient = nil
+	if s.Certificates != nil {
+		cfg.GetCertificate = s.Certificates.GetCertificate
+	}
+	return cfg
+}
+
 // GetCertificate implements tls.Config.GetCertificate.
 func (s *CertificateSelector) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	if s == nil {
