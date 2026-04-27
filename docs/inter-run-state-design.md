@@ -13,27 +13,29 @@ Same shape: vendor-side suppression of an expected alert, harness needs to eithe
 
 ## Per-vendor research
 
-This table is the load-bearing reference. Verify each row against the live API before implementing the corresponding adapter — APIs drift, and several entries below are inferred from public docs without live confirmation.
+This table is the load-bearing reference. Each entry below was verified against the vendor's documentation on 2026-04-26 except where noted as "live verification needed" — those typically involve runtime behaviour that docs don't pin down (e.g. how synthetic-test IDs map to monitor IDs).
 
 ### Maintenance windows
 
 | Service | API endpoint | Granularity | Notes |
 |---|---|---|---|
-| Pingdom | `POST /api/3.1/maintenance` with `from` / `to` (Unix timestamps), `checks` array, optional `recurrencetype` | Per-check; minute resolution | Strong support; requires the check ID we already have on the handle |
-| UptimeRobot | `POST /v2/newMWindow` with `start_time` (HH:mm), `duration`, `value` (monitor IDs), `type` (`1=once`, `2-5=recurring`) | Per-monitor; minute resolution; UTC | Quirk: one-shot windows take HH:mm not date+time, so they only work for "today." Date-bounded one-shots are not directly expressible — workaround: use type=1 and accept the same-day limit, or recreate at scenario start. **Verify live.** |
-| Datadog Synthetics | Reuses the **Downtime API**: `POST /api/v1/downtime` with `start`, `end` (Unix epochs), `monitor_id` for monitor-attached downtimes, or `scope` for tag-based. Synthetic tests have an attached monitor. | Per-monitor or tag-scoped; second resolution | The downtime applies to the underlying monitor, not the synthetic test directly. Need to retrieve the synthetic's monitor_id at provision time and remember it on the handle. **Verify the relationship between synthetic and monitor IDs against the live API.** |
-| Better Uptime | Unclear — Better Stack has "Status Pages" with maintenance windows but those are status-page-facing, not alert-suppression. There may be a `policies` or `escalation_policies` field; the public docs are sparse. | TBD | **High research risk.** First action when implementing: ask Better Stack support whether their API exposes a per-monitor "suppress alerts" window. If not, set `SupportsMaintenanceWindows = false` and let the runner gate scenarios as `capability_mismatch`. |
+| Pingdom | `POST /api/3.1/maintenance` form-encoded: `description`, `from` / `to` (Unix timestamps, integer seconds), `checks` (comma-separated list of check IDs), optional `recurrencetype` | Per-check; minute resolution | Verified via working curl examples in vendor forum + community libraries. The check ID we already store on the handle goes straight into `checks`. |
+| UptimeRobot | Two-step: (1) `POST /v2/newMWindow` to create the window, (2) `POST /v2/editMonitor` with `mwindows=<id>` (dash-separated for multiple) to attach the window to monitors. `newMWindow` fields: `friendly_name`, `type` (1=Once, 2=Daily, 3=Weekly, 4=Monthly), `start_time` (Unix timestamp for type=1), `duration` (minutes), `value` (only for weekly/monthly: day numbers like `2-4-5`). | Per-window, attached to N monitors | **Spec correction**: earlier draft said `value` carries monitor IDs and `start_time` is HH:mm — both wrong. Monitor association is via `editMonitor.mwindows`, not the window-creation call. Cost: provision becomes 3 API calls (`newMonitor` → `newMWindow` → `editMonitor`); free tier's 10-req/min budget is tight but workable. |
+| Datadog Synthetics | Two flavours, **only one of which we want**: <br/>• **Monitor Downtime** — `POST /api/v1/downtime` with `start`/`end` (POSIX timestamps), `monitor_id` (single int), `scope` (tag list), `message`. Mutes alerts but probes keep running. **This is what we want.** <br/>• **Synthetic Scheduled Downtime** — separate concept, no public API as of 2026-04-26; UI-only. *Stops probe execution entirely* during the window, which defeats our test (we need probes to run during the failure to see whether the monitor honours the suppression). | Per-monitor | The synthetic test's `monitor_id` field is undocumented in the create-test endpoint we use. **Live verification needed**: after provisioning a synthetic test, retrieve it (or list test results) to find the associated monitor ID, then store it on the handle's `Fields` map for downtime creation. v2 API uses ISO-8601 + JSON:API but is otherwise equivalent. |
+| Better Uptime | **Spec correction**: maintenance API DOES exist. `PATCH /api/v2/monitors/{id}` with `maintenance_from` / `maintenance_to` (HH:MM:SS format, **not** absolute timestamps), `maintenance_days` (array like `["mon","tue",...]`), `maintenance_timezone` (e.g. `"UTC"`, `"Prague"`). Recurring-day model — there is no one-shot "from absolute T1 to absolute T2" form. | Per-monitor, recurring | Adapter has to convert the scenario's absolute window into today's HH:MM:SS plus today's day-name. Caveat: scenarios that cross midnight in the configured timezone need two adjacent days in `maintenance_days` plus careful HH:MM:SS — easier to reject mid-night-crossing scenarios for this adapter. After the run, restore the monitor with empty maintenance fields to avoid the recurrence applying tomorrow. |
 | Jetmon (self-hosted) | jetmon-bridge needs a new endpoint, e.g. `POST /maintenance` writing to a `jetpack_monitor_maintenance` table the agent reads. | Per-monitor; arbitrary granularity | Trivial since we control both ends. Implement *after* the probe-based adapters land so the bridge change isn't on the critical path. |
 
 ### Cooldown reset (clean-state-on-Deprovision)
 
 | Service | Approach | Notes |
 |---|---|---|
-| Pingdom | Cooldown is per-account notification rule, not per-check. Pause+resume the check (`POST /api/3.1/checks/{id}` with `paused=true`, then `paused=false`) doesn't reliably reset cooldown. **Recommendation: delete + recreate** between runs. | Cost: extra API call per run. Acceptable. |
-| UptimeRobot | No traditional cooldown — every state change emits a notification. Pause/unpause cycles state. | Likely a no-op; verify by running consecutive scenarios and checking whether the second alert fires. |
-| Datadog Synthetics | Alert state lives on the attached monitor; mute/unmute via `POST /api/v1/monitor/{id}/mute` and `/unmute`. Or delete + recreate the synthetic test (which we already do per run). | We already delete + recreate per run today. **No additional work needed.** |
-| Better Uptime | Each incident has a lifecycle (Started → Acknowledged → Resolved). Closing the incident may or may not clear back-pressure. | Verify live. If unclear, default to delete + recreate. |
-| Jetmon (self-hosted) | Direct DB access; trivial. | Match whatever the agent does — likely a `last_alert_at` column we can clear. |
+| Pingdom | Cooldown is per-account notification rule, not per-check. The current adapter already deletes + recreates each run (`DELETE /checks/{id}` in Deprovision, `POST /checks` in Provision), so cooldown is naturally cycled. | **No additional work needed.** |
+| UptimeRobot | No traditional cooldown — every state change emits a notification per docs/community reports. Adapter already delete-recreates each run. | **No additional work needed.** Set `SupportsCooldownReset = true` because deletion is the reset mechanism. |
+| Datadog Synthetics | Synthetic test is delete-recreated each run (current adapter behaviour). The attached monitor goes with it. | **No additional work needed.** |
+| Better Uptime | Monitor is delete-recreated each run (current adapter behaviour). Any incident state from the prior monitor doesn't transfer. | **No additional work needed.** |
+| Jetmon (self-hosted) | Direct DB access via the bridge; trivial to add a `clear_alert_state` endpoint. Currently the adapter (in write mode) creates/reactivates rows; would need bridge-side support to also clear `last_alert_at` or equivalent. | Implement alongside maintenance window bridge changes. |
+
+**Implication:** all four probe-based adapters get cooldown reset essentially for free because they already delete+recreate per run. `SupportsCooldownReset = true` is the default for the four; only Jetmon needs bridge work to claim it.
 
 ## Decisions
 
@@ -166,12 +168,12 @@ For each adapter:
 3. Set `SupportsMaintenanceWindows` / `SupportsCooldownReset` to `true`.
 4. Live test: write a scenario with `[maintenance]`, run it, confirm no alerts during the window.
 
-**Recommended order, easiest to hardest:**
+**Recommended order, easiest to hardest** (revised after 2026-04-26 research):
 
-1. **Datadog Synthetics** first — Downtime API is well-documented and we already delete-recreate so cooldown is no-op. Lowest research risk.
-2. **Pingdom** — `POST /api/3.1/maintenance` is straightforward; cooldown via delete+recreate already happens.
-3. **UptimeRobot** — `newMWindow` API with the same-day-only limitation. May need a special-case to recreate the window if the scenario crosses midnight.
-4. **Better Uptime** — research first. If no maintenance API, leave `SupportsMaintenanceWindows = false`; runner gates content scenarios as capability_mismatch (data, not failure).
+1. **Pingdom** first — `POST /api/3.1/maintenance` is the cleanest API in the bunch (straight Unix timestamps, integer check ID list, single call). Cooldown comes free because the adapter already delete-recreates. Lowest implementation friction.
+2. **Datadog Synthetics** — `/api/v1/downtime` is well-documented but requires a one-time live experiment to learn how to get the monitor_id from a freshly-created synthetic test (the docs don't pin it down). Once that's known, straightforward.
+3. **Better Uptime** — formerly assumed to lack a maintenance API; **research surfaced it**. The recurring-day-with-HH:MM:SS model is awkward but workable. Adapter must convert absolute window times to today's HH:MM:SS + today's day name, and reset the maintenance fields on Deprovision to avoid the recurrence applying tomorrow.
+4. **UptimeRobot** — three-call provision flow (`newMonitor` → `newMWindow` → `editMonitor`) makes this the most expensive in API calls per run. Free-tier 10-req/min budget is tight but workable. Plus the `value` / `start_time` fields needed spec-level corrections (see table above).
 5. **Jetmon** — requires bridge changes. Schedule alongside the next bridge release.
 
 ### Phase C — measurement engine extensions
@@ -191,7 +193,7 @@ After at least one adapter has Phase B complete:
 
 ## Open questions to resolve at implementation time
 
-1. **Better Uptime maintenance API**: does it exist? If yes, what's the endpoint? Resolution: ask support, or set capability false and move on.
-2. **UptimeRobot one-shot window crossing midnight**: does `type=1` with `duration > now-until-midnight` work, or does the API reject? Resolution: live test.
-3. **Datadog synthetic-vs-monitor ID mapping**: which ID does the Downtime API want? Resolution: live experiment, then pin it on the handle's `Fields` map.
-4. **Cooldown-reset failure semantics**: if delete+recreate fails midway (e.g. delete succeeds, recreate fails), the next run's monitor is gone entirely. Is that a `cooldown_reset_failed` row, or an `adapter_error` resolution_reason? Resolution: probably the latter, but flag it explicitly in the runner code.
+1. **Datadog synthetic-vs-monitor ID mapping**: the create-synthetic-test response shape doesn't document a `monitor_id` field. Resolution: at provision time, immediately retrieve the test (or list its results) to discover the associated monitor ID; pin it on the handle's `Fields` map.
+2. **UptimeRobot type=1 (Once) window straddling midnight UTC**: a one-shot window with start_time near 23:59 UTC and duration spanning into the next day — accepted by the API or rejected? Resolution: live test. Worst case, reject scenarios where `startedAt + StartOffset + Duration` crosses midnight UTC for this adapter.
+3. **Better Uptime maintenance window in a single day**: scenarios where the entire window fits in one day are easy. Cross-midnight scenarios require two adjacent days in `maintenance_days` plus careful HH:MM:SS — adapter could just reject these as a capability mismatch for this scenario shape, or implement the two-day workaround.
+4. **Cooldown-reset failure semantics**: if delete+recreate fails midway (delete succeeds, recreate fails), the next run's monitor is gone entirely. Is that a `cooldown_reset_failed` row or an `adapter_error` resolution_reason? Resolution: probably the latter, but flag it explicitly in the runner code so operators can distinguish.
