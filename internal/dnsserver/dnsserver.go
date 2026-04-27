@@ -83,6 +83,30 @@ func BuildFromFleet(fl *fleet.Config, memberID string) (ZoneMap, error) {
 			}
 		}
 	}
+
+	// Emit A records for every nameserver's declared public hosts.
+	// Every member of the fleet answers for every other member's
+	// hostnames so a resolver bypassing parent-side glue still
+	// reaches an authoritative answer — RFC 1034 §4.2.2 wants the
+	// child zone consistent with the parent's NS+glue.
+	for _, ns := range fl.Nameservers {
+		if len(ns.Hosts) == 0 {
+			continue
+		}
+		ip := ResolveIPv4(ns.Address)
+		if ip == nil {
+			return nil, fmt.Errorf("nameserver %s: cannot resolve %q to IPv4", ns.ID, ns.Address)
+		}
+		for _, host := range ns.Hosts {
+			h := strings.ToLower(host)
+			for domain, ttl := range servedDomains {
+				if h == domain || strings.HasSuffix(h, "."+domain) {
+					m[h] = ZoneEntry{IP: ip, TTL: ttl}
+					break
+				}
+			}
+		}
+	}
 	return m, nil
 }
 

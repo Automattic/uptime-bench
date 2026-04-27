@@ -35,6 +35,16 @@ type Nameserver struct {
 	ControlPort int
 	DNSPort     int
 	Domains     []string
+
+	// Hosts is the list of public hostnames the registrar's NS + glue
+	// records advertise for this member (e.g. ns1.harmonic.party,
+	// ns1.steadycadence.party). Used by BuildFromFleet to emit
+	// authoritative A records for the nameservers themselves so the
+	// child zone is consistent with the parent's glue. Optional, but
+	// strongly recommended once the fleet is reachable from public
+	// resolvers — DNSSEC and some monitoring services flag a zone
+	// whose NS hosts return NXDOMAIN from the zone's own servers.
+	Hosts []string
 }
 
 // Target is one target VM in the fleet.
@@ -118,6 +128,7 @@ func convert(r rawConfig) (*Config, error) {
 			ControlPort: ctrlPort,
 			DNSPort:     port,
 			Domains:     ns.Domains,
+			Hosts:       ns.Hosts,
 		})
 	}
 
@@ -181,6 +192,7 @@ type rawNameserver struct {
 	ControlPort int      `toml:"control_port"`
 	DNSPort     int      `toml:"dns_port"`
 	Domains     []string `toml:"domains"`
+	Hosts       []string `toml:"hosts"`
 }
 
 type rawTarget struct {

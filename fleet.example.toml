@@ -60,6 +60,13 @@ address      = "203.0.113.10"
 control_port = 9100
 dns_port     = 53
 domains      = ["bench.example.com", "probe.example.net"]
+# Public hostnames the registrar's NS + glue records advertise for
+# this member. The DNS server emits authoritative A records for these
+# so the child zone matches the parent's glue (RFC 1034 §4.2.2);
+# without them, in-bailiwick nameservers return NXDOMAIN for their
+# own hostnames and DNSSEC / monitoring-service preflight checks may
+# flag the zone as inconsistent.
+hosts        = ["ns1.bench.example.com", "ns1.probe.example.net"]
 
 [[nameservers]]
 id           = "ns-02"
@@ -67,6 +74,7 @@ address      = "203.0.113.11"
 control_port = 9100
 dns_port     = 53
 domains      = ["bench.example.com", "probe.example.net"]
+hosts        = ["ns2.bench.example.com", "ns2.probe.example.net"]
 
 # ---------------------------------------------------------------------------
 # Target VMs

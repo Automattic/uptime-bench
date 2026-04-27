@@ -77,6 +77,48 @@ control_port = 9100
 	}
 }
 
+func TestParse_NameserverHostsRoundTrip(t *testing.T) {
+	in := `
+[control]
+auth_token_file = "/tmp/tok"
+
+[[nameservers]]
+id = "ns-01"
+address = "1.2.3.4"
+control_port = 9100
+domains = ["example.com"]
+hosts = ["ns1.example.com", "ns1.other.example"]
+`
+	cfg, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := cfg.Nameservers[0].Hosts
+	if len(got) != 2 || got[0] != "ns1.example.com" || got[1] != "ns1.other.example" {
+		t.Fatalf("Hosts = %v, want [ns1.example.com ns1.other.example]", got)
+	}
+}
+
+func TestParse_NameserverHostsOptional(t *testing.T) {
+	in := `
+[control]
+auth_token_file = "/tmp/tok"
+
+[[nameservers]]
+id = "ns-01"
+address = "1.2.3.4"
+control_port = 9100
+domains = ["example.com"]
+`
+	cfg, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Nameservers[0].Hosts) != 0 {
+		t.Fatalf("Hosts = %v, want empty when omitted", cfg.Nameservers[0].Hosts)
+	}
+}
+
 func TestParse_DefaultControlTimeout(t *testing.T) {
 	in := `
 [control]
