@@ -61,6 +61,18 @@ func (s *TLSConfigSelector) GetConfigForClient(hello *tls.ClientHelloInfo) (*tls
 	if host == "" || s.Registry == nil {
 		return cfg, nil
 	}
+	if spec, ok := s.Registry.Lookup("tls_handshake", host, ""); ok {
+		reason, _ := spec.Params["reason"].(string)
+		switch reason {
+		case "", "version_mismatch", "no_common_cipher":
+			if reason == "" {
+				reason = "version_mismatch"
+			}
+			return nil, fmt.Errorf("target: tls_handshake active: %s", reason)
+		default:
+			return nil, fmt.Errorf("target: unsupported tls_handshake reason %q", reason)
+		}
+	}
 	if spec, ok := s.Registry.Lookup("tls_deprecated", host, ""); ok {
 		variant, _ := spec.Params["variant"].(string)
 		switch variant {

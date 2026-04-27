@@ -375,6 +375,8 @@ type   = "tls_handshake"
 reason = "no_common_cipher"
 ```
 
+**Note:** The target HTTPS listener implements this by aborting per-handshake configuration selection before a certificate is chosen. Clients generally see only a TLS handshake failure; the configured `reason` is preserved for scenario intent and target-side diagnostics.
+
 ---
 
 ### `tls_deprecated`

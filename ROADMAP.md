@@ -60,7 +60,7 @@ Until all five steps land, the benchmark cannot accurately compare content-tampe
 
 **Status:** Schema-defined, partially implemented. Active priority.
 
-The target binary now exposes an HTTPS listener with a generated self-signed fallback certificate. With `-cert-library-manifest`, healthy requests use the longest-valid matching library certificate, while active `tls_expired` and `tls_expiring` failures select the closest matching expired/expiring certificate for the request SNI. `tls_invalid` can force the generated self-signed cert or a generated hostname-mismatch cert, and `tls_deprecated` can clamp the HTTPS listener to TLS 1.0 or TLS 1.1. Remaining TLS work: `tls_handshake` protocol incompatibility and end-to-end OpenSSL/probe acceptance tests against a real cert library.
+The target binary now exposes an HTTPS listener with a generated self-signed fallback certificate. With `-cert-library-manifest`, healthy requests use the longest-valid matching library certificate, while active `tls_expired` and `tls_expiring` failures select the closest matching expired/expiring certificate for the request SNI. `tls_invalid` can force the generated self-signed cert or a generated hostname-mismatch cert, `tls_deprecated` can clamp the HTTPS listener to TLS 1.0 or TLS 1.1, and `tls_handshake` aborts the handshake before certificate selection. Remaining TLS work: end-to-end OpenSSL/probe acceptance tests against a real cert library.
 
 ### Phase 1 — HTTPS listener with self-signed default
 
@@ -79,9 +79,9 @@ The target binary now exposes an HTTPS listener with a generated self-signed fal
 
 ### Phase 3 — TLS protocol-level injection
 
-- `tls_handshake`: clamp `tls.Config.MinVersion` / `MaxVersion` per active failure to force version or cipher incompatibility. Probe receives a TLS alert; no HTTP response.
+- `tls_handshake`: implemented for target-side config selection by returning a deterministic handshake error before certificate selection. Probe receives a TLS alert; no HTTP response.
 - `tls_deprecated`: implemented for target-side config selection by clamping `tls.Config.MaxVersion` to TLS 1.1 or TLS 1.0. Needs end-to-end OpenSSL/probe acceptance coverage to confirm monitor behaviour across real clients.
-- Acceptance: `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active.
+- Acceptance still needed: `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active.
 
 **Measurement note for `tls_deprecated`**: because the request actually returns 200 OK, monitor outcomes split three ways — missed advisory, correct "TLS advisory" classification, false outage report. The measurement engine needs a third category here, distinct from true-positive and false-negative.
 

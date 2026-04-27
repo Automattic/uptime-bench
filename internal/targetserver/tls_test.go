@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -290,6 +291,62 @@ func TestTLSConfigSelectorTLSDeprecatedVariants(t *testing.T) {
 				t.Fatalf("versions = min %x max %x, want min %x max %x", cfg.MinVersion, cfg.MaxVersion, tc.wantMin, tc.wantMax)
 			}
 		})
+	}
+}
+
+func TestTLSConfigSelectorTLSHandshakeRejectsBeforeConfigSelection(t *testing.T) {
+	cases := []struct {
+		name       string
+		reason     string
+		wantReason string
+	}{
+		{name: "default", reason: "", wantReason: "version_mismatch"},
+		{name: "version mismatch", reason: "version_mismatch", wantReason: "version_mismatch"},
+		{name: "no common cipher", reason: "no_common_cipher", wantReason: "no_common_cipher"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := control.NewRegistry()
+			registry.Set(control.FailureSpec{
+				Type:     "tls_handshake",
+				Host:     "target.bench.example.com",
+				Duration: time.Hour,
+				Params:   map[string]any{"reason": tc.reason},
+			}, 1)
+			selector := &TLSConfigSelector{
+				Registry: registry,
+				Base: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+				},
+			}
+
+			cfg, err := selector.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
+			if err == nil {
+				t.Fatal("GetConfigForClient returned nil error for active tls_handshake")
+			}
+			if cfg != nil {
+				t.Fatalf("GetConfigForClient config = %+v, want nil", cfg)
+			}
+			if !strings.Contains(err.Error(), tc.wantReason) {
+				t.Fatalf("GetConfigForClient error = %v, want one mentioning %q", err, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestTLSConfigSelectorRejectsUnsupportedTLSHandshakeReason(t *testing.T) {
+	registry := control.NewRegistry()
+	registry.Set(control.FailureSpec{
+		Type:     "tls_handshake",
+		Host:     "target.bench.example.com",
+		Duration: time.Hour,
+		Params:   map[string]any{"reason": "cert_required"},
+	}, 1)
+	selector := &TLSConfigSelector{Registry: registry}
+
+	if _, err := selector.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"}); err == nil {
+		t.Fatal("GetConfigForClient returned nil error for unsupported tls_handshake reason")
 	}
 }
 
