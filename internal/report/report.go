@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -37,7 +38,7 @@ type summaryKey struct {
 }
 
 type accumulator struct {
-	runs                  map[string]bool
+	runs                  map[string]struct{}
 	truePositive          int
 	falseNegative         int
 	falsePositive         int
@@ -60,10 +61,10 @@ func Summarize(rows []db.CampaignMetricRow) []Summary {
 		key := summaryKey{failureType: failureType, serviceID: row.ServiceID}
 		acc := byKey[key]
 		if acc == nil {
-			acc = &accumulator{runs: map[string]bool{}}
+			acc = &accumulator{runs: map[string]struct{}{}}
 			byKey[key] = acc
 		}
-		acc.runs[row.RunID] = true
+		acc.runs[row.RunID] = struct{}{}
 
 		value := metricValue(row)
 		switch row.MetricName {
@@ -204,13 +205,13 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 		fields := []string{
 			s.FailureType,
 			s.ServiceID,
-			fmt.Sprintf("%d", s.Samples),
+			strconv.Itoa(s.Samples),
 			formatRatio(s.DetectionRate),
-			fmt.Sprintf("%d", s.TruePositive),
-			fmt.Sprintf("%d", s.FalseNegative),
-			fmt.Sprintf("%d", s.FalsePositive),
-			fmt.Sprintf("%d", s.Unknown),
-			fmt.Sprintf("%d", s.MaintenanceSuppressed),
+			strconv.Itoa(s.TruePositive),
+			strconv.Itoa(s.FalseNegative),
+			strconv.Itoa(s.FalsePositive),
+			strconv.Itoa(s.Unknown),
+			strconv.Itoa(s.MaintenanceSuppressed),
 			formatSeconds(s.LatencyMinSeconds),
 			formatSeconds(s.LatencyAvgSeconds),
 			formatSeconds(s.LatencyP50Seconds),
@@ -231,12 +232,12 @@ func formatRatio(v *float64) string {
 	if v == nil {
 		return ""
 	}
-	return fmt.Sprintf("%.3f", *v)
+	return strconv.FormatFloat(*v, 'f', 3, 64)
 }
 
 func formatSeconds(v *float64) string {
 	if v == nil {
 		return ""
 	}
-	return fmt.Sprintf("%.1f", *v)
+	return strconv.FormatFloat(*v, 'f', 1, 64)
 }
