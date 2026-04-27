@@ -50,30 +50,39 @@ func main() {
 		log.Fatalf("dns: %v", err)
 	}
 
-	zones := make(dnsserver.ZoneMap)
+	zones := &dnsserver.Zones{
+		Records: make(dnsserver.ZoneMap),
+		Apex:    map[string]dnsserver.ZoneApex{},
+	}
 
 	if *fleetFile != "" {
 		fl, err := fleet.Load(*fleetFile)
 		if err != nil {
 			log.Fatalf("dns: fleet: %v", err)
 		}
-		fleetZones, err := dnsserver.BuildFromFleet(fl, *memberID)
+		fleetZones, err := dnsserver.BuildFromFleet(fl, *memberID, uint32(time.Now().Unix()))
 		if err != nil {
 			log.Fatalf("dns: fleet zones: %v", err)
 		}
-		for name, e := range fleetZones {
-			zones[name] = e
+		for name, e := range fleetZones.Records {
+			zones.Records[name] = e
 		}
-		log.Printf("dns: %d zone(s) loaded from fleet config", len(fleetZones))
+		for apex, za := range fleetZones.Apex {
+			zones.Apex[apex] = za
+		}
+		log.Printf("dns: %d zone(s) loaded from fleet config", len(fleetZones.Records))
 	}
 
 	// -zone flags override fleet-derived zones.
-	if err := dnsserver.MergeFlagZones(zones, rawZones); err != nil {
+	if err := dnsserver.MergeFlagZones(zones.Records, rawZones); err != nil {
 		log.Fatalf("dns: zone setup: %v", err)
 	}
 
-	for name, e := range zones {
+	for name, e := range zones.Records {
 		log.Printf("dns: zone %s → %s (ttl %ds)", name, e.IP, e.TTL)
+	}
+	for apex, za := range zones.Apex {
+		log.Printf("dns: zone apex %s → SOA mname=%s ns=%v", apex, za.SOA.MName, za.NSHostnames)
 	}
 
 	registry := control.NewRegistry()

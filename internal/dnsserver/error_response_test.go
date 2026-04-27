@@ -46,7 +46,7 @@ func TestErrorResponse_NoTrailingOPTBytes(t *testing.T) {
 	wantQuestion := query[12 : len(query)-23]    // strip the 23-byte OPT we appended
 	wantLen := 12 + len(wantQuestion)
 
-	resp, _ := BuildResponse(query, control.NewRegistry(), ZoneMap{}, nil)
+	resp, _ := BuildResponse(query, control.NewRegistry(), testZones(nil), nil)
 	if len(resp) != wantLen {
 		t.Fatalf("response len = %d, want %d (header + question, no trailing OPT)", len(resp), wantLen)
 	}
@@ -81,7 +81,7 @@ func TestErrorResponse_FORMERROmitsQuestionSection(t *testing.T) {
 		0x00, 0x00, // ARCOUNT
 		// no question section
 	}
-	resp, _ := BuildResponse(q, control.NewRegistry(), ZoneMap{}, nil)
+	resp, _ := BuildResponse(q, control.NewRegistry(), testZones(nil), nil)
 	if len(resp) != 12 {
 		t.Fatalf("FORMERR response len = %d, want 12 (header only)", len(resp))
 	}
@@ -105,7 +105,7 @@ func TestErrorResponse_NoTrailingBytesOnSERVFAIL(t *testing.T) {
 	query := buildQueryWithOPT("example.com", 1)
 	wantLen := 12 + (len(query) - 12 - 23) // header + question, no OPT
 
-	resp, _ := BuildResponse(query, registry, ZoneMap{}, nil)
+	resp, _ := BuildResponse(query, registry, testZones(nil), nil)
 	if len(resp) != wantLen {
 		t.Fatalf("SERVFAIL response len = %d, want %d", len(resp), wantLen)
 	}

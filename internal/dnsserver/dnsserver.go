@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,11 +33,17 @@ type ZoneEntry struct {
 // Names are stored lowercase without trailing dot.
 type ZoneMap map[string]ZoneEntry
 
-// BuildFromFleet builds a ZoneMap from fleet.toml for the given nameserver
-// member. It includes A records for all target sites whose hostnames fall
-// under the domains this nameserver is authoritative for, with TTLs from
-// [[domains]].
-func BuildFromFleet(fl *fleet.Config, memberID string) (ZoneMap, error) {
+// BuildFromFleet builds a Zones snapshot from fleet.toml for the given
+// nameserver member: A records for every target site under a served
+// domain, plus per-zone NS hostnames and a SOA so apex queries and
+// negative caching work correctly.
+//
+// Caller must pass `now` as the wall-clock value to use for the SOA
+// serial; tests pass a fixed time, production passes time.Now().
+// SERIAL is the unix timestamp at zone-build time so each rebuild
+// (process restart) produces a fresh serial without any persistent
+// state.
+func BuildFromFleet(fl *fleet.Config, memberID string, nowUnix uint32) (*Zones, error) {
 	var ns *fleet.Nameserver
 	for i := range fl.Nameservers {
 		if fl.Nameservers[i].ID == memberID {
@@ -107,7 +114,46 @@ func BuildFromFleet(fl *fleet.Config, memberID string) (ZoneMap, error) {
 			}
 		}
 	}
-	return m, nil
+
+	// Build per-zone Apex records (NS hostnames + SOA). For each
+	// served domain, gather the public hostnames of every
+	// nameserver that declares this domain. The SOA's MNAME is the
+	// alphabetically first NS hostname so two members serving the
+	// same zone produce identical SOA records — a slave/recursor
+	// hitting either one sees the same primary.
+	apex := make(map[string]ZoneApex, len(servedDomains))
+	for domain, ttl := range servedDomains {
+		var nsHosts []string
+		for _, ns := range fl.Nameservers {
+			for _, host := range ns.Hosts {
+				h := strings.ToLower(host)
+				if h == domain || strings.HasSuffix(h, "."+domain) {
+					nsHosts = append(nsHosts, h)
+					break
+				}
+			}
+		}
+		sort.Strings(nsHosts)
+		mname := domain
+		if len(nsHosts) > 0 {
+			mname = nsHosts[0]
+		}
+		apex[domain] = ZoneApex{
+			Name:        domain,
+			NSHostnames: nsHosts,
+			SOA: SOA{
+				MName:   mname,
+				RName:   "hostmaster." + domain,
+				Serial:  nowUnix,
+				Refresh: 3600,
+				Retry:   600,
+				Expire:  86400,
+				Minimum: ttl,
+			},
+		}
+	}
+
+	return &Zones{Records: m, Apex: apex}, nil
 }
 
 // MergeFlagZones parses -zone name:addr pairs and adds them to the zone map.
@@ -156,7 +202,7 @@ func ResolveIPv4(addr string) net.IP {
 // txt may be nil if no ACME DNS-01 challenge support is wired in.
 //
 // Returns when conn returns a permanent read error (e.g. on close).
-func ServeUDP(conn net.PacketConn, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) {
+func ServeUDP(conn net.PacketConn, registry *control.FailureRegistry, zones *Zones, txt *TXTStore) {
 	buf := make([]byte, 4096) // EDNS0 allows up to 4096; classic DNS is 512
 	for {
 		n, src, err := conn.ReadFrom(buf)
@@ -173,7 +219,7 @@ func ServeUDP(conn net.PacketConn, registry *control.FailureRegistry, zones Zone
 	}
 }
 
-func handleUDPQuery(conn net.PacketConn, src net.Addr, query []byte, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) {
+func handleUDPQuery(conn net.PacketConn, src net.Addr, query []byte, registry *control.FailureRegistry, zones *Zones, txt *TXTStore) {
 	resp, delay := BuildResponse(query, registry, zones, txt)
 	if delay > 0 {
 		time.Sleep(delay)
@@ -192,7 +238,7 @@ func handleUDPQuery(conn net.PacketConn, src net.Addr, query []byte, registry *c
 // txt may be nil if no ACME DNS-01 challenge support is wired in.
 //
 // Returns when ln returns a permanent accept error (e.g. on close).
-func ServeTCP(ln net.Listener, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) {
+func ServeTCP(ln net.Listener, registry *control.FailureRegistry, zones *Zones, txt *TXTStore) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -211,7 +257,7 @@ func ServeTCP(ln net.Listener, registry *control.FailureRegistry, zones ZoneMap,
 // because TCP reads can short-read.
 //
 // txt may be nil if no ACME DNS-01 challenge support is wired in.
-func HandleTCP(conn net.Conn, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) {
+func HandleTCP(conn net.Conn, registry *control.FailureRegistry, zones *Zones, txt *TXTStore) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(TCPReadTimeout))
 
@@ -275,7 +321,7 @@ const acmeChallengePrefix = "_acme-challenge."
 //	Bytes 8-9:   NSCOUNT
 //	Bytes 10-11: ARCOUNT
 //	Bytes 12+:   question section
-func BuildResponse(query []byte, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) ([]byte, time.Duration) {
+func BuildResponse(query []byte, registry *control.FailureRegistry, zones *Zones, txt *TXTStore) ([]byte, time.Duration) {
 	if len(query) < 12 {
 		return nil, 0
 	}
@@ -335,19 +381,54 @@ func BuildResponse(query []byte, registry *control.FailureRegistry, zones ZoneMa
 	// dns_cname_nxdomain: return a CNAME pointing to a non-existent target.
 	if _, ok := registry.Lookup("dns_cname_nxdomain", "", ""); ok {
 		ttl := uint32(30)
-		if e, ok := zones[name]; ok {
-			ttl = e.TTL
+		if zones != nil {
+			if e, ok := zones.Records[name]; ok {
+				ttl = e.TTL
+			}
 		}
 		return cnameNXDomainResponse(query, qEnd, ttl), latency
 	}
 
-	const qtypeA = 1
-	if qtype == qtypeA {
-		if e, ok := zones[name]; ok {
-			return aResponse(query, qEnd, e.IP, e.TTL), latency
+	const (
+		qtypeA   = 1
+		qtypeNS  = 2
+		qtypeSOA = 6
+	)
+
+	// Apex queries (NS / SOA at the zone name itself).
+	if qtype == qtypeNS || qtype == qtypeSOA {
+		if apex, ok := zones.LookupApex(name); ok && apex.Name == name {
+			ttl := apex.SOA.Minimum
+			if rec, ok := zones.Records[name]; ok && rec.TTL > 0 {
+				ttl = rec.TTL
+			}
+			if qtype == qtypeNS {
+				return nsResponse(query, qEnd, apex, ttl), latency
+			}
+			return soaResponse(query, qEnd, apex, ttl), latency
 		}
 	}
 
+	if qtype == qtypeA {
+		if zones != nil {
+			if e, ok := zones.Records[name]; ok {
+				return aResponse(query, qEnd, e.IP, e.TTL), latency
+			}
+		}
+	}
+
+	// Genuine miss — name isn't in any served zone, or is in a zone
+	// but no record matches the requested type. Per RFC 2308, attach
+	// the zone's SOA in the AUTHORITY section so resolvers cache the
+	// negative answer using SOA.MINIMUM as the TTL. This is the path
+	// real recursors hit; the failure-injection NXDOMAIN above
+	// stays bare so monitor-under-test scenarios measure the
+	// unsoftened error.
+	if zones != nil {
+		if apex, ok := zones.LookupApex(name); ok {
+			return nxdomainWithSOA(query, qEnd, apex), latency
+		}
+	}
 	return errorResponse(query, qEnd, 3), latency
 }
 

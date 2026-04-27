@@ -46,19 +46,19 @@ func TestBuildFromFleet_EmitsNameserverAForEveryMember(t *testing.T) {
 	// whichever member it reaches first.
 	for _, memberID := range []string{"ns-01", "ns-02"} {
 		t.Run(memberID, func(t *testing.T) {
-			m, err := BuildFromFleet(cfg, memberID)
+			m, err := BuildFromFleet(cfg, memberID, 1700000000)
 			if err != nil {
 				t.Fatalf("BuildFromFleet: %v", err)
 			}
-			ns1, ok := m["ns1.example.com"]
+			ns1, ok := m.Records["ns1.example.com"]
 			if !ok || !ns1.IP.Equal(net.ParseIP("10.0.0.1")) {
 				t.Fatalf("ns1.example.com = %+v, want 10.0.0.1", ns1)
 			}
-			ns2, ok := m["ns2.example.com"]
+			ns2, ok := m.Records["ns2.example.com"]
 			if !ok || !ns2.IP.Equal(net.ParseIP("10.0.0.2")) {
 				t.Fatalf("ns2.example.com = %+v, want 10.0.0.2", ns2)
 			}
-			if _, ok := m["bench-a.example.com"]; !ok {
+			if _, ok := m.Records["bench-a.example.com"]; !ok {
 				t.Fatal("target A record disappeared after the nameserver-host change")
 			}
 		})
@@ -87,14 +87,14 @@ func TestBuildFromFleet_NameserverHostsRespectServedDomains(t *testing.T) {
 		},
 	}
 
-	m, err := BuildFromFleet(cfg, "ns-01")
+	m, err := BuildFromFleet(cfg, "ns-01", 1700000000)
 	if err != nil {
 		t.Fatalf("BuildFromFleet: %v", err)
 	}
-	if _, ok := m["ns1.example.com"]; !ok {
+	if _, ok := m.Records["ns1.example.com"]; !ok {
 		t.Fatal("ns1.example.com missing — host under served domain should be emitted")
 	}
-	if _, ok := m["ns1.other.example"]; ok {
+	if _, ok := m.Records["ns1.other.example"]; ok {
 		t.Fatal("ns1.other.example was emitted — hosts outside served domains must be skipped")
 	}
 }
@@ -122,16 +122,16 @@ func TestBuildFromFleet_NoHostsIsBackwardsCompatible(t *testing.T) {
 		},
 	}
 
-	m, err := BuildFromFleet(cfg, "ns-01")
+	m, err := BuildFromFleet(cfg, "ns-01", 1700000000)
 	if err != nil {
 		t.Fatalf("BuildFromFleet: %v", err)
 	}
-	for name := range m {
+	for name := range m.Records {
 		if name == "ns1.example.com" || name == "ns2.example.com" {
 			t.Fatalf("nameserver A record %q emitted with no Hosts configured", name)
 		}
 	}
-	if _, ok := m["bench-a.example.com"]; !ok {
+	if _, ok := m.Records["bench-a.example.com"]; !ok {
 		t.Fatal("target A record missing on backwards-compatible config")
 	}
 }

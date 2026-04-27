@@ -90,7 +90,7 @@ func TestHandleTCP_DeadlineEnforced(t *testing.T) {
 	defer ln.Close()
 
 	registry := control.NewRegistry()
-	zones := ZoneMap{}
+	zones := testZones(nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -143,9 +143,9 @@ func TestServeUDP_LatencyDoesNotSerialize(t *testing.T) {
 		Rate:     1.0,
 		Params:   map[string]any{"added_latency": "500ms"},
 	}, 0)
-	zones := ZoneMap{
+	zones := testZones(ZoneMap{
 		"example.com": {IP: net.ParseIP("10.0.0.1"), TTL: 30},
-	}
+	})
 
 	go ServeUDP(pc, registry, zones, nil)
 	addr := pc.LocalAddr().(*net.UDPAddr)
@@ -197,9 +197,9 @@ func TestBuildResponse_DNSLatencyReportsDelay(t *testing.T) {
 		Rate:     1.0,
 		Params:   map[string]any{"added_latency": "250ms"},
 	}, 0)
-	zones := ZoneMap{
+	zones := testZones(ZoneMap{
 		"example.com": {IP: net.ParseIP("10.0.0.1"), TTL: 30},
-	}
+	})
 
 	_, delay := BuildResponse(buildQueryA("example.com"), registry, zones, nil)
 	if delay != 250*time.Millisecond {

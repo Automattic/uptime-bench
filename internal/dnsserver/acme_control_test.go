@@ -220,7 +220,7 @@ func TestACMEControl_PutThenDNSQuery(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	resp, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), ZoneMap{}, store)
+	resp, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), testZones(nil), store)
 	got := parseTXTAnswers(t, resp)
 	if len(got) != 1 || got[0] != "round-trip-value" {
 		t.Fatalf("DNS round-trip values = %v, want [round-trip-value]", got)
@@ -233,7 +233,7 @@ func TestACMEControl_PutThenDNSQuery(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	resp2, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), ZoneMap{}, store)
+	resp2, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), testZones(nil), store)
 	if rcode := responseRCODE(resp2); rcode != 3 {
 		t.Fatalf("after Delete, RCODE = %d, want 3 (NXDOMAIN)", rcode)
 	}

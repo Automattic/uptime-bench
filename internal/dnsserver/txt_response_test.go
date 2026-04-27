@@ -101,7 +101,7 @@ func TestBuildResponse_TXTReturnsAllStoredValues(t *testing.T) {
 	store.Add("_acme-challenge.bench.example.com", "validation-apex", 30)
 	store.Add("_acme-challenge.bench.example.com", "validation-wildcard", 30)
 
-	resp, delay := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), ZoneMap{}, store)
+	resp, delay := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), testZones(nil), store)
 	if delay != 0 {
 		t.Fatalf("delay = %v, want 0", delay)
 	}
@@ -131,7 +131,7 @@ func TestBuildResponse_TXTAnsweredEvenWithoutAZoneEntry(t *testing.T) {
 	store := NewTXTStore()
 	store.Add("_acme-challenge.bench.example.com", "validation-token", 30)
 
-	resp, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), ZoneMap{}, store)
+	resp, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), testZones(nil), store)
 	if rcode := responseRCODE(resp); rcode != 0 {
 		t.Fatalf("RCODE = %d, want 0 (NOERROR)", rcode)
 	}
@@ -172,7 +172,7 @@ func TestBuildResponse_TXTBypassesDNSFailureScenarios(t *testing.T) {
 			store := NewTXTStore()
 			store.Add("_acme-challenge.bench.example.com", "validation", 30)
 
-			resp, delay := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), registry, ZoneMap{}, store)
+			resp, delay := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), registry, testZones(nil), store)
 			if delay != 0 {
 				t.Fatalf("delay = %v, want 0 (failure injection must be bypassed)", delay)
 			}
@@ -201,7 +201,7 @@ func TestBuildResponse_NonChallengeTXTRespectsFailureInjection(t *testing.T) {
 	store := NewTXTStore()
 	store.Add("bench.example.com", "non-challenge-value", 30)
 
-	resp, _ := BuildResponse(buildQuery("bench.example.com", 16), registry, ZoneMap{}, store)
+	resp, _ := BuildResponse(buildQuery("bench.example.com", 16), registry, testZones(nil), store)
 	if rcode := responseRCODE(resp); rcode != 2 {
 		t.Fatalf("RCODE = %d, want 2 (SERVFAIL) — non-ACME TXT must respect failure injection", rcode)
 	}
@@ -222,7 +222,7 @@ func TestBuildResponse_TXTNoStoreFallsThroughToNXDOMAIN(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), ZoneMap{}, tc.store)
+			resp, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), testZones(nil), tc.store)
 			if rcode := responseRCODE(resp); rcode != 3 {
 				t.Fatalf("RCODE = %d, want 3 (NXDOMAIN)", rcode)
 			}
@@ -235,9 +235,9 @@ func TestBuildResponse_TXTNoStoreFallsThroughToNXDOMAIN(t *testing.T) {
 func TestBuildResponse_AStillWorksWhileTXTStorePopulated(t *testing.T) {
 	store := NewTXTStore()
 	store.Add("_acme-challenge.bench.example.com", "token", 30)
-	zones := ZoneMap{
+	zones := testZones(ZoneMap{
 		"bench.example.com": {IP: net.ParseIP("10.0.0.1"), TTL: 30},
-	}
+	})
 
 	resp, _ := BuildResponse(buildQuery("bench.example.com", 1), control.NewRegistry(), zones, store)
 	if rcode := responseRCODE(resp); rcode != 0 {
@@ -262,7 +262,7 @@ func TestBuildResponse_TXTLongValueSplitsAcross255ByteSegments(t *testing.T) {
 	long := strings.Repeat("a", 600)
 	store.Add("_acme-challenge.bench.example.com", long, 30)
 
-	resp, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), ZoneMap{}, store)
+	resp, _ := BuildResponse(buildQuery("_acme-challenge.bench.example.com", 16), control.NewRegistry(), testZones(nil), store)
 	got := parseTXTAnswers(t, resp)
 	if len(got) != 1 || got[0] != long {
 		t.Fatalf("round-trip failed: got %d-char value, want %d-char", len(got[0]), len(long))
