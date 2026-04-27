@@ -1,0 +1,42 @@
+{
+  "library_dir": "/var/lib/uptime-bench/certs",
+  "state_dir": "/var/lib/uptime-bench-certmint",
+  "poll_interval": "15m",
+  "certbot": {
+    "binary": "certbot",
+    "email": "ops@example.com",
+    "agree_tos": true,
+    "staging": true,
+    "config_dir": "/var/lib/uptime-bench-certmint/letsencrypt",
+    "work_dir": "/var/lib/uptime-bench-certmint/work",
+    "logs_dir": "/var/log/uptime-bench-certmint",
+    "authenticator_args": [
+      "--dns-rfc2136",
+      "--dns-rfc2136-credentials",
+      "/etc/uptime-bench-certmint/rfc2136.ini",
+      "--dns-rfc2136-propagation-seconds",
+      "60"
+    ]
+  },
+  "domains": [
+    {
+      "name": "bench.example.com",
+      "identifiers": [
+        "bench.example.com",
+        "*.bench.example.com"
+      ],
+      "unique_san_template": "cert-{date}-{slot}-{profile}.bench.example.com",
+      "profiles": [
+        {
+          "name": "classic",
+          "per_day": 1
+        },
+        {
+          "name": "shortlived",
+          "preferred_profile": "shortlived",
+          "per_day": 2
+        }
+      ]
+    }
+  ]
+}
