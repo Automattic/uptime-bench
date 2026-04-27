@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -16,9 +17,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Automattic/uptime-bench/internal/certlibrary"
 	"github.com/Automattic/uptime-bench/internal/control"
 	"github.com/Automattic/uptime-bench/internal/targetserver"
 	"github.com/Automattic/uptime-bench/internal/tokenfile"
@@ -26,8 +29,11 @@ import (
 
 func main() {
 	httpPort := flag.Int("http-port", 80, "port for HTTP monitor traffic")
+	httpsPort := flag.Int("https-port", 443, "port for HTTPS monitor traffic; set 0 to disable")
 	controlPort := flag.Int("control-port", 9000, "port for harness control API")
 	memberID := flag.String("id", "target", "fleet member ID for control status responses")
+	tlsHosts := flag.String("tls-hosts", "localhost,bench.local,probe.local", "comma-separated SANs for the generated default self-signed HTTPS certificate")
+	certLibraryManifest := flag.String("cert-library-manifest", "", "path to uptime-bench-certmint manifest.json for TLS expiration scenarios")
 	tokenFile := flag.String("token-file", "", "path to control token file (default: CONTROL_TOKEN env)")
 	flag.Parse()
 
@@ -45,6 +51,8 @@ func main() {
 		Handler: controlSrv.Handler(),
 	}
 
+	dataHandler := &targetserver.VirtualHostHandler{Registry: registry}
+
 	// Internal HTTP data server. Listens on a localhost port that the TCP
 	// proxy forwards survivors to. Offsetting the public port by 10000
 	// (e.g. 80 → 10080) keeps the mapping obvious in `ss -tlnp`.
@@ -52,7 +60,36 @@ func main() {
 	internalAddr := fmt.Sprintf("127.0.0.1:%d", internalPort)
 	dataSrv := &http.Server{
 		Addr:    internalAddr,
-		Handler: &targetserver.VirtualHostHandler{Registry: registry},
+		Handler: dataHandler,
+	}
+	var httpsHTTP *http.Server
+	if *httpsPort > 0 {
+		cert, err := targetserver.SelfSignedCertificate(splitCSV(*tlsHosts), time.Now())
+		if err != nil {
+			log.Fatalf("target: tls cert: %v", err)
+		}
+		var library *certlibrary.Library
+		if *certLibraryManifest != "" {
+			loaded, err := certlibrary.Load(*certLibraryManifest)
+			if err != nil {
+				log.Fatalf("target: load cert library: %v", err)
+			}
+			library = &loaded
+			log.Printf("target: loaded cert library %s entries=%d", *certLibraryManifest, len(loaded.Entries))
+		}
+		selector := &targetserver.CertificateSelector{
+			Registry: registry,
+			Library:  library,
+			Fallback: cert,
+		}
+		httpsHTTP = &http.Server{
+			Addr:    fmt.Sprintf(":%d", *httpsPort),
+			Handler: dataHandler,
+			TLSConfig: &tls.Config{
+				GetCertificate: selector.GetCertificate,
+				MinVersion:     tls.VersionTLS12,
+			},
+		}
 	}
 
 	go func() {
@@ -68,6 +105,15 @@ func main() {
 			log.Fatalf("target: data server: %v", err)
 		}
 	}()
+
+	if httpsHTTP != nil {
+		go func() {
+			log.Printf("target: HTTPS on :%d", *httpsPort)
+			if err := httpsHTTP.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("target: https server: %v", err)
+			}
+		}()
+	}
 
 	// TCP front: applies TCP-level and geo-restricted failures, then
 	// splices to the internal HTTP server.
@@ -93,4 +139,20 @@ func main() {
 	if err := dataSrv.Shutdown(ctx); err != nil {
 		log.Printf("target: data shutdown: %v", err)
 	}
+	if httpsHTTP != nil {
+		if err := httpsHTTP.Shutdown(ctx); err != nil {
+			log.Printf("target: https shutdown: %v", err)
+		}
+	}
+}
+
+func splitCSV(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

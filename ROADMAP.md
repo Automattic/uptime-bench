@@ -58,23 +58,23 @@ Until all five steps land, the benchmark cannot accurately compare content-tampe
 
 ## TLS target implementation
 
-**Status:** Schema-defined, not implemented. Active priority.
+**Status:** Schema-defined, partially implemented. Active priority.
 
-The target binary serves only HTTP today; all five `tls_*` failure types (`tls_expired`, `tls_expiring`, `tls_invalid`, `tls_handshake`, `tls_deprecated`) are validated and forwarded by the control plane but the target has no HTTPS listener, so they no-op.
+The target binary now exposes an HTTPS listener with a generated self-signed fallback certificate. With `-cert-library-manifest`, active `tls_expired` and `tls_expiring` failures select the closest matching library certificate for the request SNI. Remaining TLS work: `tls_invalid` variants, protocol-level TLS config manipulation, and end-to-end OpenSSL/probe acceptance tests against a real cert library.
 
 ### Phase 1 — HTTPS listener with self-signed default
 
 - Add a `:443` listener to `cmd/target` using `crypto/tls`.
-- Generate (or load) a single self-signed cert per virtual host on startup; persist under `/etc/uptime-bench/tls/` so a restart doesn't churn fingerprints.
-- Wire the listener to the same virtual-host router used for `:80` so existing scenarios work over HTTPS.
+- Generate a self-signed fallback cert on startup; future work may persist it under `/etc/uptime-bench/tls/` if stable fingerprints become useful.
+- Wire the listener to the same virtual-host router used for `:80` so healthy pages work over HTTPS.
 - Acceptance: `curl -k https://bench-a.<domain>/` returns the canary body; the existing 11 scenarios still pass on the HTTPS variant.
 
 ### Phase 2 — Certificate library
 
 - Pre-generate a library of certs at varying ages: fresh (90 days remaining), expiring soon (1, 5, 30 days remaining), already expired (1 day, 30 days, 1 year), self-signed by an unknown CA, signed for the wrong hostname.
-- Tooling: a `make generate-certs` target (or `cmd/cert-mint` binary) that builds the library reproducibly given a seed.
-- New control API params for `tls_expired` / `tls_expiring` / `tls_invalid` to select a library member at activation time.
-- Library structure: filename encodes age + CA so the target can pick by string match without parsing every cert at request time.
+- Tooling split: `uptime-bench-certmint` owns real Let's Encrypt/certbot issuance and writes an immutable library plus `manifest.json`; this repo owns manifest loading, target-side SNI selection, and deterministic fleet-CA/self-signed fallbacks.
+- New control API params for `tls_expired` / `tls_expiring` select a library member at activation time. `tls_invalid` still needs variant-specific selection.
+- Library structure: `manifest.json` is the contract. Filenames may encode age/profile for operator readability, but the target must select by manifest metadata rather than reparsing certificates at request time.
 - Acceptance: `tls_expired days_expired=30` causes the target to serve a cert whose notAfter is 30 days in the past; an OpenSSL probe confirms.
 
 ### Phase 3 — TLS protocol-level injection

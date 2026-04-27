@@ -34,7 +34,7 @@ Adding a new adapter is a small, well-defined exercise — implement the [`adapt
 
 ## Status
 
-The end-to-end pipeline runs: target server, DNS server, control plane, harness, runner, MySQL event log, and the Jetmon 1 adapter. CI (`go vet`, `gofmt`, `go test -race`) is green on every push. Eleven scenarios across HTTP, TCP, DNS, and content failures are defined and runnable; the TLS scenarios are schema-defined but waiting on an HTTPS listener in the target binary (see [`ROADMAP.md`](ROADMAP.md)).
+The end-to-end pipeline runs: target server, DNS server, control plane, harness, runner, MySQL event log, and the Jetmon 1 adapter. CI (`go vet`, `gofmt`, `go test -race`) is green on every push. Eleven scenarios across HTTP, TCP, DNS, and content failures are defined and runnable; TLS scenarios are schema-defined, the target has a self-signed HTTPS listener, and `tls_expired` / `tls_expiring` can select certs from a certmint manifest. Protocol-level TLS injection and invalid-cert variants remain tracked in [`ROADMAP.md`](ROADMAP.md).
 
 Notable design choices, all enforced by the code or the tests:
 
