@@ -15,9 +15,10 @@ import (
 func generatorTestCampaign(t *testing.T) *Campaign {
 	t.Helper()
 	c, err := Parse([]byte(`
-id          = "gen-test"
-duration    = "1h"
-seed        = 0
+id              = "gen-test"
+duration        = "1h"
+seed            = 0
+check_frequency = "60s"
 
 [targets]
 pool     = ["bench-a", "bench-b", "bench-c"]
@@ -251,9 +252,10 @@ func TestGenerate_NoEscalationWhenProbabilityZero(t *testing.T) {
 // enabled, the number of stages falls in [stages_range.min, stages_range.max].
 func TestGenerate_EscalationStagesRespectRange(t *testing.T) {
 	c, err := Parse([]byte(`
-id       = "esc-test"
-duration = "1h"
-seed     = 0
+id              = "esc-test"
+duration        = "1h"
+seed            = 0
+check_frequency = "60s"
 
 [targets]
 pool     = ["bench-a"]
@@ -361,9 +363,10 @@ func intToStr(i int) string {
 // methodology) will see different results from the same config.
 func TestGenerate_FixedSeedGoldenCheck(t *testing.T) {
 	c, err := Parse([]byte(`
-id       = "golden"
-duration = "1h"
-seed     = 0
+id              = "golden"
+duration        = "1h"
+seed            = 0
+check_frequency = "60s"
 
 [targets]
 pool     = ["a", "b"]

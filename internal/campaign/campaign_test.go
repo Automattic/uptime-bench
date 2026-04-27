@@ -9,10 +9,11 @@ import (
 // validHeader is the minimum required preamble for a campaign TOML.
 // Tests append additional sections to it.
 const validHeader = `
-id          = "test-campaign"
-description = "x"
-duration    = "24h"
-seed        = 42
+id              = "test-campaign"
+description     = "x"
+duration        = "24h"
+seed            = 42
+check_frequency = "60s"
 
 [targets]
 pool     = ["bench-a", "bench-b"]
@@ -146,12 +147,12 @@ func TestParse_RejectsInvalidConfigs(t *testing.T) {
 	}{
 		{
 			name:       "missing id",
-			body:       strings.Replace(validHeader, `id          = "test-campaign"`, "", 1),
+			body:       strings.Replace(validHeader, `id              = "test-campaign"`, "", 1),
 			wantSubstr: "id is required",
 		},
 		{
 			name:       "zero duration",
-			body:       strings.Replace(validHeader, `duration    = "24h"`, `duration = "0s"`, 1),
+			body:       strings.Replace(validHeader, `duration        = "24h"`, `duration = "0s"`, 1),
 			wantSubstr: "duration must be positive",
 		},
 		{

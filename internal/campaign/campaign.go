@@ -22,6 +22,14 @@ type Campaign struct {
 	Duration    time.Duration
 	Seed        int64
 
+	// CheckFrequency and GracePeriod apply to every replay generated
+	// from the campaign. Both are campaign-level (not per-cell) so all
+	// services are tested at the same probe rate and the same alert
+	// settle window — that's what makes per-service detection-latency
+	// numbers comparable.
+	CheckFrequency time.Duration
+	GracePeriod    time.Duration
+
 	Targets         Targets
 	DurationBuckets map[string]DurationBucket
 	Sampling        Sampling
@@ -144,10 +152,12 @@ func Parse(data []byte) (*Campaign, error) {
 // raw mirrors the TOML structure for unmarshalling before validation.
 // Duration fields are strings here; validate() parses them.
 type raw struct {
-	ID          string `toml:"id"`
-	Description string `toml:"description"`
-	Duration    string `toml:"duration"`
-	Seed        int64  `toml:"seed"`
+	ID             string `toml:"id"`
+	Description    string `toml:"description"`
+	Duration       string `toml:"duration"`
+	Seed           int64  `toml:"seed"`
+	CheckFrequency string `toml:"check_frequency"`
+	GracePeriod    string `toml:"grace_period"`
 
 	Targets         rawTargets                `toml:"targets"`
 	DurationBuckets map[string]rawDurationBkt `toml:"duration_buckets"`
@@ -230,6 +240,29 @@ func validate(r raw) (*Campaign, error) {
 		return nil, fmt.Errorf("campaign: duration must be positive")
 	}
 	c.Duration = dur
+
+	cf, err := parseDuration("check_frequency", r.CheckFrequency, true)
+	if err != nil {
+		return nil, err
+	}
+	if cf <= 0 {
+		return nil, fmt.Errorf("campaign: check_frequency must be positive")
+	}
+	c.CheckFrequency = cf
+
+	// grace_period defaults to 3 minutes (matches the scenario library)
+	// but is overridable per campaign.
+	gp, err := parseDuration("grace_period", r.GracePeriod, false)
+	if err != nil {
+		return nil, err
+	}
+	if gp == 0 {
+		gp = 3 * time.Minute
+	}
+	if gp < 0 {
+		return nil, fmt.Errorf("campaign: grace_period must be non-negative")
+	}
+	c.GracePeriod = gp
 
 	if err := validateTargets(r.Targets, &c.Targets); err != nil {
 		return nil, err
