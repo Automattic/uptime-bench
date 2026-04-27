@@ -16,6 +16,7 @@ import (
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv2"
 	"github.com/Automattic/uptime-bench/internal/adapter/pingdom"
 	"github.com/Automattic/uptime-bench/internal/adapter/uptimerobot"
+	"github.com/Automattic/uptime-bench/internal/campaign"
 	"github.com/Automattic/uptime-bench/internal/db"
 	"github.com/Automattic/uptime-bench/internal/fleet"
 	"github.com/Automattic/uptime-bench/internal/measurement"
@@ -76,11 +77,12 @@ func main() {
 	fleetPath := flag.String("fleet", "fleet.toml", "path to fleet configuration file")
 	servicesPath := flag.String("services", "services.toml", "path to services configuration file")
 	scenarioPath := flag.String("scenario", "", "path to scenario TOML file to run")
+	campaignPath := flag.String("campaign", "", "path to campaign TOML file to run")
 	dsnFlag := flag.String("dsn", "", "MySQL DSN (overrides DB_DSN env var)")
 	flag.Parse()
 
-	if *scenarioPath == "" {
-		log.Fatal("harness: -scenario is required")
+	if (*scenarioPath == "") == (*campaignPath == "") {
+		log.Fatal("harness: set exactly one of -scenario or -campaign")
 	}
 
 	fl, err := fleet.Load(*fleetPath)
@@ -89,15 +91,30 @@ func main() {
 	}
 	log.Printf("harness: fleet loaded (%d targets, %d nameservers)", len(fl.Targets), len(fl.Nameservers))
 
-	scData, err := os.ReadFile(*scenarioPath)
-	if err != nil {
-		log.Fatalf("harness: scenario: read: %v", err)
+	var sc *scenario.Scenario
+	var c *campaign.Campaign
+	var campaignData []byte
+	if *scenarioPath != "" {
+		scData, err := os.ReadFile(*scenarioPath)
+		if err != nil {
+			log.Fatalf("harness: scenario: read: %v", err)
+		}
+		sc, err = scenario.Parse(scData)
+		if err != nil {
+			log.Fatalf("harness: scenario: parse: %v", err)
+		}
+		log.Printf("harness: scenario loaded: %s v%s", sc.ID, sc.Version)
+	} else {
+		campaignData, err = os.ReadFile(*campaignPath)
+		if err != nil {
+			log.Fatalf("harness: campaign: read: %v", err)
+		}
+		c, err = campaign.Parse(campaignData)
+		if err != nil {
+			log.Fatalf("harness: campaign: parse: %v", err)
+		}
+		log.Printf("harness: campaign loaded: %s", c.ID)
 	}
-	sc, err := scenario.Parse(scData)
-	if err != nil {
-		log.Fatalf("harness: scenario: parse: %v", err)
-	}
-	log.Printf("harness: scenario loaded: %s v%s", sc.ID, sc.Version)
 
 	svcCfg, err := serviceconfig.Load(*servicesPath)
 	if err != nil {
@@ -118,56 +135,112 @@ func main() {
 	defer database.Close()
 	log.Println("harness: database connected")
 
-	// Build the set of adapter IDs the scenario needs.
-	wantedIDs := make(map[string]bool, len(sc.Monitors))
-	for _, id := range sc.Monitors {
-		wantedIDs[id] = true
-	}
-
-	// Instantiate enabled services that the scenario references.
-	allAdapters := make(map[string]adapter.Adapter, len(sc.Monitors))
-	for _, svc := range svcCfg.Services {
-		if !svc.Enabled || !wantedIDs[svc.ID] {
-			continue
-		}
-		factory, ok := registry[svc.Type]
-		if !ok {
-			log.Fatalf("harness: service %q: unknown type %q", svc.ID, svc.Type)
-		}
-		a, err := factory(svc.ID, svc.URL, svc.Auth)
-		if err != nil {
-			log.Fatalf("harness: service %q: %v", svc.ID, err)
-		}
-		allAdapters[svc.ID] = a
-	}
-
 	var adapters []adapter.Adapter
-	for _, id := range sc.Monitors {
-		a, ok := allAdapters[id]
-		if !ok {
-			log.Fatalf("harness: scenario monitor %q not found in services config (check id and enabled)", id)
+	if sc != nil {
+		adapters, err = adaptersForScenario(svcCfg, sc.Monitors)
+		if err != nil {
+			log.Fatalf("harness: %v", err)
 		}
-		adapters = append(adapters, a)
+	} else {
+		adapters, err = enabledAdapters(svcCfg)
+		if err != nil {
+			log.Fatalf("harness: %v", err)
+		}
 	}
 	log.Printf("harness: %d adapter(s) loaded", len(adapters))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	log.Printf("harness: starting scenario: %s", sc.ID)
-	runID, runErr := runner.Run(ctx, sc, fl, database, adapters, svcCfg)
+	if sc != nil {
+		log.Printf("harness: starting scenario: %s", sc.ID)
+		runID, runErr := runner.Run(ctx, sc, fl, database, adapters, svcCfg)
 
-	if runID != "" {
-		// Derive metrics in a separate pass — never in the same transaction as events.
-		log.Printf("harness: deriving metrics for run %s", runID)
-		if err := measurement.Derive(ctx, database, runID); err != nil {
-			log.Printf("harness: metric derivation: %v", err)
+		if runID != "" {
+			// Derive metrics in a separate pass — never in the same transaction as events.
+			log.Printf("harness: deriving metrics for run %s", runID)
+			if err := measurement.Derive(ctx, database, runID); err != nil {
+				log.Printf("harness: metric derivation: %v", err)
+			}
 		}
+
+		if runErr != nil {
+			log.Printf("harness: run failed: %v", runErr)
+			os.Exit(1)
+		}
+		log.Println("harness: done")
+		return
 	}
 
+	log.Printf("harness: starting campaign: %s", c.ID)
+	campaignRunID, runErr := runner.RunCampaign(ctx, c, c.Seed, fl, database, adapters, svcCfg, runner.RunCampaignOptions{
+		ConfigTOML: string(campaignData),
+	})
+	if campaignRunID != "" {
+		log.Printf("harness: campaign run recorded: %s", campaignRunID)
+	}
 	if runErr != nil {
-		log.Printf("harness: run failed: %v", runErr)
+		log.Printf("harness: campaign failed: %v", runErr)
 		os.Exit(1)
 	}
 	log.Println("harness: done")
+}
+
+func adaptersForScenario(svcCfg *serviceconfig.Config, monitorIDs []string) ([]adapter.Adapter, error) {
+	wantedIDs := make(map[string]bool, len(monitorIDs))
+	for _, id := range monitorIDs {
+		wantedIDs[id] = true
+	}
+
+	allAdapters := make(map[string]adapter.Adapter, len(monitorIDs))
+	for _, svc := range svcCfg.Services {
+		if !svc.Enabled || !wantedIDs[svc.ID] {
+			continue
+		}
+		a, err := adapterForService(svc)
+		if err != nil {
+			return nil, err
+		}
+		allAdapters[svc.ID] = a
+	}
+
+	adapters := make([]adapter.Adapter, 0, len(monitorIDs))
+	for _, id := range monitorIDs {
+		a, ok := allAdapters[id]
+		if !ok {
+			return nil, fmt.Errorf("scenario monitor %q not found in services config (check id and enabled)", id)
+		}
+		adapters = append(adapters, a)
+	}
+	return adapters, nil
+}
+
+func enabledAdapters(svcCfg *serviceconfig.Config) ([]adapter.Adapter, error) {
+	var adapters []adapter.Adapter
+	for _, svc := range svcCfg.Services {
+		if !svc.Enabled {
+			continue
+		}
+		a, err := adapterForService(svc)
+		if err != nil {
+			return nil, err
+		}
+		adapters = append(adapters, a)
+	}
+	if len(adapters) == 0 {
+		return nil, fmt.Errorf("no enabled services found in services config")
+	}
+	return adapters, nil
+}
+
+func adapterForService(svc serviceconfig.Service) (adapter.Adapter, error) {
+	factory, ok := registry[svc.Type]
+	if !ok {
+		return nil, fmt.Errorf("service %q: unknown type %q", svc.ID, svc.Type)
+	}
+	a, err := factory(svc.ID, svc.URL, svc.Auth)
+	if err != nil {
+		return nil, fmt.Errorf("service %q: %w", svc.ID, err)
+	}
+	return a, nil
 }

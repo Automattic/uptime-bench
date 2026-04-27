@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv2"
+	"github.com/Automattic/uptime-bench/internal/serviceconfig"
 )
 
 // TestRegistry_KnownTypes asserts the registry has factories for every
@@ -209,5 +210,106 @@ func TestRegistry_DatadogBuilds(t *testing.T) {
 	}
 	if a.ServiceID() != "dd" {
 		t.Fatalf("ServiceID = %q", a.ServiceID())
+	}
+}
+
+func TestAdaptersForScenario_PreservesMonitorOrder(t *testing.T) {
+	cfg := &serviceconfig.Config{Services: []serviceconfig.Service{
+		{
+			ID:      "jetmon-a",
+			Type:    "jetmon-v1",
+			URL:     "http://localhost:7400",
+			Auth:    map[string]string{"token": "tok-a"},
+			Enabled: true,
+		},
+		{
+			ID:      "jetmon-b",
+			Type:    "jetmon-v1",
+			URL:     "http://localhost:7401",
+			Auth:    map[string]string{"token": "tok-b"},
+			Enabled: true,
+		},
+	}}
+
+	adapters, err := adaptersForScenario(cfg, []string{"jetmon-b", "jetmon-a"})
+	if err != nil {
+		t.Fatalf("adaptersForScenario: %v", err)
+	}
+	if len(adapters) != 2 {
+		t.Fatalf("len(adapters) = %d, want 2", len(adapters))
+	}
+	if adapters[0].ServiceID() != "jetmon-b" || adapters[1].ServiceID() != "jetmon-a" {
+		t.Fatalf("adapter order = [%s, %s], want [jetmon-b, jetmon-a]",
+			adapters[0].ServiceID(), adapters[1].ServiceID())
+	}
+}
+
+func TestAdaptersForScenario_RejectsDisabledMonitor(t *testing.T) {
+	cfg := &serviceconfig.Config{Services: []serviceconfig.Service{
+		{
+			ID:      "jetmon-a",
+			Type:    "jetmon-v1",
+			URL:     "http://localhost:7400",
+			Auth:    map[string]string{"token": "tok-a"},
+			Enabled: false,
+		},
+	}}
+
+	_, err := adaptersForScenario(cfg, []string{"jetmon-a"})
+	if err == nil {
+		t.Fatal("expected disabled scenario monitor to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("err = %v, want one mentioning not found", err)
+	}
+}
+
+func TestEnabledAdapters_LoadsEnabledServicesOnly(t *testing.T) {
+	cfg := &serviceconfig.Config{Services: []serviceconfig.Service{
+		{
+			ID:      "disabled",
+			Type:    "jetmon-v1",
+			URL:     "http://localhost:7400",
+			Auth:    map[string]string{"token": "tok-disabled"},
+			Enabled: false,
+		},
+		{
+			ID:      "enabled",
+			Type:    "jetmon-v1",
+			URL:     "http://localhost:7401",
+			Auth:    map[string]string{"token": "tok-enabled"},
+			Enabled: true,
+		},
+	}}
+
+	adapters, err := enabledAdapters(cfg)
+	if err != nil {
+		t.Fatalf("enabledAdapters: %v", err)
+	}
+	if len(adapters) != 1 {
+		t.Fatalf("len(adapters) = %d, want 1", len(adapters))
+	}
+	if adapters[0].ServiceID() != "enabled" {
+		t.Fatalf("ServiceID = %q, want enabled", adapters[0].ServiceID())
+	}
+}
+
+func TestEnabledAdapters_RejectsEmptySet(t *testing.T) {
+	cfg := &serviceconfig.Config{Services: []serviceconfig.Service{
+		{
+			ID:      "disabled",
+			Type:    "jetmon-v1",
+			URL:     "http://localhost:7400",
+			Auth:    map[string]string{"token": "tok-disabled"},
+			Enabled: false,
+		},
+	}}
+
+	_, err := enabledAdapters(cfg)
+	if err == nil {
+		t.Fatal("expected error when no services are enabled")
+	}
+	if !strings.Contains(err.Error(), "no enabled services") {
+		t.Fatalf("err = %v, want one mentioning no enabled services", err)
 	}
 }

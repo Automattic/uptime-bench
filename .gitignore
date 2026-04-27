@@ -1,5 +1,6 @@
 # Claude Code local settings
 .claude/
+.codex
 
 # Go build output
 /bin/
