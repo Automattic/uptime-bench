@@ -338,6 +338,45 @@ func TestLogMonitorReport_LogsErrorButContinues(t *testing.T) {
 	// No assertion on Go error: this function intentionally swallows.
 }
 
+// TestEffectiveSeed_ExplicitSeedWins pins the CLAUDE.md invariant that
+// scenarios with an explicit Seed record exactly that value on the run,
+// not the wall-clock fallback. Reproducibility depends on this — a
+// regression would silently break replay-from-recorded-seed.
+func TestEffectiveSeed_ExplicitSeedWins(t *testing.T) {
+	explicit := int64(12345)
+	sc := &scenario.Scenario{Seed: &explicit}
+	startedAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	if got := effectiveSeed(sc, startedAt); got != explicit {
+		t.Errorf("effectiveSeed = %d, want %d (explicit scenario seed)", got, explicit)
+	}
+}
+
+// TestEffectiveSeed_FallbackToStartedAt — when the scenario omits Seed,
+// the run records startedAt's nanosecond clock. Recording the fallback
+// is what lets an operator replay an unseeded run by copying the
+// recorded value into the scenario file.
+func TestEffectiveSeed_FallbackToStartedAt(t *testing.T) {
+	sc := &scenario.Scenario{Seed: nil}
+	startedAt := time.Date(2026, 4, 27, 12, 0, 0, 999, time.UTC)
+	want := startedAt.UnixNano()
+	if got := effectiveSeed(sc, startedAt); got != want {
+		t.Errorf("effectiveSeed = %d, want %d (startedAt.UnixNano)", got, want)
+	}
+}
+
+// TestEffectiveSeed_ExplicitZeroIsRespected pins a subtle case: if the
+// scenario sets seed = 0 explicitly (Seed != nil pointing at zero), the
+// run records 0, NOT the wall-clock fallback. Zero is a valid seed,
+// distinguishable from "unspecified" by the pointer being non-nil.
+func TestEffectiveSeed_ExplicitZeroIsRespected(t *testing.T) {
+	zero := int64(0)
+	sc := &scenario.Scenario{Seed: &zero}
+	startedAt := time.Date(2026, 4, 27, 12, 0, 0, 999, time.UTC)
+	if got := effectiveSeed(sc, startedAt); got != 0 {
+		t.Errorf("effectiveSeed = %d, want 0 (explicit zero, not the wall-clock fallback)", got)
+	}
+}
+
 // TestMaintenanceWindowFor_NilScenario covers the no-op cases.
 func TestMaintenanceWindowFor_NilScenario(t *testing.T) {
 	if w := maintenanceWindowFor(nil, time.Now()); w != nil {

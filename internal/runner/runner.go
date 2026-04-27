@@ -52,12 +52,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	runID := newRunID()
 	startedAt := time.Now()
 
-	var seed int64
-	if sc.Seed != nil {
-		seed = *sc.Seed
-	} else {
-		seed = startedAt.UnixNano()
-	}
+	seed := effectiveSeed(sc, startedAt)
 
 	target, err := resolveTarget(fl, sc.Target)
 	if err != nil {
@@ -344,6 +339,22 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	}
 
 	return runID, nil
+}
+
+// effectiveSeed returns the seed Run() records on the run row. If the
+// scenario specifies an explicit seed, that wins (for reproducibility);
+// otherwise the seed defaults to startedAt.UnixNano(), which is
+// recorded so an operator can replay the same run later by pinning
+// `seed = <recorded value>` in the scenario.
+//
+// The CLAUDE.md invariant is "the seed is recorded in the run record
+// for every run" — extracting this helper makes that invariant
+// directly testable without spinning up the full Run() machinery.
+func effectiveSeed(sc *scenario.Scenario, startedAt time.Time) int64 {
+	if sc.Seed != nil {
+		return *sc.Seed
+	}
+	return startedAt.UnixNano()
 }
 
 func resolveTarget(fl *fleet.Config, targetID string) (fleet.Target, error) {

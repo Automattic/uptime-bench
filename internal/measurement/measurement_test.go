@@ -215,3 +215,39 @@ func TestComputeMetrics_UnknownStops(t *testing.T) {
 		t.Fatalf("unknown reason = %q, want %q", out["unknown"].MetricText, "rate limited")
 	}
 }
+
+// TestComputeMetrics_CapabilityMismatchTreatedLikeUnknown pins the
+// EVENTS.md invariant that capability_mismatch and Unknown both keep
+// the row out of the false-negative count. The runner writes a
+// capability_mismatch row with retrieve_status="unknown" and a
+// reason_code; Derive folds both API-error Unknown and capability
+// mismatch into serviceData.unknown=true. This test ensures the
+// short-circuit fires for a capability_mismatch reason just like it
+// does for an API-error reason — so a regression that special-cases
+// one path and not the other gets caught.
+func TestComputeMetrics_CapabilityMismatchTreatedLikeUnknown(t *testing.T) {
+	start := time.Now()
+	end := start.Add(5 * time.Minute)
+	// Even with an active failure window present, capability_mismatch
+	// must NOT produce false_negative=1 — the adapter wasn't asked.
+	sr := &serviceData{
+		unknown: true,
+		reason:  "scenario requires keyword monitoring; adapter SupportsKeyword = false",
+	}
+
+	out := computeMetrics(sr, []failureWindow{window(start, end)}, nil)
+
+	if _, has := out["false_negative"]; has {
+		t.Errorf("false_negative metric must not be emitted for capability_mismatch row; got %+v", out)
+	}
+	if _, has := out["true_positive"]; has {
+		t.Errorf("true_positive metric must not be emitted for capability_mismatch row; got %+v", out)
+	}
+	if v := out["unknown"].MetricValue; v == nil || *v != 1 {
+		t.Errorf("unknown = %v, want 1", v)
+	}
+	if out["unknown"].MetricText != sr.reason {
+		t.Errorf("unknown.MetricText = %q, want the row's reason text preserved (%q)",
+			out["unknown"].MetricText, sr.reason)
+	}
+}
