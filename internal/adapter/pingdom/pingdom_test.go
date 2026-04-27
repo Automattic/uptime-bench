@@ -46,6 +46,53 @@ func newTestAdapter(srvURL, token string) *Adapter {
 	return a
 }
 
+// requestRecord captures a single inbound request for tests that exercise
+// multi-call provision flows (e.g. /checks followed by /maintenance).
+type requestRecord struct {
+	method string
+	path   string
+	body   []byte
+}
+
+// routedFake serves a sequence of requests, each of which is matched by
+// (method, pathPrefix). Use for tests that need fine-grained control over
+// the second-and-subsequent calls in a provision sequence.
+type routedFake struct {
+	t         *testing.T
+	requests  []requestRecord
+	responses []routedResponse
+}
+
+type routedResponse struct {
+	method     string
+	pathPrefix string
+	status     int
+	body       string
+}
+
+func newRoutedFake(t *testing.T, responses []routedResponse) (*httptest.Server, *routedFake) {
+	t.Helper()
+	rf := &routedFake{t: t, responses: responses}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		rf.requests = append(rf.requests, requestRecord{
+			method: r.Method,
+			path:   r.URL.Path,
+			body:   body,
+		})
+		for _, resp := range rf.responses {
+			if resp.method == r.Method && strings.HasPrefix(r.URL.Path, resp.pathPrefix) {
+				w.WriteHeader(resp.status)
+				_, _ = w.Write([]byte(resp.body))
+				return
+			}
+		}
+		t.Errorf("routedFake: no response matched %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	return srv, rf
+}
+
 // ─── Conformance ────────────────────────────────────────────────────────────
 
 func TestImplementsAdapterInterface(t *testing.T) {
@@ -56,6 +103,16 @@ func TestServiceID(t *testing.T) {
 	a := New("custom-id", "http://x", "tok")
 	if a.ServiceID() != "custom-id" {
 		t.Fatalf("ServiceID = %q", a.ServiceID())
+	}
+}
+
+func TestCapabilities_MaintenanceAndCooldown(t *testing.T) {
+	c := newTestAdapter("http://x", "tok").Capabilities()
+	if !c.SupportsMaintenanceWindows {
+		t.Error("SupportsMaintenanceWindows should be true (Pingdom has POST /maintenance)")
+	}
+	if !c.SupportsCooldownReset {
+		t.Error("SupportsCooldownReset should be true (delete-recreate cycles state per run)")
 	}
 }
 
@@ -520,5 +577,177 @@ func TestDeprovision_EmptyHandleIsNoop(t *testing.T) {
 	a := newTestAdapter("http://nope", "tok")
 	if err := a.Deprovision(context.Background(), adapter.MonitorHandle{}); err != nil {
 		t.Fatalf("empty handle: %v", err)
+	}
+}
+
+// ─── Maintenance windows ────────────────────────────────────────────────────
+
+// TestProvision_NoMaintenanceWindow: when ProvisionConfig.MaintenanceWindow
+// is nil, only the /checks call is made; no maintenance_id field is set
+// on the handle.
+func TestProvision_NoMaintenanceWindow(t *testing.T) {
+	srv, rf := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/checks", status: 200, body: `{"check":{"id":555,"status":"unknown"}}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	handle, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{CheckFrequency: time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(rf.requests) != 1 {
+		t.Errorf("expected 1 request when no maintenance window, got %d", len(rf.requests))
+	}
+	if handle.Fields["maintenance_id"] != "" {
+		t.Errorf("maintenance_id should be empty, got %q", handle.Fields["maintenance_id"])
+	}
+}
+
+// TestProvision_WithMaintenanceWindow: when MaintenanceWindow is set,
+// Provision posts /checks first, then /maintenance with the right shape;
+// the handle carries maintenance_id.
+func TestProvision_WithMaintenanceWindow(t *testing.T) {
+	srv, rf := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/checks", status: 200, body: `{"check":{"id":555,"status":"unknown"}}`},
+		{method: "POST", pathPrefix: "/maintenance", status: 200, body: `{"maintenance":{"id":9000}}`},
+	})
+	defer srv.Close()
+
+	start := time.Date(2026, 4, 27, 18, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+
+	a := newTestAdapter(srv.URL, "tok")
+	handle, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: start, End: end},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(rf.requests) != 2 {
+		t.Fatalf("expected 2 requests (checks + maintenance), got %d", len(rf.requests))
+	}
+	if rf.requests[0].path != "/checks" {
+		t.Errorf("first request path = %q, want /checks", rf.requests[0].path)
+	}
+	if rf.requests[1].path != "/maintenance" {
+		t.Errorf("second request path = %q, want /maintenance", rf.requests[1].path)
+	}
+
+	var mw newMaintenanceRequest
+	if err := json.Unmarshal(rf.requests[1].body, &mw); err != nil {
+		t.Fatalf("maintenance body unmarshal: %v", err)
+	}
+	if mw.From != start.Unix() {
+		t.Errorf("from = %d, want %d", mw.From, start.Unix())
+	}
+	if mw.To != end.Unix() {
+		t.Errorf("to = %d, want %d", mw.To, end.Unix())
+	}
+	if len(mw.Checks) != 1 || mw.Checks[0] != 555 {
+		t.Errorf("checks = %v, want [555]", mw.Checks)
+	}
+	if !strings.Contains(mw.Description, "bench-a") {
+		t.Errorf("description = %q, should contain target id", mw.Description)
+	}
+
+	if handle.Fields["maintenance_id"] != "9000" {
+		t.Errorf("handle.Fields[maintenance_id] = %q, want 9000", handle.Fields["maintenance_id"])
+	}
+}
+
+// TestProvision_MaintenanceFailureRollsBackCheck: if the /maintenance
+// call fails after /checks succeeded, the adapter must delete the
+// just-created check so the run doesn't leak monitors. Returns a Go
+// error so the runner records adapter_error.
+func TestProvision_MaintenanceFailureRollsBackCheck(t *testing.T) {
+	srv, rf := newRoutedFake(t, []routedResponse{
+		{method: "POST", pathPrefix: "/checks", status: 200, body: `{"check":{"id":555,"status":"unknown"}}`},
+		{method: "POST", pathPrefix: "/maintenance", status: 400, body: `{"error":{"statuscode":400,"errormessage":"invalid range"}}`},
+		{method: "DELETE", pathPrefix: "/checks/555", status: 200, body: `{}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: time.Now(), End: time.Now().Add(time.Minute)},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error from maintenance failure")
+	}
+	// Verify rollback: should see DELETE /checks/555 in the request log.
+	sawDelete := false
+	for _, r := range rf.requests {
+		if r.method == "DELETE" && r.path == "/checks/555" {
+			sawDelete = true
+			break
+		}
+	}
+	if !sawDelete {
+		t.Errorf("expected DELETE /checks/555 rollback after maintenance failure; requests = %+v", rf.requests)
+	}
+}
+
+// TestDeprovision_DeletesMaintenanceFirst: when handle has a
+// maintenance_id, Deprovision sends DELETE /maintenance/{id} before
+// DELETE /checks/{id}.
+func TestDeprovision_DeletesMaintenanceFirst(t *testing.T) {
+	srv, rf := newRoutedFake(t, []routedResponse{
+		{method: "DELETE", pathPrefix: "/maintenance/", status: 200, body: `{}`},
+		{method: "DELETE", pathPrefix: "/checks/", status: 200, body: `{"message":"deleted"}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	handle := adapter.MonitorHandle{
+		MonitorID: "555",
+		Fields:    map[string]string{"maintenance_id": "9000"},
+	}
+	if err := a.Deprovision(context.Background(), handle); err != nil {
+		t.Fatalf("Deprovision: %v", err)
+	}
+	if len(rf.requests) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(rf.requests))
+	}
+	if rf.requests[0].path != "/maintenance/9000" {
+		t.Errorf("first request = %q, want /maintenance/9000 (must come first)", rf.requests[0].path)
+	}
+	if rf.requests[1].path != "/checks/555" {
+		t.Errorf("second request = %q, want /checks/555", rf.requests[1].path)
+	}
+}
+
+// TestDeprovision_MaintenanceDeleteFailureDoesNotBlockCheckDelete: if
+// the maintenance delete fails (e.g. transient 5xx), Deprovision still
+// proceeds with check deletion. Maintenance windows self-expire at
+// `to` so a leaked window is a dashboard nuisance, not corruption.
+func TestDeprovision_MaintenanceDeleteFailureDoesNotBlockCheckDelete(t *testing.T) {
+	srv, rf := newRoutedFake(t, []routedResponse{
+		{method: "DELETE", pathPrefix: "/maintenance/", status: 503, body: `{"error":{"statuscode":503}}`},
+		{method: "DELETE", pathPrefix: "/checks/", status: 200, body: `{"message":"deleted"}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	handle := adapter.MonitorHandle{
+		MonitorID: "555",
+		Fields:    map[string]string{"maintenance_id": "9000"},
+	}
+	if err := a.Deprovision(context.Background(), handle); err != nil {
+		t.Fatalf("Deprovision should not fail when maintenance delete errors: %v", err)
+	}
+	if len(rf.requests) != 2 {
+		t.Errorf("expected 2 requests (try maintenance, then check), got %d", len(rf.requests))
 	}
 }

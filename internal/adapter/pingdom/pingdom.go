@@ -78,11 +78,16 @@ func (a *Adapter) ServiceID() string { return a.id }
 func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		// Pingdom's minimum resolution is 1 minute on most plans.
-		MinCheckFrequency:       time.Minute,
-		SupportsKeyword:         true,
-		SupportsInvertedKeyword: true, // shouldnotcontain field
-		SupportsAgentChecks:     false,
-		DefaultMaxCallsPerRun:   50, // typical 10-100 req/min limit; budget conservatively
+		MinCheckFrequency:          time.Minute,
+		SupportsKeyword:            true,
+		SupportsInvertedKeyword:    true, // shouldnotcontain field
+		SupportsAgentChecks:        false,
+		SupportsMaintenanceWindows: true,
+		// Cooldown resets naturally because Deprovision deletes the
+		// check; the next Provision creates a fresh one. No vendor-side
+		// reset call needed, so the flag is true.
+		SupportsCooldownReset: true,
+		DefaultMaxCallsPerRun: 50, // typical 10-100 req/min limit; budget conservatively
 	}
 }
 
@@ -221,14 +226,74 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	if resp.Check.ID == 0 {
 		return adapter.MonitorHandle{}, fmt.Errorf("pingdom: POST /checks: response missing check id")
 	}
-	return adapter.MonitorHandle{
+	handle := adapter.MonitorHandle{
 		ServiceID: a.id,
 		MonitorID: strconv.FormatInt(resp.Check.ID, 10),
 		Fields: map[string]string{
 			"host": host,
 			"path": path,
 		},
-	}, nil
+	}
+
+	if config.MaintenanceWindow != nil {
+		mwID, err := a.createMaintenance(ctx, target.ID, resp.Check.ID, config.MaintenanceWindow)
+		if err != nil {
+			// Roll back the just-created check so we don't leak; ignore the
+			// delete error since the original create failure is the real problem.
+			_ = a.deleteCheck(context.Background(), resp.Check.ID)
+			return adapter.MonitorHandle{}, err
+		}
+		handle.Fields["maintenance_id"] = strconv.FormatInt(mwID, 10)
+	}
+
+	return handle, nil
+}
+
+// newMaintenanceRequest mirrors POST /api/3.1/maintenance. Per the v3.1
+// docs the endpoint accepts JSON; `from`/`to` are Unix timestamps and
+// `checks` is an array of check IDs.
+type newMaintenanceRequest struct {
+	Description string  `json:"description"`
+	From        int64   `json:"from"`
+	To          int64   `json:"to"`
+	Checks      []int64 `json:"checks"`
+}
+
+type maintenanceEnvelope struct {
+	Maintenance struct {
+		ID int64 `json:"id"`
+	} `json:"maintenance"`
+	Error *apiError `json:"error,omitempty"`
+}
+
+// createMaintenance posts a maintenance window covering [window.Start,
+// window.End] for the given check. Returns the newly-created window's ID.
+func (a *Adapter) createMaintenance(ctx context.Context, targetID string, checkID int64, window *adapter.MaintenanceWindow) (int64, error) {
+	req := newMaintenanceRequest{
+		Description: "uptime-bench: " + targetID,
+		From:        window.Start.Unix(),
+		To:          window.End.Unix(),
+		Checks:      []int64{checkID},
+	}
+	var resp maintenanceEnvelope
+	if err := a.do(ctx, http.MethodPost, "/maintenance", req, &resp); err != nil {
+		return 0, fmt.Errorf("pingdom: POST /maintenance: %w", err)
+	}
+	if resp.Error != nil {
+		return 0, fmt.Errorf("pingdom: POST /maintenance: %s", resp.Error)
+	}
+	if resp.Maintenance.ID == 0 {
+		return 0, fmt.Errorf("pingdom: POST /maintenance: response missing maintenance id")
+	}
+	return resp.Maintenance.ID, nil
+}
+
+// deleteCheck is the rollback helper used when maintenance creation fails
+// after the check has already been provisioned. Errors are swallowed —
+// the caller's primary error is what matters.
+func (a *Adapter) deleteCheck(ctx context.Context, checkID int64) error {
+	path := "/checks/" + strconv.FormatInt(checkID, 10)
+	return a.do(ctx, http.MethodDelete, path, nil, nil)
 }
 
 // ─── Retrieve ───────────────────────────────────────────────────────────────
@@ -323,6 +388,20 @@ func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle)
 	}
 	if handle.MonitorID == "" {
 		return nil
+	}
+
+	// Delete the maintenance window first if one was created. Failures
+	// here are logged but don't block check deletion — maintenance
+	// windows have a `to` timestamp and self-expire, so a leaked window
+	// is a dashboard nuisance, not a correctness problem.
+	if mwID := handle.Fields["maintenance_id"]; mwID != "" {
+		mwPath := "/maintenance/" + mwID
+		if err := a.do(ctx, http.MethodDelete, mwPath, nil, nil); err != nil &&
+			!strings.Contains(err.Error(), "status 404") {
+			// Don't return; proceed to check deletion.
+			// Caller's run-end logs will show the maintenance row leaked.
+			_ = err
+		}
 	}
 
 	var resp struct {
