@@ -256,6 +256,17 @@ type DerivedMetricRow struct {
 	ComputedAt  time.Time
 }
 
+// CampaignMetricRow is one derived_metrics row joined to its campaign
+// replay context for reporting.
+type CampaignMetricRow struct {
+	RunID       string
+	FailureType string
+	ServiceID   string
+	MetricName  string
+	MetricValue *float64
+	MetricText  string
+}
+
 // UpsertDerivedMetric inserts or replaces one derived_metrics row.
 // The UNIQUE KEY on (run_id, service_id, metric_name) makes this idempotent.
 func (d *DB) UpsertDerivedMetric(ctx context.Context, r DerivedMetricRow) error {
@@ -273,6 +284,63 @@ func (d *DB) UpsertDerivedMetric(ctx context.Context, r DerivedMetricRow) error 
 		return fmt.Errorf("db: UpsertDerivedMetric: %w", err)
 	}
 	return nil
+}
+
+// CampaignMetricRows returns derived metrics for every scenario run in
+// a campaign. campaign may be either a concrete campaign_runs.id or the
+// stable campaign_id from the campaign TOML; the latter aggregates all
+// matching campaign_runs rows.
+func (d *DB) CampaignMetricRows(ctx context.Context, campaign string) ([]CampaignMetricRow, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT sr.id,
+		        COALESCE(ft.failure_types, ''),
+		        dm.service_id,
+		        dm.metric_name,
+		        dm.metric_value,
+		        COALESCE(dm.metric_text, '')
+		   FROM scenario_runs sr
+		   JOIN derived_metrics dm ON dm.run_id = sr.id
+		   LEFT JOIN (
+		     SELECT run_id,
+		            GROUP_CONCAT(DISTINCT failure_type ORDER BY failure_type SEPARATOR '+') AS failure_types
+		       FROM ground_truth_events
+		      WHERE event_type = 'failure_start'
+		        AND failure_type IS NOT NULL
+		      GROUP BY run_id
+		   ) ft ON ft.run_id = sr.id
+		  WHERE sr.campaign_id = ?
+		     OR sr.campaign_id IN (
+		          SELECT id FROM campaign_runs WHERE campaign_id = ?
+		        )
+		  ORDER BY COALESCE(ft.failure_types, ''), dm.service_id, sr.started_at, sr.id, dm.metric_name`,
+		campaign, campaign,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("db: CampaignMetricRows: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CampaignMetricRow
+	for rows.Next() {
+		var r CampaignMetricRow
+		var metricValue sql.NullFloat64
+		if err := rows.Scan(
+			&r.RunID,
+			&r.FailureType,
+			&r.ServiceID,
+			&r.MetricName,
+			&metricValue,
+			&r.MetricText,
+		); err != nil {
+			return nil, fmt.Errorf("db: CampaignMetricRows: scan: %w", err)
+		}
+		if metricValue.Valid {
+			value := metricValue.Float64
+			r.MetricValue = &value
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // GroundTruthEventsForRun returns all ground_truth_events for a run, ordered by occurred_at.

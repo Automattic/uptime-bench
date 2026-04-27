@@ -297,10 +297,11 @@ Per (failure_type, service) statistics:
 2. ✅ **Pure design + schedule generator** — `(config, masterSeed) → (designs, schedule)`. `internal/campaign/generator.go`; deterministic, fixed-seed regression coverage in `generator_test.go` + `no_favoritism_test.go`.
 3. ✅ **Schema migration for `campaign_runs`** — `schema/003_campaign_runs.sql`; `campaign_id` FK on `scenario_runs`. `db.InsertCampaignRun` / `CloseCampaignRun` shipped.
 4. ✅ **Runner outer loop (serial)** — `runner.RunCampaign` walks `Plan.Schedule`, calls existing `Run()` per replay via `WithCampaignRunID`. Per-replay errors don't abort the campaign. Tests in `internal/runner/campaign_test.go`. `cmd/harness` accepts `-campaign=<config.toml>` as a mutually exclusive alternative to `-scenario`; campaign mode runs every enabled service from `services.toml`. Metrics are derived in one batch at campaign end via `measurement.DeriveCampaign`, keyed by `scenario_runs.campaign_id`.
-5. **Escalation support** — resolves the "replacement" pattern in the scenario format (per-failure `duration` override or new stage abstraction); generator emits multi-stage scenarios. Layered escalation already works end-to-end.
-6. **`cmd/uptime-bench-report`** — aggregation tool with the bias self-checks, statistics, and CI computation. Output flags for table / TSV / JSON.
+5. ✅ **Initial `cmd/uptime-bench-report`** — campaign metrics can be summarized from `derived_metrics` into table / TSV / JSON output. Current scope: per-(failure_type, service) samples, detection rate, TP/FN/FP/Unknown/maintenance counts, and latency min/avg/p50/p95/max.
+6. **Full report statistics** — add bias self-checks, confidence intervals, and explicit capability_mismatch counts from `monitor_reports.reason_code`.
+7. **Escalation support** — resolves the "replacement" pattern in the scenario format (per-failure `duration` override or new stage abstraction); generator emits multi-stage scenarios. Layered escalation already works end-to-end.
 
-Each phase is independently mergeable. Phases 1–4 deliver the "campaigns work, no escalation" milestone — that alone produces useful comparison data.
+Each phase is independently mergeable. Phases 1–5 deliver the "campaigns work, no escalation" milestone — that alone produces useful comparison data.
 
 ### Cross-cutting concerns
 

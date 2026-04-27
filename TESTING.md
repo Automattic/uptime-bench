@@ -112,6 +112,14 @@ SELECT * FROM monitor_reports WHERE run_id = '<run-id>';
 SELECT * FROM derived_metrics WHERE run_id = '<run-id>';
 ```
 
+Campaign runs can also be summarized from the command line after the
+harness has derived per-replay metrics:
+
+```bash
+make report-campaign CAMPAIGN=<campaign-run-id-or-config-id>
+make report-campaign CAMPAIGN=<campaign-run-id-or-config-id> REPORT_FORMAT=json
+```
+
 ## 6. Available v1 Scenarios
 
 | Scenario | Failure | What it tests |

@@ -2,6 +2,7 @@ BIN_DIR        = bin
 BINARY_HARNESS = $(BIN_DIR)/uptime-bench-harness
 BINARY_TARGET  = $(BIN_DIR)/uptime-bench-target
 BINARY_DNS     = $(BIN_DIR)/uptime-bench-dns
+BINARY_REPORT  = $(BIN_DIR)/uptime-bench-report
 
 .DEFAULT_GOAL := build
 
@@ -10,7 +11,7 @@ BINARY_DNS     = $(BIN_DIR)/uptime-bench-dns
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_REPORT)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -23,6 +24,10 @@ $(BINARY_TARGET): $(shell find cmd/target internal -name '*.go' 2>/dev/null)
 $(BINARY_DNS): $(shell find cmd/dns internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/dns
+
+$(BINARY_REPORT): $(shell find cmd/uptime-bench-report internal -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-report
 
 .PHONY: clean
 clean:
@@ -95,6 +100,13 @@ run-scenario:
 	    -fleet=/etc/uptime-bench/fleet.toml \
 	    -services=/etc/uptime-bench/services.toml \
 	    -scenario=/scenarios/$(notdir $(SCENARIO))
+
+CAMPAIGN ?= $(error set CAMPAIGN)
+REPORT_FORMAT ?= table
+
+.PHONY: report-campaign
+report-campaign: $(BINARY_REPORT)
+	$(BINARY_REPORT) -campaign=$(CAMPAIGN) -format=$(REPORT_FORMAT)
 
 .PHONY: logs
 logs:
@@ -174,6 +186,8 @@ help:
 	@echo ""
 	@echo "  make run-scenario     Run a scenario (requires dev-fleet running)"
 	@echo "    SCENARIO=scenarios/http-503.toml (default)"
+	@echo "  make report-campaign  Summarize a campaign"
+	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_FORMAT=table|tsv|json]"
 	@echo ""
 	@echo "Provision (first-time host setup — run before deploy):"
 	@echo "  make provision-harness HARNESS_HOST=host [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
