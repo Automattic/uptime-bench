@@ -80,8 +80,8 @@ The target binary now exposes an HTTPS listener with a generated self-signed fal
 ### Phase 3 — TLS protocol-level injection
 
 - `tls_handshake`: implemented for target-side config selection by returning a deterministic handshake error before certificate selection. Probe receives a TLS alert; no HTTP response.
-- `tls_deprecated`: implemented for target-side config selection by clamping `tls.Config.MaxVersion` to TLS 1.1 or TLS 1.0. Needs end-to-end OpenSSL/probe acceptance coverage to confirm monitor behaviour across real clients.
-- Acceptance still needed: `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active.
+- `tls_deprecated`: implemented for target-side config selection by clamping `tls.Config.MaxVersion` to TLS 1.1 or TLS 1.0. In-process TLS handshake tests cover the target behavior.
+- Acceptance still needed: external `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; external `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active.
 
 **Measurement note for `tls_deprecated`**: because the request actually returns 200 OK, monitor outcomes split three ways — missed advisory, correct "TLS advisory" classification, false outage report. The measurement engine needs a third category here, distinct from true-positive and false-negative.
 

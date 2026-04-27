@@ -335,6 +335,79 @@ func TestTLSConfigSelectorTLSHandshakeRejectsBeforeConfigSelection(t *testing.T)
 	}
 }
 
+func TestTLSConfigSelectorTLSHandshakeFailsRealHandshake(t *testing.T) {
+	registry := control.NewRegistry()
+	registry.Set(control.FailureSpec{
+		Type:     "tls_handshake",
+		Host:     "target.bench.example.com",
+		Duration: time.Hour,
+		Params:   map[string]any{"reason": "version_mismatch"},
+	}, 1)
+	selector := &TLSConfigSelector{Registry: registry}
+
+	result := runTLSHandshake(t, selector, &tls.Config{
+		ServerName:         "target.bench.example.com",
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true,
+	})
+	if result.clientErr == nil {
+		t.Fatal("client handshake succeeded, want tls_handshake failure")
+	}
+	if result.serverErr == nil {
+		t.Fatal("server handshake succeeded, want tls_handshake failure")
+	}
+	if !strings.Contains(result.serverErr.Error(), "tls_handshake active") {
+		t.Fatalf("server handshake error = %v, want tls_handshake active", result.serverErr)
+	}
+}
+
+func TestTLSConfigSelectorTLSDeprecatedNegotiatesRealDeprecatedHandshake(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)
+	if err != nil {
+		t.Fatalf("SelfSignedCertificate: %v", err)
+	}
+	registry := control.NewRegistry()
+	registry.Set(control.FailureSpec{
+		Type:     "tls_deprecated",
+		Host:     "target.bench.example.com",
+		Duration: time.Hour,
+		Params:   map[string]any{"variant": "TLS11"},
+	}, 1)
+	certSelector := &CertificateSelector{
+		Registry: registry,
+		Fallback: fallback,
+		Now:      func() time.Time { return now },
+	}
+	selector := &TLSConfigSelector{
+		Registry:     registry,
+		Certificates: certSelector,
+		Base: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			MaxVersion: tls.VersionTLS13,
+		},
+	}
+
+	result := runTLSHandshake(t, selector, &tls.Config{
+		ServerName:         "target.bench.example.com",
+		MinVersion:         tls.VersionTLS10,
+		MaxVersion:         tls.VersionTLS11,
+		InsecureSkipVerify: true,
+	})
+	if result.clientErr != nil {
+		t.Fatalf("client handshake: %v", result.clientErr)
+	}
+	if result.serverErr != nil {
+		t.Fatalf("server handshake: %v", result.serverErr)
+	}
+	if result.clientState.Version != tls.VersionTLS11 {
+		t.Fatalf("client TLS version = %x, want TLS 1.1", result.clientState.Version)
+	}
+	if result.serverState.Version != tls.VersionTLS11 {
+		t.Fatalf("server TLS version = %x, want TLS 1.1", result.serverState.Version)
+	}
+}
+
 func TestTLSConfigSelectorRejectsUnsupportedTLSHandshakeReason(t *testing.T) {
 	registry := control.NewRegistry()
 	registry.Set(control.FailureSpec{
@@ -383,6 +456,61 @@ func TestCertificateSelectorUsesFallbackWithoutTLSFailure(t *testing.T) {
 	}
 	if got != &selector.Fallback {
 		t.Fatal("GetCertificate returned library cert, want fallback")
+	}
+}
+
+type tlsHandshakeResult struct {
+	clientState tls.ConnectionState
+	clientErr   error
+	serverState tls.ConnectionState
+	serverErr   error
+}
+
+func runTLSHandshake(t *testing.T, selector *TLSConfigSelector, clientConfig *tls.Config) tlsHandshakeResult {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan tlsHandshakeResult, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			serverCh <- tlsHandshakeResult{serverErr: err}
+			return
+		}
+		defer conn.Close()
+		if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			serverCh <- tlsHandshakeResult{serverErr: err}
+			return
+		}
+		server := tls.Server(conn, &tls.Config{
+			GetConfigForClient: selector.GetConfigForClient,
+		})
+		err = server.Handshake()
+		serverCh <- tlsHandshakeResult{
+			serverState: server.ConnectionState(),
+			serverErr:   err,
+		}
+	}()
+
+	cfg := clientConfig.Clone()
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	client, clientErr := tls.DialWithDialer(dialer, "tcp", ln.Addr().String(), cfg)
+	var clientState tls.ConnectionState
+	if clientErr == nil {
+		clientState = client.ConnectionState()
+		_ = client.Close()
+	}
+
+	serverResult := <-serverCh
+	return tlsHandshakeResult{
+		clientState: clientState,
+		clientErr:   clientErr,
+		serverState: serverResult.serverState,
+		serverErr:   serverResult.serverErr,
 	}
 }
 
