@@ -38,12 +38,14 @@ type ZoneMap map[string]ZoneEntry
 // domain, plus per-zone NS hostnames and a SOA so apex queries and
 // negative caching work correctly.
 //
-// Caller must pass `now` as the wall-clock value to use for the SOA
-// serial; tests pass a fixed time, production passes time.Now().
-// SERIAL is the unix timestamp at zone-build time so each rebuild
-// (process restart) produces a fresh serial without any persistent
-// state.
-func BuildFromFleet(fl *fleet.Config, memberID string, nowUnix uint32) (*Zones, error) {
+// serial is the SOA SERIAL value to publish for every zone this
+// member serves. Production callers derive it from a hash of the
+// fleet.toml content (see cmd/dns/main.go) so two members reading
+// the same config publish the same SERIAL — strict zone-integrity
+// checks (and any future DNSSEC slaving story) flag a parent/child
+// mismatch when sibling members disagree, even if the published
+// records are otherwise identical. Tests pass a literal value.
+func BuildFromFleet(fl *fleet.Config, memberID string, serial uint32) (*Zones, error) {
 	var ns *fleet.Nameserver
 	for i := range fl.Nameservers {
 		if fl.Nameservers[i].ID == memberID {
@@ -144,7 +146,7 @@ func BuildFromFleet(fl *fleet.Config, memberID string, nowUnix uint32) (*Zones, 
 			SOA: SOA{
 				MName:   mname,
 				RName:   "hostmaster." + domain,
-				Serial:  nowUnix,
+				Serial:  serial,
 				Refresh: 3600,
 				Retry:   600,
 				Expire:  86400,

@@ -9,6 +9,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net"
 	"net/http"
@@ -56,11 +57,24 @@ func main() {
 	}
 
 	if *fleetFile != "" {
-		fl, err := fleet.Load(*fleetFile)
+		fleetBytes, err := os.ReadFile(*fleetFile)
+		if err != nil {
+			log.Fatalf("dns: fleet read: %v", err)
+		}
+		fl, err := fleet.Parse(fleetBytes)
 		if err != nil {
 			log.Fatalf("dns: fleet: %v", err)
 		}
-		fleetZones, err := dnsserver.BuildFromFleet(fl, *memberID, uint32(time.Now().Unix()))
+		// SOA SERIAL is a hash of the fleet.toml bytes so all members
+		// reading the same config publish the same value, and the
+		// serial bumps automatically when the operator edits the file.
+		// fnv32a on file content: collision probability is negligible
+		// for the handful of edits a fleet sees over its lifetime,
+		// and there's no persistent state to coordinate.
+		h := fnv.New32a()
+		h.Write(fleetBytes)
+		serial := h.Sum32()
+		fleetZones, err := dnsserver.BuildFromFleet(fl, *memberID, serial)
 		if err != nil {
 			log.Fatalf("dns: fleet zones: %v", err)
 		}
