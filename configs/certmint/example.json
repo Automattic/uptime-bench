@@ -3,6 +3,7 @@
   "state_dir": "/var/lib/uptime-bench-certmint",
   "lock_path": "/var/lib/uptime-bench-certmint/certmint.lock",
   "poll_interval": "15m",
+  "inter_order_quiet": "60s",
   "certbot": {
     "binary": "certbot",
     "email": "ops@example.com",

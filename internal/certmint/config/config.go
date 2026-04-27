@@ -39,12 +39,20 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 
 // Config is the top-level certmint configuration.
 type Config struct {
-	LibraryDir   string         `json:"library_dir"`
-	StateDir     string         `json:"state_dir"`
-	LockPath     string         `json:"lock_path"`
-	PollInterval Duration       `json:"poll_interval"`
-	Certbot      CertbotConfig  `json:"certbot"`
-	Domains      []DomainConfig `json:"domains"`
+	LibraryDir   string   `json:"library_dir"`
+	StateDir     string   `json:"state_dir"`
+	LockPath     string   `json:"lock_path"`
+	PollInterval Duration `json:"poll_interval"`
+	// InterOrderQuiet is the minimum time to wait between two orders
+	// that target the same domain. Wildcard identifiers in different
+	// orders share the same _acme-challenge.<domain> TXT name, so a
+	// new order issued immediately after the previous one's cleanup
+	// hook can race Let's Encrypt's recursive resolver caching the
+	// old TXT value (TTL 30s on uptime-bench-dns). Default is 60s
+	// (2× the canonical TTL); set to 0 to disable.
+	InterOrderQuiet Duration       `json:"inter_order_quiet,omitempty"`
+	Certbot         CertbotConfig  `json:"certbot"`
+	Domains         []DomainConfig `json:"domains"`
 }
 
 // CertbotConfig contains certbot executable, state, and authenticator settings.
@@ -118,6 +126,9 @@ func (c *Config) ApplyDefaults() {
 	if c.PollInterval.Duration == 0 {
 		c.PollInterval.Duration = 15 * time.Minute
 	}
+	if c.InterOrderQuiet.Duration == 0 {
+		c.InterOrderQuiet.Duration = 60 * time.Second
+	}
 	if c.Certbot.Binary == "" {
 		c.Certbot.Binary = "certbot"
 	}
@@ -151,6 +162,9 @@ func (c Config) Validate() error {
 	}
 	if c.PollInterval.Duration <= 0 {
 		errs = append(errs, errors.New("config: poll_interval must be positive"))
+	}
+	if c.InterOrderQuiet.Duration < 0 {
+		errs = append(errs, errors.New("config: inter_order_quiet must be non-negative"))
 	}
 	if c.Certbot.Binary == "" {
 		errs = append(errs, errors.New("config: certbot.binary is required"))

@@ -61,6 +61,40 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.Certbot.IssuanceTimeout.Duration != 10*time.Minute {
 		t.Fatalf("IssuanceTimeout = %s, want 10m", cfg.Certbot.IssuanceTimeout.Duration)
 	}
+	if cfg.InterOrderQuiet.Duration != 60*time.Second {
+		t.Fatalf("InterOrderQuiet = %s, want 60s", cfg.InterOrderQuiet.Duration)
+	}
+}
+
+// TestLoadParsesExplicitInterOrderQuiet — operators tuning the quiet
+// period either to disable (set to "0s") or to extend it past the
+// uptime-bench-dns TTL must see their value parse cleanly through
+// the JSON Duration wrapper.
+func TestLoadParsesExplicitInterOrderQuiet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	writeJSON(t, path, map[string]any{
+		"state_dir":         filepath.Join(t.TempDir(), "state"),
+		"inter_order_quiet": "120s",
+		"certbot": map[string]any{
+			"email":              "ops@example.com",
+			"agree_tos":          true,
+			"authenticator_args": []string{"--manual"},
+		},
+		"domains": []map[string]any{
+			{
+				"name":        "bench.example.com",
+				"identifiers": []string{"bench.example.com"},
+				"profiles":    []map[string]any{{"name": "classic", "per_day": 1}},
+			},
+		},
+	})
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.InterOrderQuiet.Duration != 2*time.Minute {
+		t.Fatalf("InterOrderQuiet = %s, want 2m", cfg.InterOrderQuiet.Duration)
+	}
 }
 
 func TestValidateRejectsTemplateCoveredByWildcard(t *testing.T) {

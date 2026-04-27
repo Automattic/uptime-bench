@@ -164,18 +164,55 @@ func runOnce(ctx context.Context, cfg config.Config, current *manifest.Manifest,
 		return nil
 	}
 	var errs []error
+	// Track when the last order for each domain finished so we can
+	// honor cfg.InterOrderQuiet between same-domain orders. Wildcard
+	// identifiers in two consecutive orders share a single
+	// _acme-challenge.<domain> TXT name; without a quiet period
+	// Let's Encrypt's recursive resolver can answer the new order
+	// from cached old TXT values, validation fails, and the order
+	// rolls back the just-deleted TXT. The quiet period is bounded
+	// to same-domain orders so cross-domain throughput is unaffected.
+	lastDone := make(map[string]time.Time, len(cfg.Domains))
 	for _, order := range orders {
 		if dryRun {
 			fmt.Println(certbot.CommandLine(cfg.Certbot, order))
 			continue
 		}
+		if err := waitForQuietPeriod(ctx, cfg.InterOrderQuiet.Duration, lastDone[order.DomainName], order); err != nil {
+			return err
+		}
 		if err := issueAndArchive(ctx, cfg, current, order); err != nil {
 			log.Printf("certmint: order %s failed: %v", order.CertName, err)
 			errs = append(errs, fmt.Errorf("%s: %w", order.CertName, err))
+			lastDone[order.DomainName] = time.Now()
 			continue
 		}
+		lastDone[order.DomainName] = time.Now()
 	}
 	return errors.Join(errs...)
+}
+
+// waitForQuietPeriod sleeps until quiet has elapsed since lastDone for
+// the given order's domain, or returns immediately if no prior order
+// for the domain has been recorded. Honors ctx cancellation.
+func waitForQuietPeriod(ctx context.Context, quiet time.Duration, lastDone time.Time, order planner.Order) error {
+	if quiet <= 0 || lastDone.IsZero() {
+		return nil
+	}
+	wakeAt := lastDone.Add(quiet)
+	delay := time.Until(wakeAt)
+	if delay <= 0 {
+		return nil
+	}
+	log.Printf("certmint: waiting %v before %s (inter-order quiet for %s)", delay.Round(time.Second), order.CertName, order.DomainName)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func issueAndArchive(ctx context.Context, cfg config.Config, current *manifest.Manifest, order planner.Order) error {

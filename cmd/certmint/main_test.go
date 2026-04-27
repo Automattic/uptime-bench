@@ -13,6 +13,7 @@ import (
 
 	"github.com/Automattic/uptime-bench-certmint/internal/library"
 	"github.com/Automattic/uptime-bench-certmint/internal/manifest"
+	"github.com/Automattic/uptime-bench-certmint/internal/planner"
 )
 
 func TestRunPlanOutputsDueOrders(t *testing.T) {
@@ -142,6 +143,64 @@ func writeCommandConfig(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// TestWaitForQuietPeriod_FirstOrderHasNoDelay — when no prior order
+// for the domain has been recorded (zero-value lastDone), the wait
+// should return immediately regardless of quiet duration.
+func TestWaitForQuietPeriod_FirstOrderHasNoDelay(t *testing.T) {
+	order := planner.Order{DomainName: "bench.example.com", CertName: "first"}
+	start := time.Now()
+	if err := waitForQuietPeriod(context.Background(), 5*time.Second, time.Time{}, order); err != nil {
+		t.Fatalf("waitForQuietPeriod: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("first order slept %v — should return immediately when lastDone is zero", elapsed)
+	}
+}
+
+// TestWaitForQuietPeriod_HonorsRemainingTime — partial-elapsed case.
+// If 30s of a 60s quiet have already passed, only the remaining 30s
+// should be waited, not the full 60.
+func TestWaitForQuietPeriod_HonorsRemainingTime(t *testing.T) {
+	order := planner.Order{DomainName: "bench.example.com", CertName: "second"}
+	lastDone := time.Now().Add(-150 * time.Millisecond)
+	start := time.Now()
+	if err := waitForQuietPeriod(context.Background(), 200*time.Millisecond, lastDone, order); err != nil {
+		t.Fatalf("waitForQuietPeriod: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 30*time.Millisecond || elapsed > 200*time.Millisecond {
+		t.Fatalf("elapsed = %v, want roughly 50ms (200 - 150)", elapsed)
+	}
+}
+
+// TestWaitForQuietPeriod_DisabledByZero — explicit opt-out.
+func TestWaitForQuietPeriod_DisabledByZero(t *testing.T) {
+	order := planner.Order{DomainName: "bench.example.com", CertName: "no-wait"}
+	lastDone := time.Now()
+	start := time.Now()
+	if err := waitForQuietPeriod(context.Background(), 0, lastDone, order); err != nil {
+		t.Fatalf("waitForQuietPeriod: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("zero-quiet slept %v — quiet=0 must short-circuit", elapsed)
+	}
+}
+
+// TestWaitForQuietPeriod_ContextCancellation — a SIGTERM mid-wait
+// shouldn't hang the daemon.
+func TestWaitForQuietPeriod_ContextCancellation(t *testing.T) {
+	order := planner.Order{DomainName: "bench.example.com", CertName: "interruptible"}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	err := waitForQuietPeriod(ctx, time.Hour, time.Now(), order)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
 }
 
 func captureStdout(t *testing.T, fn func() error) (string, error) {

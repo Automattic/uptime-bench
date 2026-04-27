@@ -71,6 +71,21 @@ Staging output is intentionally written below `<library_dir>/staging` and uses
 staging-specific certbot lineage names. This prevents a later production run
 from reusing or archiving a staging lineage.
 
+### Inter-order quiet period
+
+When two orders for the same domain run back-to-back — common when one
+profile's wildcard SAN and another profile's wildcard SAN both land on
+the same `_acme-challenge.<domain>` TXT name — the second order's
+auth-hook can race Let's Encrypt's recursive resolver caching the
+first order's old TXT value, and validation fails on a freshly
+installed but cache-shadowed record.
+
+`inter_order_quiet` (default `60s`, twice the canonical 30s TTL on
+`uptime-bench-dns`) tells certmint to wait that long between two
+orders that share a domain. Cross-domain throughput is unaffected.
+Set to `"0s"` to disable if you control the recursive cache or run
+all orders single-shot.
+
 ## Switch To Production
 
 After staging issuance and archive behavior are verified:
