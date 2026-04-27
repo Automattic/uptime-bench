@@ -1,6 +1,9 @@
 package measurement
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -249,5 +252,106 @@ func TestComputeMetrics_CapabilityMismatchTreatedLikeUnknown(t *testing.T) {
 	if out["unknown"].MetricText != sr.reason {
 		t.Errorf("unknown.MetricText = %q, want the row's reason text preserved (%q)",
 			out["unknown"].MetricText, sr.reason)
+	}
+}
+
+type fakeCampaignStore struct {
+	campaignRunIDs []string
+	campaignErr    error
+	events         map[string][]db.GroundTruthEvent
+	reports        map[string][]db.MonitorReportRow
+	eventErr       map[string]error
+	reportErr      map[string]error
+	reportCalls    []string
+	upserts        []db.DerivedMetricRow
+}
+
+func (f *fakeCampaignStore) RunIDsForCampaign(context.Context, string) ([]string, error) {
+	if f.campaignErr != nil {
+		return nil, f.campaignErr
+	}
+	return append([]string(nil), f.campaignRunIDs...), nil
+}
+
+func (f *fakeCampaignStore) GroundTruthEventsForRun(_ context.Context, runID string) ([]db.GroundTruthEvent, error) {
+	if err := f.eventErr[runID]; err != nil {
+		return nil, err
+	}
+	return append([]db.GroundTruthEvent(nil), f.events[runID]...), nil
+}
+
+func (f *fakeCampaignStore) MonitorReportsForRun(_ context.Context, runID string) ([]db.MonitorReportRow, error) {
+	f.reportCalls = append(f.reportCalls, runID)
+	if err := f.reportErr[runID]; err != nil {
+		return nil, err
+	}
+	return append([]db.MonitorReportRow(nil), f.reports[runID]...), nil
+}
+
+func (f *fakeCampaignStore) UpsertDerivedMetric(_ context.Context, r db.DerivedMetricRow) error {
+	f.upserts = append(f.upserts, r)
+	return nil
+}
+
+func TestDeriveCampaign_BestEffortAcrossRuns(t *testing.T) {
+	store := &fakeCampaignStore{
+		campaignRunIDs: []string{"run-1", "run-2", "run-3"},
+		events:         map[string][]db.GroundTruthEvent{},
+		reports: map[string][]db.MonitorReportRow{
+			"run-1": {
+				{RunID: "run-1", ServiceID: "svc", RetrieveStatus: "unknown", RetrieveUnknownReason: "rate limited"},
+			},
+			"run-3": {
+				{RunID: "run-3", ServiceID: "svc", RetrieveStatus: "unknown", RetrieveUnknownReason: "auth failed"},
+			},
+		},
+		eventErr:  map[string]error{},
+		reportErr: map[string]error{"run-2": errors.New("db offline")},
+	}
+
+	err := DeriveCampaign(context.Background(), store, "campaign-run")
+	if err == nil {
+		t.Fatal("DeriveCampaign: expected joined error from run-2")
+	}
+	if !strings.Contains(err.Error(), "run-2") || !strings.Contains(err.Error(), "db offline") {
+		t.Fatalf("DeriveCampaign error = %v, want run id and underlying error", err)
+	}
+
+	wantCalls := []string{"run-1", "run-2", "run-3"}
+	if len(store.reportCalls) != len(wantCalls) {
+		t.Fatalf("reportCalls = %v, want %v", store.reportCalls, wantCalls)
+	}
+	for i := range wantCalls {
+		if store.reportCalls[i] != wantCalls[i] {
+			t.Fatalf("reportCalls = %v, want %v", store.reportCalls, wantCalls)
+		}
+	}
+
+	upserted := map[string]bool{}
+	for _, row := range store.upserts {
+		if row.MetricName == "unknown" {
+			upserted[row.RunID] = true
+		}
+	}
+	if !upserted["run-1"] || !upserted["run-3"] {
+		t.Fatalf("unknown metrics upserted for runs = %v, want run-1 and run-3", upserted)
+	}
+	if upserted["run-2"] {
+		t.Fatal("run-2 should not have metrics because its reports failed to load")
+	}
+}
+
+func TestDeriveCampaign_RunListErrorStopsBeforeRuns(t *testing.T) {
+	store := &fakeCampaignStore{campaignErr: errors.New("campaign lookup failed")}
+
+	err := DeriveCampaign(context.Background(), store, "campaign-run")
+	if err == nil {
+		t.Fatal("DeriveCampaign: expected error")
+	}
+	if !strings.Contains(err.Error(), "load campaign runs") {
+		t.Fatalf("DeriveCampaign error = %v, want campaign load context", err)
+	}
+	if len(store.reportCalls) != 0 {
+		t.Fatalf("reportCalls = %v, want no per-run derivation after list failure", store.reportCalls)
 	}
 }

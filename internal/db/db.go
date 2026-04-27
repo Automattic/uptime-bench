@@ -130,6 +130,29 @@ func (d *DB) CloseCampaignRun(ctx context.Context, campaignRunID string, endedAt
 	return nil
 }
 
+// RunIDsForCampaign returns scenario_runs IDs belonging to a campaign
+// run, ordered by start time for deterministic batch metric derivation.
+func (d *DB) RunIDsForCampaign(ctx context.Context, campaignRunID string) ([]string, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id FROM scenario_runs WHERE campaign_id = ? ORDER BY started_at, id`,
+		campaignRunID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("db: RunIDsForCampaign: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("db: RunIDsForCampaign: scan: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // CloseRun sets ended_at and resolution_reason on an existing run.
 func (d *DB) CloseRun(ctx context.Context, runID string, endedAt time.Time, reason string) error {
 	_, err := d.db.ExecContext(ctx,

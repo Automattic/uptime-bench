@@ -178,6 +178,10 @@ func main() {
 	})
 	if campaignRunID != "" {
 		log.Printf("harness: campaign run recorded: %s", campaignRunID)
+		log.Printf("harness: deriving metrics for campaign run %s", campaignRunID)
+		if err := measurement.DeriveCampaign(ctx, database, campaignRunID); err != nil {
+			log.Printf("harness: campaign metric derivation: %v", err)
+		}
 	}
 	if runErr != nil {
 		log.Printf("harness: campaign failed: %v", runErr)

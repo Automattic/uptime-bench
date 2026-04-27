@@ -8,6 +8,7 @@ package measurement
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -23,6 +24,17 @@ type serviceData struct {
 	alerts  []db.MonitorReportRow
 }
 
+type runStore interface {
+	GroundTruthEventsForRun(ctx context.Context, runID string) ([]db.GroundTruthEvent, error)
+	MonitorReportsForRun(ctx context.Context, runID string) ([]db.MonitorReportRow, error)
+	UpsertDerivedMetric(ctx context.Context, r db.DerivedMetricRow) error
+}
+
+type campaignStore interface {
+	runStore
+	RunIDsForCampaign(ctx context.Context, campaignRunID string) ([]string, error)
+}
+
 // maintenanceCoverageThreshold: when the maintenance window covers at
 // least this fraction of the union of failure windows, an absent alert
 // is classified as maintenance_suppressed instead of false_negative.
@@ -34,7 +46,7 @@ const maintenanceCoverageThreshold = 0.80
 
 // Derive computes all metrics for the given run and upserts them into
 // derived_metrics. Safe to call multiple times — rows are idempotent.
-func Derive(ctx context.Context, database *db.DB, runID string) error {
+func Derive(ctx context.Context, database runStore, runID string) error {
 	events, err := database.GroundTruthEventsForRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("measurement: load events: %w", err)
@@ -101,6 +113,25 @@ func Derive(ctx context.Context, database *db.DB, runID string) error {
 		}
 	}
 	return nil
+}
+
+// DeriveCampaign computes metrics for every scenario run belonging to
+// a campaign run. Derivation is best-effort across replays: a broken
+// row should not prevent metrics for later rows from being refreshed.
+// Any per-run errors are joined and returned after all runs are tried.
+func DeriveCampaign(ctx context.Context, database campaignStore, campaignRunID string) error {
+	runIDs, err := database.RunIDsForCampaign(ctx, campaignRunID)
+	if err != nil {
+		return fmt.Errorf("measurement: load campaign runs: %w", err)
+	}
+
+	var errs []error
+	for _, runID := range runIDs {
+		if err := Derive(ctx, database, runID); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", runID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func computeMetrics(sr *serviceData, windows []failureWindow, maintenance *failureWindow) map[string]db.DerivedMetricRow {
