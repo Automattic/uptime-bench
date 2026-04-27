@@ -77,11 +77,15 @@ func main() {
 	}
 
 	registry := control.NewRegistry()
+	txtStore := dnsserver.NewTXTStore()
 
 	controlSrv := control.NewServer(*memberID, token, registry)
+	mux := http.NewServeMux()
+	controlSrv.RegisterRoutes(mux)
+	dnsserver.RegisterACMEHandlers(mux, txtStore)
 	controlHTTP := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *controlPort),
-		Handler: controlSrv.Handler(),
+		Handler: control.AuthMiddleware(token)(mux),
 	}
 
 	go func() {
@@ -98,8 +102,6 @@ func main() {
 		log.Fatalf("dns: listen udp %s: %v", dnsAddr, err)
 	}
 	defer udpConn.Close()
-	txtStore := dnsserver.NewTXTStore()
-
 	go dnsserver.ServeUDP(udpConn, registry, zones, txtStore)
 
 	tcpLn, err := net.Listen("tcp", dnsAddr)

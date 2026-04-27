@@ -22,33 +22,45 @@ func NewServer(memberID, token string, registry *FailureRegistry) *Server {
 	return &Server{memberID: memberID, token: token, registry: registry}
 }
 
-// Handler returns the http.Handler for the control API.
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
+// RegisterRoutes adds the standard control endpoints (/activate,
+// /deactivate, /status) to mux without applying auth — callers
+// compose them with their own routes (e.g. the DNS member's ACME
+// challenge handlers) and wrap the combined mux with AuthMiddleware
+// so a single Bearer-token check guards everything.
+func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /activate", s.handleActivate)
 	mux.HandleFunc("POST /deactivate", s.handleDeactivate)
 	mux.HandleFunc("GET /status", s.handleStatus)
-	return s.withAuth(mux)
 }
 
-func (s *Server) withAuth(next http.Handler) http.Handler {
-	expected := []byte(s.token)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		got := []byte(strings.TrimPrefix(auth, "Bearer "))
-		// ConstantTimeCompare returns 0 if lengths differ or bytes differ.
-		// It runs in time independent of where the first differing byte is,
-		// which prevents timing-side-channel token recovery.
-		if subtle.ConstantTimeCompare(got, expected) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+// Handler returns the standard control routes wrapped in auth, the
+// shape every fleet member except DNS uses today.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+	return AuthMiddleware(s.token)(mux)
+}
+
+// AuthMiddleware returns an http middleware that enforces the
+// Authorization: Bearer <token> header on every request. Constant-
+// time comparison prevents timing-side-channel token recovery.
+func AuthMiddleware(token string) func(http.Handler) http.Handler {
+	expected := []byte(token)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer ") {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			got := []byte(strings.TrimPrefix(auth, "Bearer "))
+			if subtle.ConstantTimeCompare(got, expected) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
