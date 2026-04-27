@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
+	"github.com/Automattic/uptime-bench/internal/adapter/adaptertest"
 )
 
 type captured struct {
@@ -427,5 +428,199 @@ func TestDeprovision_EmptyHandleIsNoop(t *testing.T) {
 	a := newTestAdapter("http://nope", "AK", "PK")
 	if err := a.Deprovision(context.Background(), adapter.MonitorHandle{}); err != nil {
 		t.Fatalf("empty handle: %v", err)
+	}
+}
+
+// ─── Maintenance windows ────────────────────────────────────────────────────
+
+// TestCapabilities_MaintenanceAndCooldown — both Phase B flags true.
+func TestCapabilities_MaintenanceAndCooldown(t *testing.T) {
+	c := newTestAdapter("http://x", "AK", "PK").Capabilities()
+	if !c.SupportsMaintenanceWindows {
+		t.Error("SupportsMaintenanceWindows should be true (POST /api/v1/downtime + monitor_id from synthetic test)")
+	}
+	if !c.SupportsCooldownReset {
+		t.Error("SupportsCooldownReset should be true (delete-recreate of synthetic test cycles state)")
+	}
+}
+
+// TestProvision_NoMaintenanceWindow — single POST call, no GET, no
+// downtime, no monitor_id stored on the handle.
+func TestProvision_NoMaintenanceWindow(t *testing.T) {
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/api/v1/synthetics/tests/api", Status: 200, Body: `{"public_id":"abc-def-ghi"}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "AK", "PK")
+	handle, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{CheckFrequency: time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(rf.Requests()) != 1 {
+		t.Errorf("expected 1 request when no maintenance window, got %d", len(rf.Requests()))
+	}
+	if handle.Fields["monitor_id"] != "" || handle.Fields["downtime_id"] != "" {
+		t.Errorf("monitor_id/downtime_id should be empty without a maintenance window, got %+v", handle.Fields)
+	}
+}
+
+// TestProvision_WithMaintenanceWindow — three-call sequence:
+// (1) POST tests/api creates the synthetic test;
+// (2) GET tests/api/{public_id} discovers monitor_id;
+// (3) POST /downtime creates the suppression window with that monitor_id.
+func TestProvision_WithMaintenanceWindow(t *testing.T) {
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/api/v1/synthetics/tests/api", Status: 200, Body: `{"public_id":"abc-def-ghi"}`},
+		{Method: "GET", PathPrefix: "/api/v1/synthetics/tests/api/abc-def-ghi", Status: 200, Body: `{"public_id":"abc-def-ghi","monitor_id":277272334}`},
+		{Method: "POST", PathPrefix: "/api/v1/downtime", Status: 200, Body: `{"id":555}`},
+	})
+	defer srv.Close()
+
+	start := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+
+	a := newTestAdapter(srv.URL, "AK", "PK")
+	handle, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: start, End: end},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	reqs := rf.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("expected 3 requests (POST tests/api + GET tests/api/{id} + POST /downtime), got %d", len(reqs))
+	}
+	if reqs[0].Path != "/api/v1/synthetics/tests/api" || reqs[0].Method != "POST" {
+		t.Errorf("requests[0] = %s %s, want POST /api/v1/synthetics/tests/api", reqs[0].Method, reqs[0].Path)
+	}
+	if reqs[1].Path != "/api/v1/synthetics/tests/api/abc-def-ghi" || reqs[1].Method != "GET" {
+		t.Errorf("requests[1] = %s %s, want GET .../api/abc-def-ghi", reqs[1].Method, reqs[1].Path)
+	}
+	if reqs[2].Path != "/api/v1/downtime" || reqs[2].Method != "POST" {
+		t.Errorf("requests[2] = %s %s, want POST /api/v1/downtime", reqs[2].Method, reqs[2].Path)
+	}
+
+	var dt createDowntimeRequest
+	if err := json.Unmarshal(reqs[2].Body, &dt); err != nil {
+		t.Fatalf("downtime body unmarshal: %v", err)
+	}
+	if dt.MonitorID != 277272334 {
+		t.Errorf("downtime.monitor_id = %d, want 277272334 (the value from the GET response)", dt.MonitorID)
+	}
+	if dt.Start != start.Unix() {
+		t.Errorf("downtime.start = %d, want %d (Unix seconds)", dt.Start, start.Unix())
+	}
+	if dt.End != end.Unix() {
+		t.Errorf("downtime.end = %d, want %d", dt.End, end.Unix())
+	}
+
+	if handle.Fields["monitor_id"] != "277272334" {
+		t.Errorf("handle.Fields[monitor_id] = %q, want 277272334", handle.Fields["monitor_id"])
+	}
+	if handle.Fields["downtime_id"] != "555" {
+		t.Errorf("handle.Fields[downtime_id] = %q, want 555", handle.Fields["downtime_id"])
+	}
+}
+
+// TestProvision_MonitorIDFetchFailureRollsBack — if the GET fails after
+// the synthetic was created, the synthetic is deleted to avoid leaks.
+func TestProvision_MonitorIDFetchFailureRollsBack(t *testing.T) {
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/api/v1/synthetics/tests/api", Status: 200, Body: `{"public_id":"abc-def-ghi"}`},
+		{Method: "GET", PathPrefix: "/api/v1/synthetics/tests/api/abc-def-ghi", Status: 500, Body: `internal error`},
+		{Method: "POST", PathPrefix: "/api/v1/synthetics/tests/delete", Status: 200, Body: `{}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "AK", "PK")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: time.Now(), End: time.Now().Add(time.Minute)},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error from monitor_id fetch failure")
+	}
+	sawDelete := false
+	for _, r := range rf.Requests() {
+		if r.Method == "POST" && r.Path == "/api/v1/synthetics/tests/delete" {
+			sawDelete = true
+		}
+	}
+	if !sawDelete {
+		t.Errorf("expected synthetic-test rollback delete; got %+v", rf.Requests())
+	}
+}
+
+// TestProvision_DowntimeCreateFailureRollsBack — if the downtime POST
+// fails after the synthetic + monitor_id discovery succeeded, the
+// synthetic is deleted to avoid leaks.
+func TestProvision_DowntimeCreateFailureRollsBack(t *testing.T) {
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/api/v1/synthetics/tests/api", Status: 200, Body: `{"public_id":"abc-def-ghi"}`},
+		{Method: "GET", PathPrefix: "/api/v1/synthetics/tests/api/abc-def-ghi", Status: 200, Body: `{"public_id":"abc-def-ghi","monitor_id":99}`},
+		{Method: "POST", PathPrefix: "/api/v1/downtime", Status: 400, Body: `bad start`},
+		{Method: "POST", PathPrefix: "/api/v1/synthetics/tests/delete", Status: 200, Body: `{}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "AK", "PK")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    time.Minute,
+			MaintenanceWindow: &adapter.MaintenanceWindow{Start: time.Now(), End: time.Now().Add(time.Minute)},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error from downtime create failure")
+	}
+	sawDelete := false
+	for _, r := range rf.Requests() {
+		if r.Method == "POST" && r.Path == "/api/v1/synthetics/tests/delete" {
+			sawDelete = true
+		}
+	}
+	if !sawDelete {
+		t.Errorf("expected synthetic-test rollback delete; got %+v", rf.Requests())
+	}
+}
+
+// TestDeprovision_DeletesDowntimeFirst — when handle has downtime_id,
+// Deprovision sends DELETE /downtime/{id} before the synthetic delete.
+func TestDeprovision_DeletesDowntimeFirst(t *testing.T) {
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "DELETE", PathPrefix: "/api/v1/downtime/", Status: 200, Body: ``},
+		{Method: "POST", PathPrefix: "/api/v1/synthetics/tests/delete", Status: 200, Body: `{}`},
+	})
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "AK", "PK")
+	handle := adapter.MonitorHandle{
+		MonitorID: "abc-def-ghi",
+		Fields:    map[string]string{"downtime_id": "555"},
+	}
+	if err := a.Deprovision(context.Background(), handle); err != nil {
+		t.Fatalf("Deprovision: %v", err)
+	}
+	reqs := rf.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(reqs))
+	}
+	if reqs[0].Path != "/api/v1/downtime/555" || reqs[0].Method != "DELETE" {
+		t.Errorf("requests[0] = %s %s, want DELETE /api/v1/downtime/555 (must come first)", reqs[0].Method, reqs[0].Path)
+	}
+	if reqs[1].Path != "/api/v1/synthetics/tests/delete" {
+		t.Errorf("requests[1].Path = %q, want /api/v1/synthetics/tests/delete", reqs[1].Path)
 	}
 }

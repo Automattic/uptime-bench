@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,11 +86,16 @@ func (a *Adapter) ServiceID() string { return a.id }
 func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		// Datadog Synthetics minimum is 30 seconds.
-		MinCheckFrequency:       30 * time.Second,
-		SupportsKeyword:         true,
-		SupportsInvertedKeyword: true, // body assertion with operator=doesNotContain
-		SupportsAgentChecks:     false,
-		DefaultMaxCallsPerRun:   100, // generous; Datadog rate limits per endpoint
+		MinCheckFrequency:          30 * time.Second,
+		SupportsKeyword:            true,
+		SupportsInvertedKeyword:    true, // body assertion with operator=doesNotContain
+		SupportsAgentChecks:        false,
+		SupportsMaintenanceWindows: true,
+		// Cooldown resets naturally because Deprovision deletes the
+		// synthetic test (and its attached monitor) per run; the next
+		// Provision creates a fresh one with no inherited alert state.
+		SupportsCooldownReset: true,
+		DefaultMaxCallsPerRun: 100, // generous; Datadog rate limits per endpoint
 	}
 }
 
@@ -231,13 +237,119 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		}
 		return adapter.MonitorHandle{}, fmt.Errorf("datadog: POST /synthetics/tests/api: %s", msg)
 	}
-	return adapter.MonitorHandle{
+	handle := adapter.MonitorHandle{
 		ServiceID: a.id,
 		MonitorID: resp.PublicID,
 		Fields: map[string]string{
 			"url": target.URL,
 		},
-	}, nil
+	}
+
+	if config.MaintenanceWindow != nil {
+		// Maintenance windows attach to the *monitor* that backs the
+		// synthetic test, not the synthetic test itself. The create
+		// response doesn't expose the monitor_id, so we GET the test
+		// back to discover it (verified live 2026-04-27 — see the
+		// design spec).
+		monitorID, err := a.fetchMonitorID(ctx, handle.MonitorID)
+		if err != nil {
+			_ = a.deleteSyntheticTest(context.Background(), handle.MonitorID)
+			return adapter.MonitorHandle{}, err
+		}
+		downtimeID, err := a.createDowntime(ctx, monitorID, target.ID, config.MaintenanceWindow)
+		if err != nil {
+			_ = a.deleteSyntheticTest(context.Background(), handle.MonitorID)
+			return adapter.MonitorHandle{}, err
+		}
+		handle.Fields["monitor_id"] = strconv.FormatInt(monitorID, 10)
+		handle.Fields["downtime_id"] = strconv.FormatInt(downtimeID, 10)
+	}
+
+	return handle, nil
+}
+
+// getTestResponse mirrors GET /api/v1/synthetics/tests/api/{public_id}.
+// We only care about monitor_id for the maintenance-window flow, but
+// declaring the type explicitly (rather than map[string]any) keeps the
+// JSON-number → int64 conversion correct without manual casting.
+type getTestResponse struct {
+	PublicID  string `json:"public_id"`
+	MonitorID int64  `json:"monitor_id"`
+}
+
+// fetchMonitorID retrieves the monitor_id Datadog attached to the
+// freshly-created synthetic test. Used for downtime configuration; the
+// create endpoint doesn't expose this field.
+func (a *Adapter) fetchMonitorID(ctx context.Context, publicID string) (int64, error) {
+	path := "/api/v1/synthetics/tests/api/" + publicID
+	var resp getTestResponse
+	if err := a.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return 0, fmt.Errorf("datadog: GET %s: %w", path, err)
+	}
+	if resp.MonitorID == 0 {
+		return 0, fmt.Errorf("datadog: GET %s: response missing monitor_id (synthetic test not yet linked to a monitor?)", path)
+	}
+	return resp.MonitorID, nil
+}
+
+// createDowntimeRequest mirrors POST /api/v1/downtime. Times are POSIX
+// seconds; monitor_id targets a specific monitor (vs. tag-based scope
+// which we don't use for this).
+type createDowntimeRequest struct {
+	Start     int64  `json:"start"`
+	End       int64  `json:"end"`
+	MonitorID int64  `json:"monitor_id"`
+	Message   string `json:"message,omitempty"`
+}
+
+type createDowntimeResponse struct {
+	ID int64 `json:"id"`
+}
+
+func (a *Adapter) createDowntime(ctx context.Context, monitorID int64, targetID string, window *adapter.MaintenanceWindow) (int64, error) {
+	req := createDowntimeRequest{
+		Start:     window.Start.Unix(),
+		End:       window.End.Unix(),
+		MonitorID: monitorID,
+		Message:   "uptime-bench: " + targetID,
+	}
+	var resp createDowntimeResponse
+	if err := a.do(ctx, http.MethodPost, "/api/v1/downtime", req, &resp); err != nil {
+		return 0, fmt.Errorf("datadog: POST /downtime: %w", err)
+	}
+	if resp.ID == 0 {
+		return 0, fmt.Errorf("datadog: POST /downtime: response missing id")
+	}
+	return resp.ID, nil
+}
+
+// deleteSyntheticTest is the rollback / Deprovision helper for the
+// synthetic test itself. Datadog uses POST with a JSON body for the
+// delete (no DELETE endpoint for synthetic tests).
+func (a *Adapter) deleteSyntheticTest(ctx context.Context, publicID string) error {
+	req := deleteTestsRequest{PublicIDs: []string{publicID}}
+	if err := a.do(ctx, http.MethodPost, "/api/v1/synthetics/tests/delete", req, nil); err != nil {
+		if strings.Contains(err.Error(), "status 404") {
+			return nil
+		}
+		return fmt.Errorf("datadog: POST /synthetics/tests/delete: %w", err)
+	}
+	return nil
+}
+
+// deleteDowntime cancels a previously-created downtime so subsequent
+// runs aren't accidentally affected by it. Datadog has both DELETE
+// /api/v1/downtime/{id} and POST /api/v1/downtime/cancel/{id}; the
+// DELETE form is the modern one.
+func (a *Adapter) deleteDowntime(ctx context.Context, downtimeID int64) error {
+	path := "/api/v1/downtime/" + strconv.FormatInt(downtimeID, 10)
+	if err := a.do(ctx, http.MethodDelete, path, nil, nil); err != nil {
+		if strings.Contains(err.Error(), "status 404") {
+			return nil
+		}
+		return fmt.Errorf("datadog: DELETE %s: %w", path, err)
+	}
+	return nil
 }
 
 // ─── Retrieve ───────────────────────────────────────────────────────────────
@@ -354,15 +466,17 @@ func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle)
 		return nil
 	}
 
-	req := deleteTestsRequest{PublicIDs: []string{handle.MonitorID}}
-	if err := a.do(ctx, http.MethodPost, "/api/v1/synthetics/tests/delete", req, nil); err != nil {
-		// 404 means the test is already gone — Deprovision is idempotent.
-		if strings.Contains(err.Error(), "status 404") {
-			return nil
+	// Cancel the downtime first if one was created. Failures here are
+	// tolerated because the downtime self-expires at `end` — a leaked
+	// downtime is a dashboard nuisance, not corruption. Test deletion
+	// still proceeds.
+	if dtID := handle.Fields["downtime_id"]; dtID != "" {
+		if id, err := strconv.ParseInt(dtID, 10, 64); err == nil {
+			_ = a.deleteDowntime(ctx, id)
 		}
-		return fmt.Errorf("datadog: POST /synthetics/tests/delete: %w", err)
 	}
-	return nil
+
+	return a.deleteSyntheticTest(ctx, handle.MonitorID)
 }
 
 // ─── HTTP plumbing ──────────────────────────────────────────────────────────
