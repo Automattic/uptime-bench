@@ -87,6 +87,17 @@ The daemon uses `lock_path` to prevent overlapping `once` and `daemon`
 invocations. The lock is advisory and tied to the running process; the lock file
 may remain after a crash, but it does not keep the next process locked.
 
+Each certbot invocation runs under `certbot.issuance_timeout` (default `10m`).
+Increase this if a slow DNS-01 propagation legitimately needs more time;
+otherwise the daemon will surface a stuck issuance instead of hanging.
+
+The daemon does not reload `config.json` while running. To pick up config edits,
+restart the service:
+
+```sh
+sudo systemctl restart uptime-bench-certmint.service
+```
+
 ## systemd
 
 Install the unit:

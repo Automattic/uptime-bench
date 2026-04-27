@@ -58,6 +58,69 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.Domains[0].UniqueSANTemplate != "cert-{date}-{slot}-{profile}.unique.{domain}" {
 		t.Fatalf("UniqueSANTemplate = %q", cfg.Domains[0].UniqueSANTemplate)
 	}
+	if cfg.Certbot.IssuanceTimeout.Duration != 10*time.Minute {
+		t.Fatalf("IssuanceTimeout = %s, want 10m", cfg.Certbot.IssuanceTimeout.Duration)
+	}
+}
+
+func TestValidateRejectsTemplateCoveredByWildcard(t *testing.T) {
+	cfg := Config{
+		LibraryDir:   "/tmp/library",
+		LockPath:     "/tmp/certmint.lock",
+		PollInterval: Duration{Duration: time.Minute},
+		Certbot: CertbotConfig{
+			Binary:            "certbot",
+			Email:             "ops@example.com",
+			AgreeTOS:          true,
+			IssuanceTimeout:   Duration{Duration: 10 * time.Minute},
+			AuthenticatorArgs: []string{"--manual"},
+		},
+		Domains: []DomainConfig{
+			{
+				Name:              "bench.example.com",
+				Identifiers:       []string{"bench.example.com", "*.bench.example.com"},
+				UniqueSANTemplate: "cert-{date}-{slot}.bench.example.com",
+				Profiles: []ProfileConfig{
+					{Name: "classic", PerDay: 1},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want wildcard collision")
+	}
+	if !strings.Contains(err.Error(), "covered by wildcard") {
+		t.Fatalf("Validate() error = %v, want 'covered by wildcard'", err)
+	}
+}
+
+func TestValidateAcceptsTemplateOutsideWildcard(t *testing.T) {
+	cfg := Config{
+		LibraryDir:   "/tmp/library",
+		LockPath:     "/tmp/certmint.lock",
+		PollInterval: Duration{Duration: time.Minute},
+		Certbot: CertbotConfig{
+			Binary:            "certbot",
+			Email:             "ops@example.com",
+			AgreeTOS:          true,
+			IssuanceTimeout:   Duration{Duration: 10 * time.Minute},
+			AuthenticatorArgs: []string{"--manual"},
+		},
+		Domains: []DomainConfig{
+			{
+				Name:              "bench.example.com",
+				Identifiers:       []string{"bench.example.com", "*.bench.example.com"},
+				UniqueSANTemplate: "cert-{date}-{slot}.unique.bench.example.com",
+				Profiles: []ProfileConfig{
+					{Name: "classic", PerDay: 1},
+				},
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
 }
 
 func TestLoadParsesExplicitDuration(t *testing.T) {
@@ -151,6 +214,7 @@ func TestValidateReportsConfigurationErrors(t *testing.T) {
 	}
 	for _, want := range []string{
 		"certbot.server and certbot.staging are mutually exclusive",
+		"certbot.issuance_timeout must be positive",
 		"domains[0].profiles[0].preferred_profile and required_profile are mutually exclusive",
 		"domains[0].profiles[0].max_lifetime must be positive",
 		"domains[0].profiles[0].per_day must be positive",

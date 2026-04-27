@@ -11,6 +11,7 @@
     "config_dir": "/var/lib/uptime-bench-certmint/letsencrypt",
     "work_dir": "/var/lib/uptime-bench-certmint/work",
     "logs_dir": "/var/log/uptime-bench-certmint",
+    "issuance_timeout": "10m",
     "authenticator_args": [
       "--dns-rfc2136",
       "--dns-rfc2136-credentials",

@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -134,6 +135,44 @@ func TestArchiveRejectsCertificateOverMaxLifetime(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(cfg.LibraryDir, "manifest.json")); !os.IsNotExist(statErr) {
 		t.Fatalf("manifest stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestArchiveCleansUpDestinationOnPartialFailure(t *testing.T) {
+	tmp := t.TempDir()
+	notBefore := time.Date(2026, 4, 27, 10, 0, 0, 0, time.UTC)
+	notAfter := time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC)
+	certPEM, fingerprint := testCertificate(t, notBefore, notAfter)
+	cfg := config.Config{
+		LibraryDir: filepath.Join(tmp, "library"),
+		Certbot: config.CertbotConfig{
+			ConfigDir: filepath.Join(tmp, "letsencrypt"),
+		},
+	}
+	order := planner.Order{
+		Environment: "production",
+		DomainName:  "bench.example.com",
+		ProfileName: "classic",
+		SlotDate:    "20260427",
+		Slot:        0,
+		CertName:    "ub-certmint-bench-example-com-classic-20260427-00",
+		Identifiers: []string{"bench.example.com"},
+	}
+	writeLineage(t, cfg.Certbot.ConfigDir, order.CertName, certPEM, []byte("test private key\n"))
+	if err := os.Remove(filepath.Join(cfg.Certbot.ConfigDir, "live", order.CertName, "chain.pem")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Archive(cfg, order, time.Date(2026, 4, 27, 1, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("Archive() error = nil, want partial-copy failure")
+	}
+
+	fpShort := fingerprint[:16]
+	dirName := "slot-00-" + notAfter.Format("20060102T150405Z") + "-" + fpShort
+	destDir := filepath.Join(cfg.LibraryDir, "bench.example.com", "classic", "20260427", dirName)
+	if _, statErr := os.Stat(destDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destDir stat error = %v, want not exist after cleanup", statErr)
 	}
 }
 

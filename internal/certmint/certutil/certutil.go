@@ -10,13 +10,6 @@ import (
 	"os"
 )
 
-// Metadata is the subset of x509 metadata the library manifest needs.
-type Metadata struct {
-	NotBefore         string
-	NotAfter          string
-	FingerprintSHA256 string
-}
-
 // Certificate wraps a parsed leaf certificate and derived metadata.
 type Certificate struct {
 	Leaf              *x509.Certificate

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -55,7 +56,11 @@ func runPlan(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, current, err := loadConfigAndManifest(*configPath)
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	current, err := manifest.Load(library.ManifestPathForConfig(cfg))
 	if err != nil {
 		return err
 	}
@@ -80,7 +85,7 @@ func runOnceCommand(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, current, err := loadConfigAndManifest(*configPath)
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -89,7 +94,11 @@ func runOnceCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer lock.Release()
-	return runOnce(ctx, cfg, current, *dryRun)
+	current, err := manifest.Load(library.ManifestPathForConfig(cfg))
+	if err != nil {
+		return err
+	}
+	return runOnce(ctx, cfg, &current, *dryRun)
 }
 
 func runDaemon(ctx context.Context, args []string) error {
@@ -99,7 +108,7 @@ func runDaemon(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, current, err := loadConfigAndManifest(*configPath)
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -108,19 +117,17 @@ func runDaemon(ctx context.Context, args []string) error {
 		return err
 	}
 	defer lock.Release()
+	current, err := manifest.Load(library.ManifestPathForConfig(cfg))
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	for {
-		if err := runOnce(ctx, cfg, current, *dryRun); err != nil {
+		if err := runOnce(ctx, cfg, &current, *dryRun); err != nil {
 			log.Printf("certmint: run failed: %v", err)
-		}
-		refreshed, err := manifest.Load(library.ManifestPathForConfig(cfg))
-		if err != nil {
-			log.Printf("certmint: reload manifest: %v", err)
-		} else {
-			current = refreshed
 		}
 
 		timer := time.NewTimer(cfg.PollInterval.Duration)
@@ -151,40 +158,51 @@ func runInspect(args []string) error {
 	return enc.Encode(current)
 }
 
-func runOnce(ctx context.Context, cfg config.Config, current manifest.Manifest, dryRun bool) error {
-	orders := planner.Due(cfg, current, time.Now())
+func runOnce(ctx context.Context, cfg config.Config, current *manifest.Manifest, dryRun bool) error {
+	orders := planner.Due(cfg, *current, time.Now())
 	if len(orders) == 0 {
-		log.Print("certmint: no issuance slots due")
 		return nil
 	}
+	var errs []error
 	for _, order := range orders {
 		if dryRun {
 			fmt.Println(certbot.CommandLine(cfg.Certbot, order))
 			continue
 		}
-		if !library.LiveCertExists(cfg.Certbot, order.CertName) {
-			log.Printf("certmint: issuing %s profile=%s identifiers=%v", order.DomainName, order.ProfileName, order.Identifiers)
-			out, err := certbot.Run(ctx, cfg.Certbot, order)
-			if out != "" {
-				log.Print(out)
-			}
-			if err != nil {
-				return err
-			}
-		} else {
-			log.Printf("certmint: archiving existing certbot lineage %s", order.CertName)
+		if err := issueAndArchive(ctx, cfg, current, order); err != nil {
+			log.Printf("certmint: order %s failed: %v", order.CertName, err)
+			errs = append(errs, fmt.Errorf("%s: %w", order.CertName, err))
+			continue
 		}
+	}
+	return errors.Join(errs...)
+}
 
-		entry, err := library.Archive(cfg, order, time.Now())
-		if err != nil {
-			return fmt.Errorf("archive %s: %w", order.CertName, err)
+func issueAndArchive(ctx context.Context, cfg config.Config, current *manifest.Manifest, order planner.Order) error {
+	if !library.LiveCertExists(cfg.Certbot, order.CertName) {
+		log.Printf("certmint: issuing %s profile=%s identifiers=%v", order.DomainName, order.ProfileName, order.Identifiers)
+		issueCtx, cancel := context.WithTimeout(ctx, cfg.Certbot.IssuanceTimeout.Duration)
+		out, err := certbot.Run(issueCtx, cfg.Certbot, order)
+		cancel()
+		if out != "" {
+			log.Print(out)
 		}
-		current.Append(entry)
-		if err := manifest.Save(library.ManifestPathForConfig(cfg), current); err != nil {
+		if err != nil {
 			return err
 		}
-		log.Printf("certmint: archived %s not_after=%s fingerprint=%s", entry.ID, entry.NotAfter.Format(time.RFC3339), entry.FingerprintSHA256)
+	} else {
+		log.Printf("certmint: archiving existing certbot lineage %s", order.CertName)
 	}
+
+	entry, err := library.Archive(cfg, order, time.Now())
+	if err != nil {
+		return fmt.Errorf("archive: %w", err)
+	}
+	current.Append(entry)
+	if err := manifest.Save(library.ManifestPathForConfig(cfg), *current); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+	log.Printf("certmint: archived %s not_after=%s fingerprint=%s", entry.ID, entry.NotAfter.Format(time.RFC3339), entry.FingerprintSHA256)
 	return nil
 }
 
@@ -197,17 +215,9 @@ func acquireLock(cfg config.Config) (*lockfile.Lock, error) {
 	return lock, nil
 }
 
-func loadConfigAndManifest(configPath string) (config.Config, manifest.Manifest, error) {
+func loadConfig(configPath string) (config.Config, error) {
 	if configPath == "" {
-		return config.Config{}, manifest.Manifest{}, fmt.Errorf("-config is required")
+		return config.Config{}, fmt.Errorf("-config is required")
 	}
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return config.Config{}, manifest.Manifest{}, err
-	}
-	current, err := manifest.Load(library.ManifestPathForConfig(cfg))
-	if err != nil {
-		return config.Config{}, manifest.Manifest{}, err
-	}
-	return cfg, current, nil
+	return config.Load(configPath)
 }

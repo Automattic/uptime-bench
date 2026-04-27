@@ -41,7 +41,7 @@ func LiveCertExists(cfg config.CertbotConfig, certName string) bool {
 
 // Archive copies certbot's live PEM files into the immutable library and
 // returns the manifest entry.
-func Archive(cfg config.Config, order planner.Order, issuedAt time.Time) (manifest.Entry, error) {
+func Archive(cfg config.Config, order planner.Order, issuedAt time.Time) (entry manifest.Entry, err error) {
 	srcDir := filepath.Join(cfg.Certbot.ConfigDir, "live", order.CertName)
 	leaf, err := certutil.LoadLeaf(filepath.Join(srcDir, "cert.pem"))
 	if err != nil {
@@ -67,9 +67,14 @@ func Archive(cfg config.Config, order planner.Order, issuedAt time.Time) (manife
 		order.SlotDate,
 		dirName,
 	)
-	if err := os.MkdirAll(destDir, 0o700); err != nil {
+	if err = os.MkdirAll(destDir, 0o700); err != nil {
 		return manifest.Entry{}, err
 	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(destDir)
+		}
+	}()
 
 	paths := manifest.Paths{
 		Cert:      filepath.Join(destDir, "cert.pem"),
@@ -83,7 +88,7 @@ func Archive(cfg config.Config, order planner.Order, issuedAt time.Time) (manife
 		filepath.Join(srcDir, "fullchain.pem"): paths.FullChain,
 		filepath.Join(srcDir, "privkey.pem"):   paths.PrivKey,
 	} {
-		if err := copyFile(src, dst); err != nil {
+		if err = copyFile(src, dst); err != nil {
 			return manifest.Entry{}, err
 		}
 	}

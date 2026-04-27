@@ -57,6 +57,7 @@ type CertbotConfig struct {
 	ConfigDir         string   `json:"config_dir"`
 	WorkDir           string   `json:"work_dir"`
 	LogsDir           string   `json:"logs_dir"`
+	IssuanceTimeout   Duration `json:"issuance_timeout,omitempty"`
 	AuthenticatorArgs []string `json:"authenticator_args"`
 	ExtraArgs         []string `json:"extra_args,omitempty"`
 }
@@ -129,6 +130,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Certbot.LogsDir == "" {
 		c.Certbot.LogsDir = filepath.Join(c.StateDir, "logs")
 	}
+	if c.Certbot.IssuanceTimeout.Duration == 0 {
+		c.Certbot.IssuanceTimeout.Duration = 10 * time.Minute
+	}
 	for i := range c.Domains {
 		if c.Domains[i].UniqueSANTemplate == "" {
 			c.Domains[i].UniqueSANTemplate = "cert-{date}-{slot}-{profile}.unique.{domain}"
@@ -160,6 +164,9 @@ func (c Config) Validate() error {
 	if !c.Certbot.AgreeTOS {
 		errs = append(errs, errors.New("config: certbot.agree_tos must be true for non-interactive issuance"))
 	}
+	if c.Certbot.IssuanceTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("config: certbot.issuance_timeout must be positive"))
+	}
 	if len(c.Certbot.AuthenticatorArgs) == 0 {
 		errs = append(errs, errors.New("config: certbot.authenticator_args is required"))
 	}
@@ -176,6 +183,9 @@ func (c Config) Validate() error {
 		}
 		if len(domain.Profiles) == 0 {
 			errs = append(errs, fmt.Errorf("%s.profiles is required", prefix))
+		}
+		if err := validateUniqueSANTemplate(domain); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", prefix, err))
 		}
 		for j, profile := range domain.Profiles {
 			pprefix := fmt.Sprintf("%s.profiles[%d]", prefix, j)
@@ -194,4 +204,44 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// validateUniqueSANTemplate renders the template with placeholder values and
+// rejects it if the result is covered by a wildcard identifier in the same
+// order. Let's Encrypt rejects orders that pair a wildcard with an identifier
+// the wildcard already covers.
+func validateUniqueSANTemplate(domain DomainConfig) error {
+	if domain.UniqueSANTemplate == "" {
+		return nil
+	}
+	rendered := strings.ToLower(strings.TrimSpace(renderUniqueSANForValidation(domain)))
+	if rendered == "" {
+		return errors.New("unique_san_template renders to an empty string")
+	}
+	for _, identifier := range domain.Identifiers {
+		id := strings.ToLower(strings.TrimSpace(identifier))
+		if !strings.HasPrefix(id, "*.") {
+			continue
+		}
+		base := strings.TrimPrefix(id, "*.")
+		if !strings.HasSuffix(rendered, "."+base) {
+			continue
+		}
+		prefix := strings.TrimSuffix(rendered, "."+base)
+		if prefix != "" && !strings.Contains(prefix, ".") {
+			return fmt.Errorf("unique_san_template renders to %q, which is covered by wildcard %q; use a deeper name such as <label>.unique.%s", rendered, identifier, base)
+		}
+	}
+	return nil
+}
+
+func renderUniqueSANForValidation(domain DomainConfig) string {
+	r := strings.NewReplacer(
+		"{domain}", domain.Name,
+		"{profile}", "validate",
+		"{date}", "00000000",
+		"{slot}", "00",
+		"{unix}", "0",
+	)
+	return r.Replace(domain.UniqueSANTemplate)
 }
