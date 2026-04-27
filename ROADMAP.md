@@ -4,10 +4,11 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 **Active priorities (next-up, in rough order):**
 1. [Keyword-monitoring capability is dead-wired](#keyword-monitoring-capability-is-dead-wired)
-2. [TLS target implementation](#tls-target-implementation)
-3. [Maintenance window suppression](#maintenance-window-suppression)
-4. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
-5. [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
+2. [Maintenance window suppression](#maintenance-window-suppression)
+3. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
+4. [Automated randomized testing campaigns](#automated-randomized-testing-campaigns)
+5. [TLS target implementation](#tls-target-implementation)
+6. [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
 
 **Deferred:**
 - [Staggered failure measurement matching](#staggered-failure-measurement-matching)
@@ -97,6 +98,138 @@ The target binary serves only HTTP today; all five `tls_*` failure types (`tls_e
 ### Cross-cutting: per-virtual-host certs via SNI
 
 Required by Phase 1 once we have multiple virtual hosts, but ordering with the phased work above is flexible. The TLS listener inspects SNI and serves the matching cert; without this, multi-site scenarios run only on whichever cert was bound to the listener default.
+
+---
+
+## Automated randomized testing campaigns
+
+**Status:** Not implemented. Design needed before implementation. Foundational for the project's statistical-comparison value proposition; promote when the maintenance/cooldown work above lands.
+
+The harness today runs one scripted scenario at a time. That model is fine for *targeted* tests ("does Pingdom detect a 503?") but it can't produce the data the project actually exists to publish: **min, max, and average detection times of specific kinds of failures across the different services**, computed from enough samples that the numbers are defensible.
+
+A campaign is a long-running orchestration mode where the harness self-generates randomized scenarios for hours or days against the live fleet, accumulating thousands of `scenario_runs` rows that can be aggregated into per-(failure_type, service) statistics. Existing single-scenario mode remains for targeted testing.
+
+### Campaign config format
+
+A new TOML schema parallel to `scenarios/`. Indicative shape:
+
+```toml
+id          = "weekly-comparison-2026-q2"
+description = "..."
+duration    = "24h"   # campaign wall-clock cap; runner stops after this
+seed        = 42      # master seed; per-run seeds derive deterministically
+
+[[targets]]
+pool = ["bench-a", "bench-b", "probe-a"]   # randomly chosen per run
+
+[[failure_types]]
+type = "http_status"
+weight = 3                                  # picked 3× as often as weight=1
+status_code_choices = [503, 502, 504]       # one chosen per run
+
+[[failure_types]]
+type = "tcp_refused"
+weight = 1
+
+[[failure_types]]
+type = "http_timeout"
+phase_choices = ["ttfb", "body"]
+delay_range = { min = "5s", max = "60s" }
+weight = 2
+
+[duration_buckets]
+brief    = { min = "30s",  max = "2m",  weight = 5 }
+medium   = { min = "2m",   max = "10m", weight = 3 }
+long     = { min = "10m",  max = "1h",  weight = 1 }
+
+[escalation]
+probability = 0.20                          # 20% of runs are multi-stage
+stages_range = { min = 2, max = 3 }
+inter_stage_range = { min = "30s", max = "5m" }
+
+[budget]
+pingdom            = { max_runs_per_hour = 10 }
+uptimerobot        = { max_runs_per_hour = 1 }   # free-tier rate-limit
+datadog-synthetics = { max_runs_per_hour = 30 }
+better-uptime      = { max_runs_per_hour = 5 }
+jetmon-v1          = {}                          # unlimited (self-hosted)
+
+[cooldown]
+per_target_minimum = "10m"   # don't hit the same target more often than this
+                              # (interacts with vendor-side cooldown reset)
+```
+
+Open questions for the design pass: per-failure-type parameter ranges (how to express "random delay between 5s and 60s" cleanly across all failure types); whether escalation chains use the existing `[[failures]]` list with offsets (likely yes) or a new structure.
+
+### Failure escalation
+
+A *single* run with multiple chained failures, not a sequence of separate runs. Examples the model needs to express:
+
+- **Layered**: DNS slow at t=0 → HTTP 503 joins at t=2m. Both active until run end.
+- **Replacement**: HTTP 503 at t=0 → escalates to TCP refused at t=2m. Stage 1 ends when stage 2 begins.
+- **Recovery test**: failure at t=0..t=2m → silence until t=5m → second failure at t=5m..t=7m. Tests whether the monitor cleared the first incident before the second arrived.
+
+The current scenario format's `[[failures]]` blocks with `offset` already handle the "layered" pattern. "Replacement" needs either a way to set a failure's `duration` independent of the scenario duration, or a new "stage" abstraction. "Recovery test" works today by setting `offset` and `duration` on each block.
+
+### Random scenario generator
+
+Inside the runner, given a campaign config, produce an in-memory `*scenario.Scenario` per iteration:
+
+1. Sample a failure type by weight.
+2. Sample a duration bucket by weight, then a duration uniformly within the bucket's range.
+3. Sample any failure-specific params (status code, phase, delay…).
+4. Sample a target from the pool.
+5. With `escalation.probability`, sample 2–3 stages and stitch them onto the same scenario.
+6. Derive the per-run seed from `master_seed XOR run_index` for reproducibility.
+
+The generator emits an in-memory Scenario; the existing pipeline runs it. No new "campaign-only" code path through Provision/Activate/Retrieve.
+
+### Runner extensions
+
+- New CLI flag: `-campaign=<config.toml>` mutually exclusive with `-scenario=…`.
+- Outer loop: while campaign duration not elapsed, generate a scenario, run it, sleep until the next slot per budget rules, repeat.
+- Per-target cooldown enforced at scheduling: don't pick a target whose most-recent run ended less than `cooldown.per_target_minimum` ago.
+- Failure isolation: one bad scenario (adapter error, target unreachable) records a `resolution_reason` and the campaign continues. Don't kill the whole campaign for transient issues.
+- Persist a `campaign_runs` row (or similar) so the campaign itself is queryable, not just the individual scenario_runs it produced.
+
+### Reporting / aggregation
+
+A new `cmd/uptime-bench-report` tool that aggregates `derived_metrics` for a campaign:
+
+```sh
+uptime-bench-report -campaign=weekly-comparison-2026-q2
+
+failure_type    | service           | runs | tp_rate | min_lat | avg_lat | p50_lat | p95_lat | max_lat
+http_status     | pingdom           |  142 | 0.98    |  41s    |  72s    |  68s    |  120s   |  180s
+http_status     | uptimerobot       |   24 | 0.96    |  62s    |  98s    |  95s    |  145s   |  220s
+http_timeout    | pingdom           |  118 | 0.91    |  35s    |  85s    |  80s    |  150s   |  240s
+...
+```
+
+Output formats: human-readable table (default), TSV, JSON. Backed by a single SQL query joining `scenario_runs` ↔ `derived_metrics` filtered on the campaign's run-id list.
+
+Statistics worth computing per (failure_type, service) pair:
+
+- Detection rate (true_positive / (true_positive + false_negative), excluding capability_mismatch and maintenance_suppressed).
+- Detection latency: min, max, avg, p50, p95.
+- False-positive rate.
+- Sample count (so readers can judge the confidence interval).
+
+### Implementation phases
+
+1. **Campaign config format + parser** — new `internal/campaign` package mirroring `internal/scenario`. Validation rules. Tests.
+2. **Random scenario generator** — pure function: `(config, runIndex, seed) → *scenario.Scenario`. Heavily unit-testable; fix-seed → fixed scenario. No I/O.
+3. **Runner outer loop** — campaign mode flag; budget+cooldown scheduler; resilience to per-run errors. Reuses existing `Run()` for each iteration.
+4. **Escalation support** — extends the generator to emit multi-stage scenarios. Decide whether escalation needs scenario-format changes or only generator-level chaining.
+5. **`cmd/uptime-bench-report`** — aggregation tool with the metrics listed above. Output flags for table / TSV / JSON.
+
+Each phase is independently mergeable.
+
+### Cross-cutting concerns
+
+- **Budget interplay with vendor cooldowns**: even with `cooldown.per_target_minimum`, vendor-side alert cooldowns may suppress the second of two same-target runs that fire close together. The cooldown-reset capability flag (already designed) handles this; campaigns should require `SupportsCooldownReset` on every adapter they touch, or accept that some runs get classified as `cooldown_suppressed`.
+- **Reproducibility under randomness**: every campaign records its master seed in `campaign_runs.parameters`. Re-running with the same seed produces the same sequence of generated scenarios — the project's existing reproducibility invariant scales to campaigns.
+- **Cost ceiling**: a 24-hour campaign at the budgets above is on the order of ~480 runs across all enabled services. Some scenarios run 8 minutes each; running all sequentially would take ~64 hours, so campaigns must run scenarios concurrently across non-overlapping (target, service) pairs. The runner currently runs one scenario at a time end-to-end; concurrent campaign mode is an explicit extension. (Single-scenario mode remains serial.)
 
 ---
 
