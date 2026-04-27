@@ -98,14 +98,16 @@ func main() {
 		log.Fatalf("dns: listen udp %s: %v", dnsAddr, err)
 	}
 	defer udpConn.Close()
-	go dnsserver.ServeUDP(udpConn, registry, zones)
+	txtStore := dnsserver.NewTXTStore()
+
+	go dnsserver.ServeUDP(udpConn, registry, zones, txtStore)
 
 	tcpLn, err := net.Listen("tcp", dnsAddr)
 	if err != nil {
 		log.Fatalf("dns: listen tcp %s: %v", dnsAddr, err)
 	}
 	defer tcpLn.Close()
-	go dnsserver.ServeTCP(tcpLn, registry, zones)
+	go dnsserver.ServeTCP(tcpLn, registry, zones, txtStore)
 
 	log.Printf("dns: authoritative DNS on %s (UDP+TCP)", dnsAddr)
 

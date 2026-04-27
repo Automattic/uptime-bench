@@ -129,8 +129,10 @@ func ResolveIPv4(addr string) net.IP {
 // query is dispatched to a goroutine so a sleep injected by `dns_latency`
 // affects only the delayed response — not subsequent queries.
 //
+// txt may be nil if no ACME DNS-01 challenge support is wired in.
+//
 // Returns when conn returns a permanent read error (e.g. on close).
-func ServeUDP(conn net.PacketConn, registry *control.FailureRegistry, zones ZoneMap) {
+func ServeUDP(conn net.PacketConn, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) {
 	buf := make([]byte, 4096) // EDNS0 allows up to 4096; classic DNS is 512
 	for {
 		n, src, err := conn.ReadFrom(buf)
@@ -143,12 +145,12 @@ func ServeUDP(conn net.PacketConn, registry *control.FailureRegistry, zones Zone
 		}
 		// Copy: buf is reused on the next iteration.
 		query := append([]byte(nil), buf[:n]...)
-		go handleUDPQuery(conn, src, query, registry, zones)
+		go handleUDPQuery(conn, src, query, registry, zones, txt)
 	}
 }
 
-func handleUDPQuery(conn net.PacketConn, src net.Addr, query []byte, registry *control.FailureRegistry, zones ZoneMap) {
-	resp, delay := BuildResponse(query, registry, zones)
+func handleUDPQuery(conn net.PacketConn, src net.Addr, query []byte, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) {
+	resp, delay := BuildResponse(query, registry, zones, txt)
 	if delay > 0 {
 		time.Sleep(delay)
 	}
@@ -163,8 +165,10 @@ func handleUDPQuery(conn net.PacketConn, src net.Addr, query []byte, registry *c
 // ServeTCP accepts TCP connections on the given listener and serves DNS
 // queries over the standard 2-byte-length-prefixed framing.
 //
+// txt may be nil if no ACME DNS-01 challenge support is wired in.
+//
 // Returns when ln returns a permanent accept error (e.g. on close).
-func ServeTCP(ln net.Listener, registry *control.FailureRegistry, zones ZoneMap) {
+func ServeTCP(ln net.Listener, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -174,14 +178,16 @@ func ServeTCP(ln net.Listener, registry *control.FailureRegistry, zones ZoneMap)
 			log.Printf("dns: tcp accept: %v", err)
 			continue
 		}
-		go HandleTCP(conn, registry, zones)
+		go HandleTCP(conn, registry, zones, txt)
 	}
 }
 
 // HandleTCP processes one TCP DNS connection. It enforces TCPReadTimeout to
 // prevent a stalled client from leaking a goroutine, and uses io.ReadFull
 // because TCP reads can short-read.
-func HandleTCP(conn net.Conn, registry *control.FailureRegistry, zones ZoneMap) {
+//
+// txt may be nil if no ACME DNS-01 challenge support is wired in.
+func HandleTCP(conn net.Conn, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(TCPReadTimeout))
 
@@ -189,7 +195,7 @@ func HandleTCP(conn net.Conn, registry *control.FailureRegistry, zones ZoneMap) 
 	if err != nil {
 		return
 	}
-	resp, delay := BuildResponse(query, registry, zones)
+	resp, delay := BuildResponse(query, registry, zones, txt)
 	if delay > 0 {
 		time.Sleep(delay)
 	}
@@ -222,9 +228,19 @@ func readTCPMessage(r io.Reader) ([]byte, error) {
 	return buf, nil
 }
 
+// acmeChallengePrefix is the label prefix on names that carry ACME
+// DNS-01 validation TXT records. Queries for names starting with
+// this prefix bypass failure injection entirely so certmint can mint
+// certificates while a benchmark scenario is mid-run — certificate
+// issuance is operational plumbing, not a measured failure mode.
+const acmeChallengePrefix = "_acme-challenge."
+
 // BuildResponse constructs a DNS response, applying active failure modes.
 // Returns (response, delay). A nil response means drop the query with no reply.
 // The caller must sleep for delay before sending the response.
+//
+// txt may be nil if ACME DNS-01 challenge support is not wired in;
+// in that case TXT queries fall through to the standard NXDOMAIN path.
 //
 // DNS message format (RFC 1035):
 //
@@ -235,9 +251,23 @@ func readTCPMessage(r io.Reader) ([]byte, error) {
 //	Bytes 8-9:   NSCOUNT
 //	Bytes 10-11: ARCOUNT
 //	Bytes 12+:   question section
-func BuildResponse(query []byte, registry *control.FailureRegistry, zones ZoneMap) ([]byte, time.Duration) {
+func BuildResponse(query []byte, registry *control.FailureRegistry, zones ZoneMap, txt *TXTStore) ([]byte, time.Duration) {
 	if len(query) < 12 {
 		return nil, 0
+	}
+
+	name, qtype, qEnd := parseQueryName(query)
+
+	// ACME DNS-01 bypass: a TXT query for an _acme-challenge.* name
+	// answers from the TXT store regardless of any active DNS failure
+	// scenario. The bypass is scoped tightly so dns_timeout /
+	// dns_servfail / dns_nxdomain still measure correctly for
+	// every other query, including non-ACME TXT lookups.
+	const qtypeTXT = 16
+	if qtype == qtypeTXT && name != "" && strings.HasPrefix(name, acmeChallengePrefix) && txt != nil {
+		if values, ttl, ok := txt.Lookup(name); ok {
+			return txtResponse(query, qEnd, values, ttl), 0
+		}
 	}
 
 	// dns_timeout: drop (no response, no delay).
@@ -269,7 +299,6 @@ func BuildResponse(query []byte, registry *control.FailureRegistry, zones ZoneMa
 		return nil, 0 // silent drop; no latency on a dropped response
 	}
 
-	name, qtype, qEnd := parseQueryName(query)
 	if name == "" || qEnd == 0 {
 		return errorResponse(query, 1), latency // FORMERR
 	}
@@ -352,6 +381,58 @@ func aResponse(query []byte, qEnd int, ip net.IP, ttl uint32) []byte {
 	resp = append(resp, questionSection...)
 	resp = append(resp, rr...)
 	return resp
+}
+
+// txtResponse builds a DNS answer with one TXT record per stored
+// value, all sharing the same name (via the question-section
+// pointer) and ttl. RDATA for each TXT RR is one or more
+// length-prefixed character-strings; this implementation emits one
+// character-string per RR, splitting any value longer than 255 bytes
+// across additional length-prefixed segments inside the same RDATA.
+// ACME challenge tokens are 43 characters (base64url of a 256-bit
+// hash) so the split path is reserved for non-ACME use; cover it
+// anyway because RFC 1035 mandates it for TXT.
+func txtResponse(query []byte, qEnd int, values []string, ttl uint32) []byte {
+	questionSection := query[12:qEnd]
+
+	var answers []byte
+	for _, value := range values {
+		rdata := encodeTXTStrings(value)
+		rr := make([]byte, 0, 12+len(rdata))
+		rr = append(rr, 0xC0, 0x0C)                // name pointer → offset 12
+		rr = binary.BigEndian.AppendUint16(rr, 16) // TYPE TXT
+		rr = binary.BigEndian.AppendUint16(rr, 1)  // CLASS IN
+		rr = binary.BigEndian.AppendUint32(rr, ttl)
+		rr = binary.BigEndian.AppendUint16(rr, uint16(len(rdata))) // RDLENGTH
+		rr = append(rr, rdata...)
+		answers = append(answers, rr...)
+	}
+
+	resp := make([]byte, 0, 12+len(questionSection)+len(answers))
+	resp = append(resp, query[:2]...)                               // transaction ID
+	resp = append(resp, 0x84, 0x00)                                 // QR=1 AA=1 RCODE=0
+	resp = append(resp, 0x00, 0x01)                                 // QDCOUNT=1
+	resp = binary.BigEndian.AppendUint16(resp, uint16(len(values))) // ANCOUNT
+	resp = append(resp, 0x00, 0x00)                                 // NSCOUNT=0
+	resp = append(resp, 0x00, 0x00)                                 // ARCOUNT=0
+	resp = append(resp, questionSection...)
+	resp = append(resp, answers...)
+	return resp
+}
+
+// encodeTXTStrings converts a single TXT value into the DNS character-string
+// encoding (one or more length-prefixed segments, each ≤255 bytes).
+func encodeTXTStrings(value string) []byte {
+	const maxSegment = 255
+	out := make([]byte, 0, len(value)+1+(len(value)/maxSegment))
+	for len(value) > maxSegment {
+		out = append(out, byte(maxSegment))
+		out = append(out, value[:maxSegment]...)
+		value = value[maxSegment:]
+	}
+	out = append(out, byte(len(value)))
+	out = append(out, value...)
+	return out
 }
 
 // cnameNXDomainResponse returns a CNAME answer pointing to dead.invalid., a

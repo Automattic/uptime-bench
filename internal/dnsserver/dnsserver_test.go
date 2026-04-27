@@ -99,7 +99,7 @@ func TestHandleTCP_DeadlineEnforced(t *testing.T) {
 			close(done)
 			return
 		}
-		HandleTCP(conn, registry, zones)
+		HandleTCP(conn, registry, zones, nil)
 		close(done)
 	}()
 
@@ -147,7 +147,7 @@ func TestServeUDP_LatencyDoesNotSerialize(t *testing.T) {
 		"example.com": {IP: net.ParseIP("10.0.0.1"), TTL: 30},
 	}
 
-	go ServeUDP(pc, registry, zones)
+	go ServeUDP(pc, registry, zones, nil)
 	addr := pc.LocalAddr().(*net.UDPAddr)
 	query := buildQueryA("example.com")
 
@@ -201,7 +201,7 @@ func TestBuildResponse_DNSLatencyReportsDelay(t *testing.T) {
 		"example.com": {IP: net.ParseIP("10.0.0.1"), TTL: 30},
 	}
 
-	_, delay := BuildResponse(buildQueryA("example.com"), registry, zones)
+	_, delay := BuildResponse(buildQueryA("example.com"), registry, zones, nil)
 	if delay != 250*time.Millisecond {
 		t.Fatalf("got delay %v, want 250ms", delay)
 	}
