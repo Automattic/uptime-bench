@@ -32,19 +32,22 @@ func TestArchiveCopiesLineageAndReturnsManifestEntry(t *testing.T) {
 		LibraryDir: filepath.Join(tmp, "library"),
 		Certbot: config.CertbotConfig{
 			ConfigDir: filepath.Join(tmp, "letsencrypt"),
+			Staging:   true,
 		},
 	}
 	order := planner.Order{
-		DomainName:       "bench.example.com",
-		ProfileName:      "shortlived",
-		PreferredProfile: "shortlived",
-		SlotDate:         "20260427",
-		Slot:             1,
-		CertName:         "ub-certmint-bench-example-com-shortlived-20260427-01",
+		Environment:     "staging",
+		DomainName:      "bench.example.com",
+		ProfileName:     "shortlived",
+		RequiredProfile: "shortlived",
+		MaxLifetime:     168 * time.Hour,
+		SlotDate:        "20260427",
+		Slot:            1,
+		CertName:        "ub-certmint-staging-bench-example-com-shortlived-20260427-01",
 		Identifiers: []string{
 			"bench.example.com",
 			"*.bench.example.com",
-			"cert-20260427-01-shortlived.bench.example.com",
+			"cert-20260427-01-shortlived.unique.bench.example.com",
 		},
 	}
 	writeLineage(t, cfg.Certbot.ConfigDir, order.CertName, certPEM, privKeyPEM)
@@ -59,7 +62,10 @@ func TestArchiveCopiesLineageAndReturnsManifestEntry(t *testing.T) {
 	if entry.ID != wantID {
 		t.Fatalf("entry.ID = %q, want %q", entry.ID, wantID)
 	}
-	if entry.Domain != order.DomainName || entry.Profile != order.ProfileName || entry.PreferredProfile != order.PreferredProfile {
+	if entry.Environment != "staging" {
+		t.Fatalf("entry.Environment = %q, want staging", entry.Environment)
+	}
+	if entry.Domain != order.DomainName || entry.Profile != order.ProfileName || entry.RequiredProfile != order.RequiredProfile {
 		t.Fatalf("entry profile fields = %+v", entry)
 	}
 	if entry.CertName != order.CertName || entry.SlotDate != order.SlotDate || entry.Slot != order.Slot {
@@ -81,6 +87,7 @@ func TestArchiveCopiesLineageAndReturnsManifestEntry(t *testing.T) {
 	}
 
 	wantDirFragment := filepath.Join(
+		"staging",
 		"bench.example.com",
 		"shortlived",
 		"20260427",
@@ -94,6 +101,40 @@ func TestArchiveCopiesLineageAndReturnsManifestEntry(t *testing.T) {
 	assertFile(t, entry.Paths.FullChain, certPEM, 0o600)
 	assertFile(t, entry.Paths.PrivKey, privKeyPEM, 0o600)
 	assertDirMode(t, filepath.Dir(entry.Paths.Cert), 0o700)
+}
+
+func TestArchiveRejectsCertificateOverMaxLifetime(t *testing.T) {
+	tmp := t.TempDir()
+	certPEM, _ := testCertificate(
+		t,
+		time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC),
+	)
+	cfg := config.Config{
+		LibraryDir: filepath.Join(tmp, "library"),
+		Certbot: config.CertbotConfig{
+			ConfigDir: filepath.Join(tmp, "letsencrypt"),
+		},
+	}
+	order := planner.Order{
+		Environment: "production",
+		DomainName:  "bench.example.com",
+		ProfileName: "shortlived",
+		MaxLifetime: 168 * time.Hour,
+		CertName:    "ub-certmint-bench-example-com-shortlived-20260427-00",
+	}
+	writeLineage(t, cfg.Certbot.ConfigDir, order.CertName, certPEM, []byte("test private key\n"))
+
+	_, err := Archive(cfg, order, time.Date(2026, 4, 27, 1, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("Archive() error = nil, want lifetime validation error")
+	}
+	if !strings.Contains(err.Error(), "exceeds max_lifetime") {
+		t.Fatalf("Archive() error = %v, want max_lifetime", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(cfg.LibraryDir, "manifest.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("manifest stat error = %v, want not exist", statErr)
+	}
 }
 
 func TestLiveCertExists(t *testing.T) {

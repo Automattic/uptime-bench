@@ -71,9 +71,11 @@ type DomainConfig struct {
 
 // ProfileConfig describes one issuance cadence for a CA profile.
 type ProfileConfig struct {
-	Name             string `json:"name"`
-	PreferredProfile string `json:"preferred_profile,omitempty"`
-	PerDay           int    `json:"per_day"`
+	Name             string   `json:"name"`
+	PreferredProfile string   `json:"preferred_profile,omitempty"`
+	RequiredProfile  string   `json:"required_profile,omitempty"`
+	MaxLifetime      Duration `json:"max_lifetime,omitempty"`
+	PerDay           int      `json:"per_day"`
 }
 
 // Load reads, defaults, and validates a config file.
@@ -91,6 +93,14 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// ACMEEnvironment returns the library/lineage environment implied by config.
+func (c Config) ACMEEnvironment() string {
+	if c.Certbot.Staging {
+		return "staging"
+	}
+	return "production"
 }
 
 // ApplyDefaults fills optional fields with production-oriented paths.
@@ -121,7 +131,7 @@ func (c *Config) ApplyDefaults() {
 	}
 	for i := range c.Domains {
 		if c.Domains[i].UniqueSANTemplate == "" {
-			c.Domains[i].UniqueSANTemplate = "cert-{date}-{slot}-{profile}.{domain}"
+			c.Domains[i].UniqueSANTemplate = "cert-{date}-{slot}-{profile}.unique.{domain}"
 		}
 	}
 }
@@ -171,6 +181,12 @@ func (c Config) Validate() error {
 			pprefix := fmt.Sprintf("%s.profiles[%d]", prefix, j)
 			if profile.Name == "" {
 				errs = append(errs, fmt.Errorf("%s.name is required", pprefix))
+			}
+			if profile.PreferredProfile != "" && profile.RequiredProfile != "" {
+				errs = append(errs, fmt.Errorf("%s.preferred_profile and required_profile are mutually exclusive", pprefix))
+			}
+			if profile.MaxLifetime.Duration < 0 {
+				errs = append(errs, fmt.Errorf("%s.max_lifetime must be positive", pprefix))
 			}
 			if profile.PerDay <= 0 {
 				errs = append(errs, fmt.Errorf("%s.per_day must be positive", pprefix))

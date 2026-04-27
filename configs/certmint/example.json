@@ -26,7 +26,7 @@
         "bench.example.com",
         "*.bench.example.com"
       ],
-      "unique_san_template": "cert-{date}-{slot}-{profile}.bench.example.com",
+      "unique_san_template": "cert-{date}-{slot}-{profile}.unique.bench.example.com",
       "profiles": [
         {
           "name": "classic",
@@ -34,7 +34,8 @@
         },
         {
           "name": "shortlived",
-          "preferred_profile": "shortlived",
+          "required_profile": "shortlived",
+          "max_lifetime": "168h",
           "per_day": 2
         }
       ]

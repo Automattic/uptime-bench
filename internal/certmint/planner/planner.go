@@ -14,14 +14,17 @@ import (
 
 // Order is one due certbot order.
 type Order struct {
-	DomainName       string   `json:"domain"`
-	ProfileName      string   `json:"profile"`
-	PreferredProfile string   `json:"preferred_profile,omitempty"`
-	SlotDate         string   `json:"slot_date"`
-	Slot             int      `json:"slot"`
-	SlotTime         string   `json:"slot_time"`
-	CertName         string   `json:"cert_name"`
-	Identifiers      []string `json:"identifiers"`
+	Environment      string        `json:"environment"`
+	DomainName       string        `json:"domain"`
+	ProfileName      string        `json:"profile"`
+	PreferredProfile string        `json:"preferred_profile,omitempty"`
+	RequiredProfile  string        `json:"required_profile,omitempty"`
+	MaxLifetime      time.Duration `json:"-"`
+	SlotDate         string        `json:"slot_date"`
+	Slot             int           `json:"slot"`
+	SlotTime         string        `json:"slot_time"`
+	CertName         string        `json:"cert_name"`
+	Identifiers      []string      `json:"identifiers"`
 }
 
 // Due returns all issuance slots due at now and absent from the manifest.
@@ -29,6 +32,7 @@ func Due(cfg config.Config, current manifest.Manifest, now time.Time) []Order {
 	now = now.UTC()
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	slotDate := day.Format("20060102")
+	environment := cfg.ACMEEnvironment()
 	var out []Order
 
 	for _, domain := range cfg.Domains {
@@ -42,7 +46,7 @@ func Due(cfg config.Config, current manifest.Manifest, now time.Time) []Order {
 				if current.HasSlot(domain.Name, profile.Name, slotDate, slot) {
 					continue
 				}
-				out = append(out, orderFor(domain, profile, slotDate, slot, slotTime))
+				out = append(out, orderFor(domain, profile, environment, slotDate, slot, slotTime))
 			}
 		}
 	}
@@ -59,7 +63,7 @@ func Due(cfg config.Config, current manifest.Manifest, now time.Time) []Order {
 	return out
 }
 
-func orderFor(domain config.DomainConfig, profile config.ProfileConfig, slotDate string, slot int, slotTime time.Time) Order {
+func orderFor(domain config.DomainConfig, profile config.ProfileConfig, environment, slotDate string, slot int, slotTime time.Time) Order {
 	slotText := fmt.Sprintf("%02d", slot)
 	identifiers := append([]string(nil), domain.Identifiers...)
 	if domain.UniqueSANTemplate != "" {
@@ -67,13 +71,16 @@ func orderFor(domain config.DomainConfig, profile config.ProfileConfig, slotDate
 	}
 	identifiers = dedupe(identifiers)
 	return Order{
+		Environment:      environment,
 		DomainName:       domain.Name,
 		ProfileName:      profile.Name,
 		PreferredProfile: profile.PreferredProfile,
+		RequiredProfile:  profile.RequiredProfile,
+		MaxLifetime:      profile.MaxLifetime.Duration,
 		SlotDate:         slotDate,
 		Slot:             slot,
 		SlotTime:         slotTime.Format(time.RFC3339),
-		CertName:         certName(domain.Name, profile.Name, slotDate, slotText),
+		CertName:         certName(domain.Name, profile.Name, environment, slotDate, slotText),
 		Identifiers:      identifiers,
 	}
 }
@@ -109,8 +116,12 @@ func dedupe(in []string) []string {
 
 var certNameCleaner = regexp.MustCompile(`[^a-z0-9]+`)
 
-func certName(domain, profile, date, slot string) string {
-	raw := strings.ToLower(domain + "-" + profile + "-" + date + "-" + slot)
+func certName(domain, profile, environment, date, slot string) string {
+	prefix := ""
+	if environment == "staging" {
+		prefix = "staging-"
+	}
+	raw := strings.ToLower(prefix + domain + "-" + profile + "-" + date + "-" + slot)
 	cleaned := certNameCleaner.ReplaceAllString(raw, "-")
 	cleaned = strings.Trim(cleaned, "-")
 	return "ub-certmint-" + cleaned

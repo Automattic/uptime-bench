@@ -23,19 +23,19 @@ func TestArgsBuildsShortlivedStagingCommand(t *testing.T) {
 		ExtraArgs: []string{"--keep-until-expiring"},
 	}
 	order := planner.Order{
-		CertName:         "ub-certmint-bench-shortlived-20260427-00",
-		PreferredProfile: "shortlived",
+		CertName:        "ub-certmint-staging-bench-shortlived-20260427-00",
+		RequiredProfile: "shortlived",
 		Identifiers: []string{
 			"bench.example.com",
 			"*.bench.example.com",
-			"cert-20260427-00-shortlived.bench.example.com",
+			"cert-20260427-00-shortlived.unique.bench.example.com",
 		},
 	}
 
 	want := []string{
 		"certonly",
 		"--non-interactive",
-		"--cert-name", "ub-certmint-bench-shortlived-20260427-00",
+		"--cert-name", "ub-certmint-staging-bench-shortlived-20260427-00",
 		"--config-dir", "/var/lib/certmint/letsencrypt",
 		"--work-dir", "/var/lib/certmint/work",
 		"--logs-dir", "/var/log/certmint",
@@ -43,13 +43,13 @@ func TestArgsBuildsShortlivedStagingCommand(t *testing.T) {
 		"--email", "ops@example.com",
 		"--agree-tos",
 		"--staging",
-		"--preferred-profile", "shortlived",
+		"--required-profile", "shortlived",
 		"--dns-rfc2136",
 		"--dns-rfc2136-credentials", "/etc/certmint/rfc2136.ini",
 		"--keep-until-expiring",
 		"-d", "bench.example.com",
 		"-d", "*.bench.example.com",
-		"-d", "cert-20260427-00-shortlived.bench.example.com",
+		"-d", "cert-20260427-00-shortlived.unique.bench.example.com",
 	}
 	if got := Args(cfg, order); !slices.Equal(got, want) {
 		t.Fatalf("Args() = %#v\nwant %#v", got, want)
@@ -79,6 +79,9 @@ func TestArgsUsesCustomServerWithoutStagingOrPreferredProfile(t *testing.T) {
 	}
 	if slices.Contains(got, "--preferred-profile") {
 		t.Fatalf("Args() unexpectedly included --preferred-profile: %#v", got)
+	}
+	if slices.Contains(got, "--required-profile") {
+		t.Fatalf("Args() unexpectedly included --required-profile: %#v", got)
 	}
 }
 

@@ -64,8 +64,12 @@ sudo uptime-bench-certmint once -config /etc/uptime-bench-certmint/config.json
 Inspect the resulting manifest:
 
 ```sh
-sudo uptime-bench-certmint inspect -library /var/lib/uptime-bench/certs
+sudo uptime-bench-certmint inspect -library /var/lib/uptime-bench/certs/staging
 ```
+
+Staging output is intentionally written below `<library_dir>/staging` and uses
+staging-specific certbot lineage names. This prevents a later production run
+from reusing or archiving a staging lineage.
 
 ## Switch To Production
 
@@ -74,8 +78,10 @@ After staging issuance and archive behavior are verified:
 1. Review `profiles[].per_day` across every configured domain.
 2. Confirm the generated SAN template keeps orders unique.
 3. Set `"staging": false` in `/etc/uptime-bench-certmint/config.json`.
-4. Run another `plan` and `once -dry-run`.
-5. Run one production `once` manually before enabling the daemon.
+4. Confirm short-lived profiles use `"required_profile": "shortlived"` and a
+   conservative `"max_lifetime"` such as `"168h"`.
+5. Run another `plan` and `once -dry-run`.
+6. Run one production `once` manually before enabling the daemon.
 
 The daemon uses `lock_path` to prevent overlapping `once` and `daemon`
 invocations. The lock is advisory and tied to the running process; the lock file

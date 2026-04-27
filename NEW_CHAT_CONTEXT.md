@@ -38,7 +38,7 @@ The ideal long-term cert library is mostly built from longer-lived standard Let'
 Supported issuance profiles in the scaffold:
 
 - `classic`: no preferred profile flag; certbot uses the CA default, currently normal Let's Encrypt server certificates
-- `shortlived`: passes `--preferred-profile shortlived`, producing 160-hour certificates
+- `shortlived`: passes `--required-profile shortlived`, producing 160-hour certificates, and uses `max_lifetime` as an archive guard
 
 Wildcard certs require DNS-01 validation. The example config uses `certbot-dns-rfc2136` arguments as a placeholder.
 
@@ -49,11 +49,16 @@ The config supports `unique_san_template`. Each issuance keeps the useful identi
 - `bench.example.com`
 - `*.bench.example.com`
 
-and adds a unique SAN, such as:
+and adds a unique SAN that is not redundant with the wildcard, such as:
 
-- `cert-20260427-01-shortlived.bench.example.com`
+- `cert-20260427-01-shortlived.unique.bench.example.com`
 
-This changes the exact set of identifiers for each order while preserving wildcard coverage for test hosts. It does not bypass registered-domain issuance limits; the daemon should still keep total issuance per registered domain conservative.
+This changes the exact set of identifiers for each order while preserving
+wildcard coverage for test hosts. With `*.example.com` in the same order, the
+unique SAN must be a deeper name like `cert-...unique.example.com`; Let's
+Encrypt rejects a direct child like `cert-...example.com` as redundant with the
+wildcard. This does not bypass registered-domain issuance limits; the daemon
+should still keep total issuance per registered domain conservative.
 
 ## Important Files
 
@@ -82,7 +87,7 @@ This changes the exact set of identifiers for each order while preserving wildca
 The generated shortlived certbot command includes:
 
 ```text
---preferred-profile shortlived
+--required-profile shortlived
 ```
 
 `once -dry-run` prints due certbot commands without issuing certs or writing snapshots.
@@ -97,14 +102,25 @@ manual and daemon runs from overlapping.
 2. runs certbot if the expected certbot lineage does not exist
 3. copies `cert.pem`, `chain.pem`, `fullchain.pem`, and `privkey.pem` from certbot live storage
 4. parses the leaf cert's NotBefore/NotAfter/fingerprint
-5. appends an entry to `<library_dir>/manifest.json`
+5. appends an entry to the active manifest
+
+When `certbot.staging` is true, the active library is `<library_dir>/staging`
+and staging certbot lineage names are prefixed with `ub-certmint-staging-`.
+Production uses `<library_dir>` directly and keeps the original production
+lineage naming shape.
 
 ## Manifest Contract
 
-The manifest lives at:
+The production manifest lives at:
 
 ```text
 <library_dir>/manifest.json
+```
+
+Staging uses:
+
+```text
+<library_dir>/staging/manifest.json
 ```
 
 Each entry includes:

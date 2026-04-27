@@ -20,6 +20,19 @@ func ManifestPath(libraryDir string) string {
 	return filepath.Join(libraryDir, "manifest.json")
 }
 
+// ActiveDir returns the library directory for the current ACME environment.
+func ActiveDir(cfg config.Config) string {
+	if cfg.Certbot.Staging {
+		return filepath.Join(cfg.LibraryDir, "staging")
+	}
+	return cfg.LibraryDir
+}
+
+// ManifestPathForConfig returns the manifest path for the current ACME environment.
+func ManifestPathForConfig(cfg config.Config) string {
+	return ManifestPath(ActiveDir(cfg))
+}
+
 // LiveCertExists reports whether certbot has a live cert for certName.
 func LiveCertExists(cfg config.CertbotConfig, certName string) bool {
 	_, err := os.Stat(filepath.Join(cfg.ConfigDir, "live", certName, "cert.pem"))
@@ -34,6 +47,12 @@ func Archive(cfg config.Config, order planner.Order, issuedAt time.Time) (manife
 	if err != nil {
 		return manifest.Entry{}, err
 	}
+	if order.MaxLifetime > 0 {
+		lifetime := leaf.Leaf.NotAfter.Sub(leaf.Leaf.NotBefore)
+		if lifetime > order.MaxLifetime {
+			return manifest.Entry{}, fmt.Errorf("certificate lifetime %s exceeds max_lifetime %s for %s/%s", lifetime, order.MaxLifetime, order.DomainName, order.ProfileName)
+		}
+	}
 
 	fpShort := leaf.FingerprintSHA256
 	if len(fpShort) > 16 {
@@ -42,7 +61,7 @@ func Archive(cfg config.Config, order planner.Order, issuedAt time.Time) (manife
 	notAfter := leaf.Leaf.NotAfter.UTC()
 	dirName := fmt.Sprintf("slot-%02d-%s-%s", order.Slot, notAfter.Format("20060102T150405Z"), fpShort)
 	destDir := filepath.Join(
-		cfg.LibraryDir,
+		ActiveDir(cfg),
 		cleanPathPart(order.DomainName),
 		cleanPathPart(order.ProfileName),
 		order.SlotDate,
@@ -79,9 +98,11 @@ func Archive(cfg config.Config, order planner.Order, issuedAt time.Time) (manife
 
 	return manifest.Entry{
 		ID:                id,
+		Environment:       order.Environment,
 		Domain:            order.DomainName,
 		Profile:           order.ProfileName,
 		PreferredProfile:  order.PreferredProfile,
+		RequiredProfile:   order.RequiredProfile,
 		SlotDate:          order.SlotDate,
 		Slot:              order.Slot,
 		Identifiers:       append([]string(nil), order.Identifiers...),

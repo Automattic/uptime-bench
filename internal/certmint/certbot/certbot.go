@@ -31,7 +31,9 @@ func Args(cfg config.CertbotConfig, order planner.Order) []string {
 	if cfg.Server != "" {
 		args = append(args, "--server", cfg.Server)
 	}
-	if order.PreferredProfile != "" {
+	if order.RequiredProfile != "" {
+		args = append(args, "--required-profile", order.RequiredProfile)
+	} else if order.PreferredProfile != "" {
 		args = append(args, "--preferred-profile", order.PreferredProfile)
 	}
 	args = append(args, cfg.AuthenticatorArgs...)

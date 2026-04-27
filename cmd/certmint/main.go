@@ -116,7 +116,7 @@ func runDaemon(ctx context.Context, args []string) error {
 		if err := runOnce(ctx, cfg, current, *dryRun); err != nil {
 			log.Printf("certmint: run failed: %v", err)
 		}
-		refreshed, err := manifest.Load(library.ManifestPath(cfg.LibraryDir))
+		refreshed, err := manifest.Load(library.ManifestPathForConfig(cfg))
 		if err != nil {
 			log.Printf("certmint: reload manifest: %v", err)
 		} else {
@@ -180,7 +180,7 @@ func runOnce(ctx context.Context, cfg config.Config, current manifest.Manifest, 
 			return fmt.Errorf("archive %s: %w", order.CertName, err)
 		}
 		current.Append(entry)
-		if err := manifest.Save(library.ManifestPath(cfg.LibraryDir), current); err != nil {
+		if err := manifest.Save(library.ManifestPathForConfig(cfg), current); err != nil {
 			return err
 		}
 		log.Printf("certmint: archived %s not_after=%s fingerprint=%s", entry.ID, entry.NotAfter.Format(time.RFC3339), entry.FingerprintSHA256)
@@ -205,7 +205,7 @@ func loadConfigAndManifest(configPath string) (config.Config, manifest.Manifest,
 	if err != nil {
 		return config.Config{}, manifest.Manifest{}, err
 	}
-	current, err := manifest.Load(library.ManifestPath(cfg.LibraryDir))
+	current, err := manifest.Load(library.ManifestPathForConfig(cfg))
 	if err != nil {
 		return config.Config{}, manifest.Manifest{}, err
 	}

@@ -26,9 +26,10 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 		Entries: []Entry{
 			{
 				ID:                "bench.example.com_shortlived_20260427_slot00_abcdef1234567890",
+				Environment:       "production",
 				Domain:            "bench.example.com",
 				Profile:           "shortlived",
-				PreferredProfile:  "shortlived",
+				RequiredProfile:   "shortlived",
 				SlotDate:          "20260427",
 				Slot:              0,
 				Identifiers:       []string{"bench.example.com", "*.bench.example.com"},

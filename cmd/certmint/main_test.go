@@ -26,6 +26,7 @@ func TestRunPlanOutputsDueOrders(t *testing.T) {
 	}
 
 	var got []struct {
+		Environment string   `json:"environment"`
 		Domain      string   `json:"domain"`
 		Profile     string   `json:"profile"`
 		SlotDate    string   `json:"slot_date"`
@@ -44,7 +45,13 @@ func TestRunPlanOutputsDueOrders(t *testing.T) {
 	if got[0].Domain != "bench.example.com" || got[0].Profile != "classic" || got[0].SlotDate != today || got[0].Slot != 0 {
 		t.Fatalf("planned order = %+v", got[0])
 	}
-	if got[0].Identifiers[1] != "cert-"+today+"-00-classic.bench.example.com" {
+	if got[0].Environment != "staging" {
+		t.Fatalf("Environment = %q, want staging", got[0].Environment)
+	}
+	if !strings.HasPrefix(got[0].CertName, "ub-certmint-staging-") {
+		t.Fatalf("CertName = %q, want staging prefix", got[0].CertName)
+	}
+	if got[0].Identifiers[1] != "cert-"+today+"-00-classic.unique.bench.example.com" {
 		t.Fatalf("unique SAN = %q", got[0].Identifiers[1])
 	}
 	if !strings.Contains(got[0].Command, `"--staging"`) || !strings.Contains(got[0].Command, `"-d" "bench.example.com"`) {
@@ -67,6 +74,9 @@ func TestRunOnceDryRunPrintsCommandsAndDoesNotWriteManifest(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "library", "manifest.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("dry-run manifest stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "library", "staging", "manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run staging manifest stat error = %v, want not exist", err)
 	}
 }
 
@@ -118,7 +128,7 @@ func writeCommandConfig(t *testing.T, dir string) string {
 			{
 				"name":                "bench.example.com",
 				"identifiers":         []string{"bench.example.com"},
-				"unique_san_template": "cert-{date}-{slot}-{profile}.bench.example.com",
+				"unique_san_template": "cert-{date}-{slot}-{profile}.unique.bench.example.com",
 				"profiles": []map[string]any{
 					{"name": "classic", "per_day": 1},
 				},

@@ -20,9 +20,11 @@ type Manifest struct {
 // Entry describes one immutable certificate snapshot.
 type Entry struct {
 	ID                string    `json:"id"`
+	Environment       string    `json:"environment,omitempty"`
 	Domain            string    `json:"domain"`
 	Profile           string    `json:"profile"`
 	PreferredProfile  string    `json:"preferred_profile,omitempty"`
+	RequiredProfile   string    `json:"required_profile,omitempty"`
 	SlotDate          string    `json:"slot_date"`
 	Slot              int       `json:"slot"`
 	Identifiers       []string  `json:"identifiers"`

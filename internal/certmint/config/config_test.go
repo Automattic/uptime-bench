@@ -55,7 +55,7 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.Certbot.LogsDir != filepath.Join(stateDir, "logs") {
 		t.Fatalf("Certbot.LogsDir = %q", cfg.Certbot.LogsDir)
 	}
-	if cfg.Domains[0].UniqueSANTemplate != "cert-{date}-{slot}-{profile}.{domain}" {
+	if cfg.Domains[0].UniqueSANTemplate != "cert-{date}-{slot}-{profile}.unique.{domain}" {
 		t.Fatalf("UniqueSANTemplate = %q", cfg.Domains[0].UniqueSANTemplate)
 	}
 }
@@ -75,7 +75,7 @@ func TestLoadParsesExplicitDuration(t *testing.T) {
 				"name":        "bench.example.com",
 				"identifiers": []string{"bench.example.com"},
 				"profiles": []map[string]any{
-					{"name": "classic", "per_day": 1},
+					{"name": "shortlived", "required_profile": "shortlived", "max_lifetime": "168h", "per_day": 1},
 				},
 			},
 		},
@@ -87,6 +87,13 @@ func TestLoadParsesExplicitDuration(t *testing.T) {
 	}
 	if cfg.PollInterval.Duration != 45*time.Minute {
 		t.Fatalf("PollInterval = %s", cfg.PollInterval.Duration)
+	}
+	profile := cfg.Domains[0].Profiles[0]
+	if profile.RequiredProfile != "shortlived" {
+		t.Fatalf("RequiredProfile = %q", profile.RequiredProfile)
+	}
+	if profile.MaxLifetime.Duration != 168*time.Hour {
+		t.Fatalf("MaxLifetime = %s", profile.MaxLifetime.Duration)
 	}
 }
 
@@ -125,7 +132,14 @@ func TestValidateReportsConfigurationErrors(t *testing.T) {
 				Name:        "bench.example.com",
 				Identifiers: []string{"bench.example.com"},
 				Profiles: []ProfileConfig{
-					{Name: "classic"},
+					{
+						Name:             "classic",
+						PreferredProfile: "classic",
+						RequiredProfile:  "shortlived",
+						MaxLifetime: Duration{
+							Duration: -time.Hour,
+						},
+					},
 				},
 			},
 		},
@@ -137,6 +151,8 @@ func TestValidateReportsConfigurationErrors(t *testing.T) {
 	}
 	for _, want := range []string{
 		"certbot.server and certbot.staging are mutually exclusive",
+		"domains[0].profiles[0].preferred_profile and required_profile are mutually exclusive",
+		"domains[0].profiles[0].max_lifetime must be positive",
 		"domains[0].profiles[0].per_day must be positive",
 	} {
 		if !strings.Contains(err.Error(), want) {
