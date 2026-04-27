@@ -100,7 +100,14 @@ type FailureType struct {
 	PhaseChoices      []string
 	DelayRange        *DurationRange
 	ContentChoices    []string
-	KeywordChoices    []string
+
+	// KeywordChoices is the pool the generator samples *only* when the
+	// chosen content is keyword_injected — i.e. the foreign string the
+	// failure injects into the body. For non-injected http_body content
+	// (ransomware, defacement, etc.) the scenario keyword falls back to
+	// the canary at translate time, since those failures are detected
+	// by the canary going missing rather than by a custom keyword.
+	KeywordChoices []string
 
 	// TLS failure parameters
 	DaysExpiredChoices   []int
@@ -437,6 +444,13 @@ func validateFailureTypes(rfs []rawFailureType, c *Campaign) error {
 	return nil
 }
 
+// The variant/content/reason allowlists below duplicate the switches
+// in scenario.validateFailure; campaign needs them up front so user
+// TOML errors surface at parse time rather than at translation time.
+// Drift between the two is caught by TestVariantContract_* in
+// variant_pinning_test.go. If these lists grow past ~5 values per
+// type, consider extracting them to a scenario.AllowedVariants
+// helper and importing from there.
 func validateVariantChoice(failureType, variant string) error {
 	switch failureType {
 	case "http_redirect":

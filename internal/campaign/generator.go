@@ -256,10 +256,18 @@ func pickFailureParams(r *rand.Rand, ft *FailureType) map[string]any {
 	if ft.DelayRange != nil {
 		p["delay"] = durationIn(r, ft.DelayRange.Min, ft.DelayRange.Max)
 	}
+	content := ""
 	if len(ft.ContentChoices) > 0 {
-		p["content"] = ft.ContentChoices[r.IntN(len(ft.ContentChoices))]
+		content = ft.ContentChoices[r.IntN(len(ft.ContentChoices))]
+		p["content"] = content
 	}
-	if len(ft.KeywordChoices) > 0 {
+	// keyword applies only to the keyword_injected content variant —
+	// it is the foreign string injected into the body, which the
+	// monitor must then notice. For other http_body content (ransomware,
+	// defacement, …) the scenario keyword stays the canary so that
+	// healthy-state present-checks pass; the translator handles that
+	// canary fallback when no keyword is set in params.
+	if content == "keyword_injected" && len(ft.KeywordChoices) > 0 {
 		p["keyword"] = ft.KeywordChoices[r.IntN(len(ft.KeywordChoices))]
 	}
 	if len(ft.DaysExpiredChoices) > 0 {

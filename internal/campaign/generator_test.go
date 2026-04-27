@@ -256,9 +256,13 @@ per_target_minimum = "0s"
 			if !ok || (content != "keyword_missing" && content != "keyword_injected" && content != "ransomware") {
 				t.Fatalf("%s content = %T %v, want body content choice", d.ID, d.Params["content"], d.Params["content"])
 			}
-			keyword, ok := d.Params["keyword"].(string)
-			if !ok || (keyword != "uptime-bench-canary" && keyword != "HACKED") {
-				t.Fatalf("%s keyword = %T %v, want keyword choice", d.ID, d.Params["keyword"], d.Params["keyword"])
+			if content == "keyword_injected" {
+				keyword, ok := d.Params["keyword"].(string)
+				if !ok || (keyword != "uptime-bench-canary" && keyword != "HACKED") {
+					t.Fatalf("%s keyword = %T %v, want keyword choice", d.ID, d.Params["keyword"], d.Params["keyword"])
+				}
+			} else if _, ok := d.Params["keyword"]; ok {
+				t.Fatalf("%s content=%q must not carry a keyword param (only keyword_injected does)", d.ID, content)
 			}
 		default:
 			t.Fatalf("unexpected failure type %q", d.FailureType)

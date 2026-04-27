@@ -204,6 +204,25 @@ func failureFrom(failureType string, params map[string]any, offset time.Duration
 	return f, nil
 }
 
+// applyHTTPBodyDefaults collapses the http_body stages of a translated
+// design down to the single Keyword + KeywordCheck pair the scenario
+// format carries at scenario level.
+//
+// Limitation: the scenario format has only one keyword/check per run.
+// An escalation that mixes a keyword_injected stage with a non-injected
+// http_body stage (ransomware, defacement, keyword_missing, …) collapses
+// to KeywordCheck="absent" with the injected keyword, which silences
+// the canary-missing signal the non-injected stage was meant to
+// measure. The generator can still produce these mixed escalations
+// (pickEscalation lets stage 1+ pick any failure type), so this is
+// real undermeasurement on those designs, not a theoretical concern.
+//
+// Per-stage Keyword/KeywordCheck would require moving the fields onto
+// scenario.Failure and reworking adapters — most adapters configure
+// once at Provision and can't switch keyword mid-run. Tracked under
+// "Per-stage keyword config" in ROADMAP.md; instrument prevalence in
+// real campaign runs first to decide whether a schema change is
+// warranted.
 func applyHTTPBodyDefaults(sc *scenario.Scenario, translated []translatedFailure) error {
 	hasBody := false
 	hasInjected := false
