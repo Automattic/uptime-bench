@@ -138,6 +138,79 @@ func TestCertificateSelectorUsesDefaultLibraryCertificateWithoutTLSFailure(t *te
 	}
 }
 
+func TestCertificateSelectorTLSInvalidSelfSignedOverridesLibraryDefault(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	ninetyDay := writeLibraryCert(t, dir, "ninety-day", now.Add(90*day), "*.bench.example.com")
+	library := &certlibrary.Library{
+		Version: certlibrary.ManifestVersion,
+		Entries: []certlibrary.Entry{
+			ninetyDay,
+		},
+	}
+	registry := control.NewRegistry()
+	registry.Set(control.FailureSpec{
+		Type:     "tls_invalid",
+		Host:     "target.bench.example.com",
+		Duration: time.Hour,
+		Params:   map[string]any{"variant": "self_signed"},
+	}, 1)
+	fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)
+	if err != nil {
+		t.Fatalf("SelfSignedCertificate: %v", err)
+	}
+	selector := &CertificateSelector{
+		Registry: registry,
+		Library:  library,
+		Fallback: fallback,
+		Now:      func() time.Time { return now },
+	}
+
+	got, err := selector.GetCertificate(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	if got != &selector.Fallback {
+		t.Fatal("GetCertificate returned library cert, want fallback self-signed cert")
+	}
+}
+
+func TestCertificateSelectorTLSInvalidHostnameMismatch(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	registry := control.NewRegistry()
+	registry.Set(control.FailureSpec{
+		Type:     "tls_invalid",
+		Host:     "target.bench.example.com",
+		Duration: time.Hour,
+		Params:   map[string]any{"variant": "hostname_mismatch"},
+	}, 1)
+	fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)
+	if err != nil {
+		t.Fatalf("SelfSignedCertificate: %v", err)
+	}
+	mismatch, err := SelfSignedCertificate([]string{"wrong.example.com"}, now)
+	if err != nil {
+		t.Fatalf("SelfSignedCertificate mismatch: %v", err)
+	}
+	selector := &CertificateSelector{
+		Registry:         registry,
+		Fallback:         fallback,
+		HostnameMismatch: mismatch,
+		Now:              func() time.Time { return now },
+	}
+
+	got, err := selector.GetCertificate(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	if got != &selector.HostnameMismatch {
+		t.Fatal("GetCertificate returned fallback cert, want hostname mismatch cert")
+	}
+	if err := got.Leaf.VerifyHostname("target.bench.example.com"); err == nil {
+		t.Fatal("hostname mismatch cert unexpectedly verifies for requested host")
+	}
+}
+
 func TestCertificateSelectorUsesFallbackWithoutTLSFailure(t *testing.T) {
 	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 	fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)

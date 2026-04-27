@@ -33,6 +33,7 @@ func main() {
 	controlPort := flag.Int("control-port", 9000, "port for harness control API")
 	memberID := flag.String("id", "target", "fleet member ID for control status responses")
 	tlsHosts := flag.String("tls-hosts", "localhost,bench.local,probe.local", "comma-separated SANs for the generated default self-signed HTTPS certificate")
+	tlsMismatchHost := flag.String("tls-mismatch-host", "uptime-bench-invalid.local", "SAN for the generated tls_invalid hostname_mismatch certificate")
 	certLibraryManifest := flag.String("cert-library-manifest", "", "path to uptime-bench-certmint manifest.json for TLS expiration scenarios")
 	tokenFile := flag.String("token-file", "", "path to control token file (default: CONTROL_TOKEN env)")
 	flag.Parse()
@@ -68,6 +69,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("target: tls cert: %v", err)
 		}
+		mismatchCert, err := targetserver.SelfSignedCertificate([]string{*tlsMismatchHost}, time.Now())
+		if err != nil {
+			log.Fatalf("target: tls mismatch cert: %v", err)
+		}
 		var library *certlibrary.Library
 		if *certLibraryManifest != "" {
 			loaded, err := certlibrary.Load(*certLibraryManifest)
@@ -78,9 +83,10 @@ func main() {
 			log.Printf("target: loaded cert library %s entries=%d", *certLibraryManifest, len(loaded.Entries))
 		}
 		selector := &targetserver.CertificateSelector{
-			Registry: registry,
-			Library:  library,
-			Fallback: cert,
+			Registry:         registry,
+			Library:          library,
+			Fallback:         cert,
+			HostnameMismatch: mismatchCert,
 		}
 		httpsHTTP = &http.Server{
 			Addr:    fmt.Sprintf(":%d", *httpsPort),

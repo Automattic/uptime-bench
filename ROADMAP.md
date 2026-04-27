@@ -60,7 +60,7 @@ Until all five steps land, the benchmark cannot accurately compare content-tampe
 
 **Status:** Schema-defined, partially implemented. Active priority.
 
-The target binary now exposes an HTTPS listener with a generated self-signed fallback certificate. With `-cert-library-manifest`, healthy requests use the longest-valid matching library certificate, while active `tls_expired` and `tls_expiring` failures select the closest matching expired/expiring certificate for the request SNI. Remaining TLS work: `tls_invalid` variants, protocol-level TLS config manipulation, and end-to-end OpenSSL/probe acceptance tests against a real cert library.
+The target binary now exposes an HTTPS listener with a generated self-signed fallback certificate. With `-cert-library-manifest`, healthy requests use the longest-valid matching library certificate, while active `tls_expired` and `tls_expiring` failures select the closest matching expired/expiring certificate for the request SNI. `tls_invalid` can force the generated self-signed cert or a generated hostname-mismatch cert. Remaining TLS work: protocol-level TLS config manipulation and end-to-end OpenSSL/probe acceptance tests against a real cert library.
 
 ### Phase 1 — HTTPS listener with self-signed default
 

@@ -25,13 +25,14 @@ const selfSignedCertLifetime = 365 * 24 * time.Hour
 const day = 24 * time.Hour
 
 // CertificateSelector chooses the TLS certificate to present for one
-// ClientHello. Normal traffic gets the fallback cert; active tls_expired and
-// tls_expiring failures select the closest matching cert-library entry.
+// ClientHello. Normal traffic gets the library default or fallback cert;
+// active TLS certificate failures override that with the requested variant.
 type CertificateSelector struct {
-	Registry *control.FailureRegistry
-	Library  *certlibrary.Library
-	Fallback tls.Certificate
-	Now      func() time.Time
+	Registry         *control.FailureRegistry
+	Library          *certlibrary.Library
+	Fallback         tls.Certificate
+	HostnameMismatch tls.Certificate
+	Now              func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]*tls.Certificate
@@ -57,7 +58,24 @@ func (s *CertificateSelector) GetCertificate(hello *tls.ClientHelloInfo) (*tls.C
 
 func (s *CertificateSelector) failureCertificate(host string) (*tls.Certificate, error) {
 	host = normalizeTLSHost(host)
-	if host == "" || s.Registry == nil || s.Library == nil {
+	if host == "" || s.Registry == nil {
+		return nil, nil
+	}
+	if spec, ok := s.Registry.Lookup("tls_invalid", host, ""); ok {
+		variant, _ := spec.Params["variant"].(string)
+		switch variant {
+		case "", "self_signed":
+			return &s.Fallback, nil
+		case "hostname_mismatch":
+			if len(s.HostnameMismatch.Certificate) == 0 {
+				return nil, fmt.Errorf("target: tls_invalid hostname_mismatch certificate is not configured")
+			}
+			return &s.HostnameMismatch, nil
+		default:
+			return nil, fmt.Errorf("target: unsupported tls_invalid variant %q", variant)
+		}
+	}
+	if s.Library == nil {
 		return nil, nil
 	}
 	now := time.Now().UTC()
