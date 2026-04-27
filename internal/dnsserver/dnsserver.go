@@ -311,25 +311,25 @@ func BuildResponse(query []byte, registry *control.FailureRegistry, zones ZoneMa
 
 	// dns_servfail.
 	if _, ok := registry.Lookup("dns_servfail", "", ""); ok {
-		return errorResponse(query, 2), latency // RCODE SERVFAIL
+		return errorResponse(query, qEnd, 2), latency // RCODE SERVFAIL
 	}
 
 	// dns_ns_unavailable.
 	if spec, ok := registry.Lookup("dns_ns_unavailable", "", ""); ok {
 		mode, _ := spec.Params["mode"].(string)
 		if mode == "servfail" {
-			return errorResponse(query, 2), latency
+			return errorResponse(query, qEnd, 2), latency
 		}
 		return nil, 0 // silent drop; no latency on a dropped response
 	}
 
 	if name == "" || qEnd == 0 {
-		return errorResponse(query, 1), latency // FORMERR
+		return errorResponse(query, qEnd, 1), latency // FORMERR
 	}
 
 	// dns_nxdomain: return NXDOMAIN even for names present in the zone.
 	if _, ok := registry.Lookup("dns_nxdomain", "", ""); ok {
-		return errorResponse(query, 3), latency
+		return errorResponse(query, qEnd, 3), latency
 	}
 
 	// dns_cname_nxdomain: return a CNAME pointing to a non-existent target.
@@ -348,7 +348,7 @@ func BuildResponse(query []byte, registry *control.FailureRegistry, zones ZoneMa
 		}
 	}
 
-	return errorResponse(query, 3), latency
+	return errorResponse(query, qEnd, 3), latency
 }
 
 // parseQueryName reads the question name, type, and the byte offset after the
@@ -491,16 +491,37 @@ func cnameNXDomainResponse(query []byte, qEnd int, ttl uint32) []byte {
 	return resp
 }
 
-// errorResponse returns a DNS error response with the given RCODE, echoing
-// the query's question section. RCODE 3 is NXDOMAIN; RCODE 2 is SERVFAIL;
-// RCODE 1 is FORMERR.
-func errorResponse(query []byte, rcode byte) []byte {
-	resp := make([]byte, len(query))
-	copy(resp, query)
-	resp[2] = 0x84        // QR=1, AA=1
-	resp[3] = rcode & 0xF // RCODE
-	resp[6], resp[7] = 0, 0
-	resp[8], resp[9] = 0, 0
-	resp[10], resp[11] = 0, 0
+// errorResponse returns a DNS error response with the given RCODE,
+// echoing only the question section parsed from the query (or no
+// question at all when qEnd is 0, which is the FORMERR case where
+// parseQueryName couldn't make sense of the question).
+//
+// RCODE 3 is NXDOMAIN; RCODE 2 is SERVFAIL; RCODE 1 is FORMERR.
+//
+// Building from scratch — rather than copy(query) and zero the count
+// fields — is the regression fix for a bug where queries carrying an
+// EDNS0 OPT pseudo-RR (any modern dig with default options) produced
+// responses that advertised ARCOUNT=0 but trailed the original OPT's
+// 11–23 bytes past the end of the answer section. Resolvers warned
+// "Message has 23 extra bytes at end" and stricter ones could
+// interpret the malformed response as garbled and retry or fail.
+func errorResponse(query []byte, qEnd int, rcode byte) []byte {
+	hasQuestion := qEnd > 0 && qEnd <= len(query)
+	qdcount := byte(0)
+	size := 12
+	if hasQuestion {
+		qdcount = 1
+		size = 12 + (qEnd - 12)
+	}
+	resp := make([]byte, 0, size)
+	resp = append(resp, query[0], query[1]) // transaction ID
+	resp = append(resp, 0x84, rcode&0x0F)   // QR=1 AA=1, RCODE in low nibble
+	resp = append(resp, 0x00, qdcount)      // QDCOUNT
+	resp = append(resp, 0x00, 0x00)         // ANCOUNT
+	resp = append(resp, 0x00, 0x00)         // NSCOUNT
+	resp = append(resp, 0x00, 0x00)         // ARCOUNT
+	if hasQuestion {
+		resp = append(resp, query[12:qEnd]...)
+	}
 	return resp
 }
