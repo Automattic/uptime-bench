@@ -324,6 +324,97 @@ delay_range   = { min = "5s", max = "60s" }
 	}
 }
 
+func TestParse_FailureTypeHTTPChoices(t *testing.T) {
+	body := validHeader + `
+[[failure_types]]
+type            = "http_redirect"
+variant_choices = ["loop", "chain"]
+
+[[failure_types]]
+type            = "http_body"
+content_choices = ["keyword_missing", "keyword_injected", "ransomware"]
+keyword_choices = ["uptime-bench-canary", "HACKED"]
+`
+	c, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(c.FailureTypes) != 4 {
+		t.Fatalf("len(FailureTypes) = %d, want 4", len(c.FailureTypes))
+	}
+	byType := make(map[string]FailureType, len(c.FailureTypes))
+	for _, ft := range c.FailureTypes {
+		byType[ft.Type] = ft
+	}
+	if got := byType["http_redirect"].VariantChoices; len(got) != 2 || got[1] != "chain" {
+		t.Fatalf("http_redirect VariantChoices = %v", got)
+	}
+	if got := byType["http_body"].ContentChoices; len(got) != 3 || got[2] != "ransomware" {
+		t.Fatalf("http_body ContentChoices = %v", got)
+	}
+	if got := byType["http_body"].KeywordChoices; len(got) != 2 || got[1] != "HACKED" {
+		t.Fatalf("http_body KeywordChoices = %v", got)
+	}
+}
+
+func TestParse_RejectsInvalidHTTPChoices(t *testing.T) {
+	cases := []struct {
+		name       string
+		block      string
+		wantSubstr string
+	}{
+		{
+			name: "invalid redirect variant",
+			block: `
+[[failure_types]]
+type            = "http_redirect"
+variant_choices = ["temporary"]
+`,
+			wantSubstr: "invalid http_redirect variant",
+		},
+		{
+			name: "invalid body content",
+			block: `
+[[failure_types]]
+type            = "http_body"
+content_choices = ["traceback"]
+`,
+			wantSubstr: "invalid http_body content",
+		},
+		{
+			name: "keyword injected requires keywords",
+			block: `
+[[failure_types]]
+type            = "http_body"
+content_choices = ["keyword_injected"]
+`,
+			wantSubstr: "keyword_choices is required",
+		},
+		{
+			name: "empty keyword choice",
+			block: `
+[[failure_types]]
+type            = "http_body"
+content_choices = ["keyword_missing"]
+keyword_choices = [""]
+`,
+			wantSubstr: "keyword_choices",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(validHeader + tc.block))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantSubstr)
+			}
+		})
+	}
+}
+
 func TestParse_FailureTypeTLSChoices(t *testing.T) {
 	body := validHeader + `
 [[failure_types]]

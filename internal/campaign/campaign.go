@@ -99,6 +99,8 @@ type FailureType struct {
 	StatusCodeChoices []int
 	PhaseChoices      []string
 	DelayRange        *DurationRange
+	ContentChoices    []string
+	KeywordChoices    []string
 
 	// TLS failure parameters
 	DaysExpiredChoices   []int
@@ -199,6 +201,8 @@ type rawFailureType struct {
 	StatusCodeChoices    []int           `toml:"status_code_choices"`
 	PhaseChoices         []string        `toml:"phase_choices"`
 	DelayRange           *rawDurationRng `toml:"delay_range"`
+	ContentChoices       []string        `toml:"content_choices"`
+	KeywordChoices       []string        `toml:"keyword_choices"`
 	DaysExpiredChoices   []int           `toml:"days_expired_choices"`
 	DaysRemainingChoices []int           `toml:"days_remaining_choices"`
 	VariantChoices       []string        `toml:"variant_choices"`
@@ -371,6 +375,8 @@ func validateFailureTypes(rfs []rawFailureType, c *Campaign) error {
 			Type:                 rf.Type,
 			StatusCodeChoices:    rf.StatusCodeChoices,
 			PhaseChoices:         rf.PhaseChoices,
+			ContentChoices:       rf.ContentChoices,
+			KeywordChoices:       rf.KeywordChoices,
 			DaysExpiredChoices:   rf.DaysExpiredChoices,
 			DaysRemainingChoices: rf.DaysRemainingChoices,
 			VariantChoices:       rf.VariantChoices,
@@ -396,6 +402,23 @@ func validateFailureTypes(rfs []rawFailureType, c *Campaign) error {
 				return fmt.Errorf("campaign: failure_types[%d] (%s): %w", i, rf.Type, err)
 			}
 		}
+		contentNeedsKeyword := false
+		for _, content := range rf.ContentChoices {
+			if err := validateContentChoice(rf.Type, content); err != nil {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): %w", i, rf.Type, err)
+			}
+			if content == "keyword_injected" {
+				contentNeedsKeyword = true
+			}
+		}
+		for _, keyword := range rf.KeywordChoices {
+			if keyword == "" {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): keyword_choices must not contain empty strings", i, rf.Type)
+			}
+		}
+		if rf.Type == "http_body" && contentNeedsKeyword && len(rf.KeywordChoices) == 0 {
+			return fmt.Errorf("campaign: failure_types[%d] (%s): keyword_choices is required when content_choices includes keyword_injected", i, rf.Type)
+		}
 		for _, reason := range rf.ReasonChoices {
 			if err := validateReasonChoice(rf.Type, reason); err != nil {
 				return fmt.Errorf("campaign: failure_types[%d] (%s): %w", i, rf.Type, err)
@@ -416,6 +439,12 @@ func validateFailureTypes(rfs []rawFailureType, c *Campaign) error {
 
 func validateVariantChoice(failureType, variant string) error {
 	switch failureType {
+	case "http_redirect":
+		switch variant {
+		case "loop", "chain":
+			return nil
+		}
+		return fmt.Errorf("variant_choices contains invalid http_redirect variant %q", variant)
 	case "tls_invalid":
 		switch variant {
 		case "self_signed", "hostname_mismatch":
@@ -430,6 +459,19 @@ func validateVariantChoice(failureType, variant string) error {
 		return fmt.Errorf("variant_choices contains invalid tls_deprecated variant %q", variant)
 	default:
 		return nil
+	}
+}
+
+func validateContentChoice(failureType, content string) error {
+	if failureType != "http_body" {
+		return nil
+	}
+	switch content {
+	case "empty", "error_page", "keyword_missing", "keyword_injected",
+		"ransomware", "defacement", "malicious_script", "spam_links":
+		return nil
+	default:
+		return fmt.Errorf("content_choices contains invalid http_body content %q", content)
 	}
 }
 

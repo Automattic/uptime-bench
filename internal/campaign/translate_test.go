@@ -93,6 +93,90 @@ func TestToScenario_HTTPTimeoutParams(t *testing.T) {
 	}
 }
 
+func TestToScenario_HTTPRedirectParams(t *testing.T) {
+	d := &Design{
+		ID:          "d-redirect",
+		Cell:        Cell{FailureType: "http_redirect", DurationBucket: "brief", HostPattern: HostPatternSingle},
+		Targets:     []string{"bench-a"},
+		FailureType: "http_redirect",
+		Duration:    time.Minute,
+		Params: map[string]any{
+			"variant":      "chain",
+			"chain_length": 3,
+		},
+		Seed: 7,
+	}
+
+	sc, err := d.ToScenario("c-1-r-0", []string{"pingdom"}, time.Minute, 30*time.Second)
+	if err != nil {
+		t.Fatalf("ToScenario: %v", err)
+	}
+	f := sc.Failures[0]
+	if f.Type != "http_redirect" || f.Variant != "chain" || f.ChainLength != 3 {
+		t.Fatalf("failure = %+v, want http_redirect chain length 3", f)
+	}
+}
+
+func TestToScenario_HTTPBodyKeywordDefaults(t *testing.T) {
+	cases := []struct {
+		name        string
+		params      map[string]any
+		wantContent string
+		wantKeyword string
+		wantCheck   string
+	}{
+		{
+			name:        "body content defaults to canary present check",
+			params:      map[string]any{"content": "ransomware"},
+			wantContent: "ransomware",
+			wantKeyword: scenario.CanaryKeyword,
+			wantCheck:   "present",
+		},
+		{
+			name:        "keyword injection defaults to absent check",
+			params:      map[string]any{"content": "keyword_injected", "keyword": "HACKED"},
+			wantContent: "keyword_injected",
+			wantKeyword: "HACKED",
+			wantCheck:   "absent",
+		},
+		{
+			name:        "explicit keyword check is honored",
+			params:      map[string]any{"content": "keyword_missing", "keyword": "Welcome", "keyword_check": "present"},
+			wantContent: "keyword_missing",
+			wantKeyword: "Welcome",
+			wantCheck:   "present",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Design{
+				ID:          "d-body",
+				Cell:        Cell{FailureType: "http_body", DurationBucket: "brief", HostPattern: HostPatternSingle},
+				Targets:     []string{"bench-a"},
+				FailureType: "http_body",
+				Duration:    time.Minute,
+				Params:      tc.params,
+				Seed:        7,
+			}
+
+			sc, err := d.ToScenario("c-1-r-0", []string{"pingdom"}, time.Minute, 30*time.Second)
+			if err != nil {
+				t.Fatalf("ToScenario: %v", err)
+			}
+			if got := sc.Failures[0].Content; got != tc.wantContent {
+				t.Fatalf("Content = %q, want %q", got, tc.wantContent)
+			}
+			if sc.Keyword != tc.wantKeyword {
+				t.Fatalf("Keyword = %q, want %q", sc.Keyword, tc.wantKeyword)
+			}
+			if sc.KeywordCheck != tc.wantCheck {
+				t.Fatalf("KeywordCheck = %q, want %q", sc.KeywordCheck, tc.wantCheck)
+			}
+		})
+	}
+}
+
 // TestToScenario_LayeredEscalation — an escalation Design with two
 // stages produces two [[failures]] blocks, each carrying its own
 // offset. Stage 1 has offset=0; stage 2 carries the configured offset.
@@ -279,18 +363,37 @@ func TestToScenario_TLSExpiringRequiresDaysRemaining(t *testing.T) {
 	}
 }
 
-// TestToScenario_UnsupportedFailureType — for failure types that
-// haven't been wired yet (http_redirect, http_body), the
-// translator should fail explicitly. Catches "campaign generator added
-// support for type X but translator wasn't updated."
+func TestToScenario_HTTPBodyKeywordInjectedRequiresKeyword(t *testing.T) {
+	d := &Design{
+		ID:          "d-body-missing-keyword",
+		Cell:        Cell{FailureType: "http_body", DurationBucket: "brief", HostPattern: HostPatternSingle},
+		Targets:     []string{"bench-a"},
+		FailureType: "http_body",
+		Duration:    time.Minute,
+		Params:      map[string]any{"content": "keyword_injected"},
+		Seed:        5,
+	}
+
+	_, err := d.ToScenario("c-1-r-0", []string{"pingdom"}, time.Minute, 30*time.Second)
+	if err == nil {
+		t.Fatal("expected error for keyword_injected without keyword")
+	}
+	if !strings.Contains(err.Error(), "keyword is required") {
+		t.Errorf("err = %v, want one mentioning required keyword", err)
+	}
+}
+
+// TestToScenario_UnsupportedFailureType — failure types that haven't
+// been wired yet should fail explicitly. Catches "campaign generator
+// added support for type X but translator wasn't updated."
 func TestToScenario_UnsupportedFailureType(t *testing.T) {
 	d := &Design{
 		ID:          "d-0006",
-		Cell:        Cell{FailureType: "http_redirect", DurationBucket: "brief", HostPattern: HostPatternSingle},
+		Cell:        Cell{FailureType: "http_cache_stale", DurationBucket: "brief", HostPattern: HostPatternSingle},
 		Targets:     []string{"bench-a"},
-		FailureType: "http_redirect",
+		FailureType: "http_cache_stale",
 		Duration:    time.Minute,
-		Params:      map[string]any{"variant": "loop"},
+		Params:      map[string]any{},
 		Seed:        5,
 	}
 

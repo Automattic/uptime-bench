@@ -49,23 +49,38 @@ func (d *Design) ToScenario(scenarioID string, monitors []string, checkFrequency
 		Seed:           &seed,
 	}
 
-	if d.Escalation == nil {
-		f, err := failureFrom(d.FailureType, d.Params, 0)
+	var translated []translatedFailure
+	addFailure := func(failureType string, params map[string]any, offset time.Duration) error {
+		f, err := failureFrom(failureType, params, offset)
 		if err != nil {
+			return err
+		}
+		sc.Failures = append(sc.Failures, f)
+		translated = append(translated, translatedFailure{Failure: f, Params: params})
+		return nil
+	}
+
+	if d.Escalation == nil {
+		if err := addFailure(d.FailureType, d.Params, 0); err != nil {
 			return nil, err
 		}
-		sc.Failures = []scenario.Failure{f}
 	} else {
 		for i, stage := range d.Escalation.Stages {
-			f, err := failureFrom(stage.FailureType, stage.Params, stage.Offset)
-			if err != nil {
+			if err := addFailure(stage.FailureType, stage.Params, stage.Offset); err != nil {
 				return nil, fmt.Errorf("campaign: ToScenario: design %s stage %d: %w", d.ID, i, err)
 			}
-			sc.Failures = append(sc.Failures, f)
 		}
+	}
+	if err := applyHTTPBodyDefaults(sc, translated); err != nil {
+		return nil, fmt.Errorf("campaign: ToScenario: design %s: %w", d.ID, err)
 	}
 
 	return sc, nil
+}
+
+type translatedFailure struct {
+	Failure scenario.Failure
+	Params  map[string]any
 }
 
 // failureFrom builds a scenario.Failure from the (failureType, params,
@@ -105,6 +120,25 @@ func failureFrom(failureType string, params map[string]any, offset time.Duration
 		// truncate_after_bytes is optional in scenarios; leave nil if
 		// the campaign config doesn't specify it. Future enhancement:
 		// add truncate_after_bytes to FailureType.
+
+	case "http_redirect":
+		variant, err := paramString(params, "variant")
+		if err != nil {
+			return f, fmt.Errorf("http_redirect: %w", err)
+		}
+		f.Variant = variant
+		if chainLength, ok, err := optionalParamInt(params, "chain_length"); err != nil {
+			return f, fmt.Errorf("http_redirect: %w", err)
+		} else if ok {
+			f.ChainLength = chainLength
+		}
+
+	case "http_body":
+		content, err := paramString(params, "content")
+		if err != nil {
+			return f, fmt.Errorf("http_body: %w", err)
+		}
+		f.Content = content
 
 	case "tcp_refused", "tcp_timeout":
 		// no type-specific params
@@ -168,6 +202,71 @@ func failureFrom(failureType string, params map[string]any, offset time.Duration
 	}
 
 	return f, nil
+}
+
+func applyHTTPBodyDefaults(sc *scenario.Scenario, translated []translatedFailure) error {
+	hasBody := false
+	hasInjected := false
+	keyword := ""
+	keywordSet := false
+	keywordCheck := ""
+	keywordCheckSet := false
+
+	for _, tf := range translated {
+		if tf.Failure.Type != "http_body" {
+			continue
+		}
+		hasBody = true
+		if tf.Failure.Content == "keyword_injected" {
+			hasInjected = true
+		}
+		if kw, ok, err := optionalParamString(tf.Params, "keyword"); err != nil {
+			return fmt.Errorf("http_body: %w", err)
+		} else if ok {
+			if kw == "" {
+				return fmt.Errorf("http_body: keyword must not be empty")
+			}
+			if keywordSet && keyword != kw {
+				return fmt.Errorf("http_body: conflicting keyword params %q and %q", keyword, kw)
+			}
+			keyword = kw
+			keywordSet = true
+		}
+		if check, ok, err := optionalParamString(tf.Params, "keyword_check"); err != nil {
+			return fmt.Errorf("http_body: %w", err)
+		} else if ok {
+			switch check {
+			case "present", "absent":
+			default:
+				return fmt.Errorf("http_body: keyword_check must be one of: present, absent (got %q)", check)
+			}
+			if keywordCheckSet && keywordCheck != check {
+				return fmt.Errorf("http_body: conflicting keyword_check params %q and %q", keywordCheck, check)
+			}
+			keywordCheck = check
+			keywordCheckSet = true
+		}
+	}
+
+	if !hasBody {
+		return nil
+	}
+	if !keywordSet {
+		if hasInjected {
+			return fmt.Errorf("http_body: keyword is required when content is keyword_injected")
+		}
+		keyword = scenario.CanaryKeyword
+	}
+	if !keywordCheckSet {
+		if hasInjected {
+			keywordCheck = "absent"
+		} else {
+			keywordCheck = "present"
+		}
+	}
+	sc.Keyword = keyword
+	sc.KeywordCheck = keywordCheck
+	return nil
 }
 
 // paramInt extracts an int from the params map. Generator-side params

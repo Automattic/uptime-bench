@@ -205,6 +205,15 @@ phase_choices = ["ttfb", "body"]
 delay_range = { min = "5s", max = "60s" }
 
 [[failure_types]]
+type = "http_redirect"
+variant_choices = ["loop", "chain"]
+
+[[failure_types]]
+type = "http_body"
+content_choices = ["empty", "error_page", "keyword_missing", "keyword_injected", "ransomware", "defacement", "malicious_script", "spam_links"]
+keyword_choices = ["uptime-bench-canary", "HACKED", "BTC"]
+
+[[failure_types]]
 type = "tls_expired"
 days_expired_choices = [1, 7, 30]
 

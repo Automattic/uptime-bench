@@ -208,6 +208,64 @@ func TestGenerate_StatusCodeWithinChoices(t *testing.T) {
 	}
 }
 
+func TestGenerate_HTTPParamsWithinChoices(t *testing.T) {
+	c, err := Parse([]byte(`
+id              = "http-gen"
+duration        = "1h"
+seed            = 0
+check_frequency = "60s"
+
+[targets]
+pool     = ["bench-a"]
+patterns = ["single"]
+
+[duration_buckets]
+brief = { min = "1m", max = "2m" }
+
+[sampling]
+samples_per_cell_default = 8
+
+[[failure_types]]
+type            = "http_redirect"
+variant_choices = ["loop", "chain"]
+
+[[failure_types]]
+type            = "http_body"
+content_choices = ["keyword_missing", "keyword_injected", "ransomware"]
+keyword_choices = ["uptime-bench-canary", "HACKED"]
+
+[cooldown]
+per_target_minimum = "0s"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, err := Generate(c, 42)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, d := range plan.Designs {
+		switch d.FailureType {
+		case "http_redirect":
+			got, ok := d.Params["variant"].(string)
+			if !ok || (got != "loop" && got != "chain") {
+				t.Fatalf("%s variant = %T %v, want redirect choice", d.ID, d.Params["variant"], d.Params["variant"])
+			}
+		case "http_body":
+			content, ok := d.Params["content"].(string)
+			if !ok || (content != "keyword_missing" && content != "keyword_injected" && content != "ransomware") {
+				t.Fatalf("%s content = %T %v, want body content choice", d.ID, d.Params["content"], d.Params["content"])
+			}
+			keyword, ok := d.Params["keyword"].(string)
+			if !ok || (keyword != "uptime-bench-canary" && keyword != "HACKED") {
+				t.Fatalf("%s keyword = %T %v, want keyword choice", d.ID, d.Params["keyword"], d.Params["keyword"])
+			}
+		default:
+			t.Fatalf("unexpected failure type %q", d.FailureType)
+		}
+	}
+}
+
 func TestGenerate_TLSParamsWithinChoices(t *testing.T) {
 	c, err := Parse([]byte(`
 id              = "tls-gen"
