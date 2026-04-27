@@ -70,9 +70,11 @@ func TestCertificateSelectorUsesExpiringLibraryCertificate(t *testing.T) {
 	dir := t.TempDir()
 	fiveDay := writeLibraryCert(t, dir, "five-day", now.Add(5*day), "*.bench.example.com")
 	sixDay := writeLibraryCert(t, dir, "six-day", now.Add(6*day), "*.bench.example.com")
+	ninetyDay := writeLibraryCert(t, dir, "ninety-day", now.Add(90*day), "*.bench.example.com")
 	library := &certlibrary.Library{
 		Version: certlibrary.ManifestVersion,
 		Entries: []certlibrary.Entry{
+			ninetyDay,
 			sixDay,
 			fiveDay,
 		},
@@ -101,6 +103,38 @@ func TestCertificateSelectorUsesExpiringLibraryCertificate(t *testing.T) {
 	}
 	if got.Leaf == nil || !got.Leaf.NotAfter.Equal(fiveDay.NotAfter) {
 		t.Fatalf("selected NotAfter = %v, want %v", got.Leaf.NotAfter, fiveDay.NotAfter)
+	}
+}
+
+func TestCertificateSelectorUsesDefaultLibraryCertificateWithoutTLSFailure(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	sixDay := writeLibraryCert(t, dir, "six-day", now.Add(6*day), "*.bench.example.com")
+	ninetyDay := writeLibraryCert(t, dir, "ninety-day", now.Add(90*day), "*.bench.example.com")
+	library := &certlibrary.Library{
+		Version: certlibrary.ManifestVersion,
+		Entries: []certlibrary.Entry{
+			sixDay,
+			ninetyDay,
+		},
+	}
+	fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)
+	if err != nil {
+		t.Fatalf("SelfSignedCertificate: %v", err)
+	}
+	selector := &CertificateSelector{
+		Registry: control.NewRegistry(),
+		Library:  library,
+		Fallback: fallback,
+		Now:      func() time.Time { return now },
+	}
+
+	got, err := selector.GetCertificate(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	if got.Leaf == nil || !got.Leaf.NotAfter.Equal(ninetyDay.NotAfter) {
+		t.Fatalf("selected NotAfter = %v, want %v", got.Leaf.NotAfter, ninetyDay.NotAfter)
 	}
 }
 

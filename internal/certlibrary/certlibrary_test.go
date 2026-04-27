@@ -2,6 +2,7 @@ package certlibrary
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,6 +81,43 @@ func TestSelectExpiredChoosesClosestPastCertificate(t *testing.T) {
 	}
 }
 
+func TestSelectDefaultChoosesLongestCurrentlyValidCertificate(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	lib := Library{
+		Version: ManifestVersion,
+		Entries: []Entry{
+			entryWithWindow("short-valid", now.Add(-24*time.Hour), now.Add(6*24*time.Hour), "*.bench.example.com"),
+			entryWithWindow("long-valid", now.Add(-24*time.Hour), now.Add(90*24*time.Hour), "*.bench.example.com"),
+			entryWithWindow("future", now.Add(24*time.Hour), now.Add(100*24*time.Hour), "*.bench.example.com"),
+			entryWithWindow("expired", now.Add(-10*24*time.Hour), now.Add(-24*time.Hour), "*.bench.example.com"),
+			entryWithWindow("other-host", now.Add(-24*time.Hour), now.Add(120*24*time.Hour), "*.other.example.com"),
+		},
+	}
+
+	got, err := lib.SelectDefault("target.bench.example.com", now)
+	if err != nil {
+		t.Fatalf("SelectDefault: %v", err)
+	}
+	if got.ID != "long-valid" {
+		t.Fatalf("got %q, want long-valid", got.ID)
+	}
+}
+
+func TestSelectDefaultReturnsSentinelForNoMatchingCert(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	lib := Library{
+		Version: ManifestVersion,
+		Entries: []Entry{
+			entryWithWindow("expired", now.Add(-10*24*time.Hour), now.Add(-24*time.Hour), "*.bench.example.com"),
+		},
+	}
+
+	_, err := lib.SelectDefault("target.bench.example.com", now)
+	if !errors.Is(err, ErrNoCertificate) {
+		t.Fatalf("SelectDefault err = %v, want ErrNoCertificate", err)
+	}
+}
+
 func TestLoadValidatesManifest(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")
@@ -130,11 +168,16 @@ func TestValidateRejectsUnsupportedVersionAndMissingPaths(t *testing.T) {
 }
 
 func entry(id string, notAfter time.Time, identifiers ...string) Entry {
+	return entryWithWindow(id, time.Time{}, notAfter, identifiers...)
+}
+
+func entryWithWindow(id string, notBefore, notAfter time.Time, identifiers ...string) Entry {
 	return Entry{
 		ID:          id,
 		Domain:      "bench.example.com",
 		Profile:     "shortlived",
 		Identifiers: identifiers,
+		NotBefore:   notBefore,
 		NotAfter:    notAfter,
 		Paths: Paths{
 			Cert:      "/certs/" + id + "/cert.pem",

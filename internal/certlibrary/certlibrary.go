@@ -15,6 +15,10 @@ import (
 // ManifestVersion is the supported cert-library manifest schema version.
 const ManifestVersion = 1
 
+// ErrNoCertificate means a manifest loaded successfully but contains no
+// certificate matching the requested host and time policy.
+var ErrNoCertificate = errors.New("certlibrary: no matching certificate")
+
 // Library is a parsed certificate library manifest.
 type Library struct {
 	Version int     `json:"version"`
@@ -141,6 +145,37 @@ func (l Library) SelectExpired(host string, now time.Time, targetExpired time.Du
 	})
 }
 
+// SelectDefault returns the currently-valid covering certificate with the
+// latest NotAfter. This is the healthy HTTPS certificate when a library is
+// configured and no TLS failure is active.
+func (l Library) SelectDefault(host string, now time.Time) (Entry, error) {
+	host = normalizeHost(host)
+	if host == "" {
+		return Entry{}, fmt.Errorf("certlibrary: host is required")
+	}
+	now = now.UTC()
+	var best Entry
+	for _, entry := range l.Entries {
+		if !entry.Covers(host) {
+			continue
+		}
+		if !entry.NotBefore.IsZero() && entry.NotBefore.After(now) {
+			continue
+		}
+		if !entry.NotAfter.After(now) {
+			continue
+		}
+		if best.ID == "" || entry.NotAfter.After(best.NotAfter) ||
+			(entry.NotAfter.Equal(best.NotAfter) && entry.ID < best.ID) {
+			best = entry
+		}
+	}
+	if best.ID == "" {
+		return Entry{}, fmt.Errorf("%w for host %q at %s", ErrNoCertificate, host, now.Format(time.RFC3339))
+	}
+	return best, nil
+}
+
 func (l Library) selectClosest(host string, target time.Time, keep func(Entry) bool) (Entry, error) {
 	host = normalizeHost(host)
 	if host == "" {
@@ -159,7 +194,7 @@ func (l Library) selectClosest(host string, target time.Time, keep func(Entry) b
 		}
 	}
 	if best.ID == "" {
-		return Entry{}, fmt.Errorf("certlibrary: no certificate for host %q near %s", host, target.Format(time.RFC3339))
+		return Entry{}, fmt.Errorf("%w for host %q near %s", ErrNoCertificate, host, target.Format(time.RFC3339))
 	}
 	return best, nil
 }

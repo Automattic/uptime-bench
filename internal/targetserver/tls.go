@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -48,6 +49,9 @@ func (s *CertificateSelector) GetCertificate(hello *tls.ClientHelloInfo) (*tls.C
 	if cert, err := s.failureCertificate(host); err != nil || cert != nil {
 		return cert, err
 	}
+	if cert, err := s.defaultCertificate(host); err != nil || cert != nil {
+		return cert, err
+	}
 	return &s.Fallback, nil
 }
 
@@ -77,6 +81,25 @@ func (s *CertificateSelector) failureCertificate(host string) (*tls.Certificate,
 		return s.cachedCertificate(entry)
 	}
 	return nil, nil
+}
+
+func (s *CertificateSelector) defaultCertificate(host string) (*tls.Certificate, error) {
+	host = normalizeTLSHost(host)
+	if host == "" || s.Library == nil {
+		return nil, nil
+	}
+	now := time.Now().UTC()
+	if s.Now != nil {
+		now = s.Now().UTC()
+	}
+	entry, err := s.Library.SelectDefault(host, now)
+	if errors.Is(err, certlibrary.ErrNoCertificate) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.cachedCertificate(entry)
 }
 
 func (s *CertificateSelector) cachedCertificate(entry certlibrary.Entry) (*tls.Certificate, error) {
