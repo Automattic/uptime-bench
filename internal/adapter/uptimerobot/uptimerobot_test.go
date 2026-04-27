@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
+	"github.com/Automattic/uptime-bench/internal/adapter/adaptertest"
 )
 
 // ─── boilerplate: a captured-form fake server ───────────────────────────────
@@ -49,44 +50,13 @@ func newTestAdapter(srvURL, apiKey string) *Adapter {
 	return a
 }
 
-// requestRecord captures one inbound request for tests that exercise
-// multi-call provision flows (e.g. /newMonitor + /newMWindow + /editMonitor).
-type requestRecord struct {
-	method string
-	path   string
-	form   url.Values
-}
-
-type routedResponse struct {
-	method     string
-	pathPrefix string
-	status     int
-	body       string
-}
-
-// newRoutedFake routes responses by (method, pathPrefix) and records every
-// inbound request in order.
-func newRoutedFake(t *testing.T, responses []routedResponse) (*httptest.Server, *[]requestRecord) {
-	t.Helper()
-	var requests []requestRecord
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		v, err := url.ParseQuery(string(raw))
-		if err != nil {
-			t.Errorf("server: bad form body: %v", err)
-		}
-		requests = append(requests, requestRecord{method: r.Method, path: r.URL.Path, form: v})
-		for _, resp := range responses {
-			if resp.method == r.Method && strings.HasPrefix(r.URL.Path, resp.pathPrefix) {
-				w.WriteHeader(resp.status)
-				_, _ = w.Write([]byte(resp.body))
-				return
-			}
-		}
-		t.Errorf("routedFake: no response matched %s %s", r.Method, r.URL.Path)
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	return srv, &requests
+// formOf parses a routedFake-captured form-encoded request body into
+// url.Values. Adapter is form-encoded throughout, so test sites that
+// need to inspect form fields go through this helper rather than
+// re-implementing the parse each time.
+func formOf(r adaptertest.RequestRecord) url.Values {
+	v, _ := url.ParseQuery(string(r.Body))
+	return v
 }
 
 // ─── Adapter interface conformance ──────────────────────────────────────────
@@ -635,8 +605,8 @@ func TestCapabilities_MaintenanceAndCooldown(t *testing.T) {
 // TestProvision_NoMaintenanceWindow — nil window means a single
 // /newMonitor call.
 func TestProvision_NoMaintenanceWindow(t *testing.T) {
-	srv, requests := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/newMonitor", Status: 200, Body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
 	})
 	defer srv.Close()
 
@@ -648,18 +618,18 @@ func TestProvision_NoMaintenanceWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if len(*requests) != 1 {
-		t.Errorf("expected 1 request without maintenance, got %d", len(*requests))
+	if len(rf.Requests()) != 1 {
+		t.Errorf("expected 1 request without maintenance, got %d", len(rf.Requests()))
 	}
 }
 
 // TestProvision_WithMaintenanceWindow — three-call sequence with the
 // right shapes: /newMonitor → /newMWindow → /editMonitor (mwindows=ID).
 func TestProvision_WithMaintenanceWindow(t *testing.T) {
-	srv, requests := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
-		{method: "POST", pathPrefix: "/newMWindow", status: 200, body: `{"stat":"ok","mwindow":{"id":9000,"status":1}}`},
-		{method: "POST", pathPrefix: "/editMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777}}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/newMonitor", Status: 200, Body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+		{Method: "POST", PathPrefix: "/newMWindow", Status: 200, Body: `{"stat":"ok","mwindow":{"id":9000,"status":1}}`},
+		{Method: "POST", PathPrefix: "/editMonitor", Status: 200, Body: `{"stat":"ok","monitor":{"id":777}}`},
 	})
 	defer srv.Close()
 
@@ -677,20 +647,20 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if len(*requests) != 3 {
-		t.Fatalf("expected 3 requests (newMonitor + newMWindow + editMonitor), got %d", len(*requests))
+	if len(rf.Requests()) != 3 {
+		t.Fatalf("expected 3 requests (newMonitor + newMWindow + editMonitor), got %d", len(rf.Requests()))
 	}
-	if (*requests)[0].path != "/newMonitor" {
-		t.Errorf("requests[0].path = %q, want /newMonitor", (*requests)[0].path)
+	if rf.Requests()[0].Path != "/newMonitor" {
+		t.Errorf("requests[0].path = %q, want /newMonitor", rf.Requests()[0].Path)
 	}
-	if (*requests)[1].path != "/newMWindow" {
-		t.Errorf("requests[1].path = %q, want /newMWindow", (*requests)[1].path)
+	if rf.Requests()[1].Path != "/newMWindow" {
+		t.Errorf("requests[1].path = %q, want /newMWindow", rf.Requests()[1].Path)
 	}
-	if (*requests)[2].path != "/editMonitor" {
-		t.Errorf("requests[2].path = %q, want /editMonitor", (*requests)[2].path)
+	if rf.Requests()[2].Path != "/editMonitor" {
+		t.Errorf("requests[2].path = %q, want /editMonitor", rf.Requests()[2].Path)
 	}
 
-	mw := (*requests)[1].form
+	mw := formOf(rf.Requests()[1])
 	if mw.Get("type") != "1" {
 		t.Errorf("newMWindow type = %q, want 1 (Once)", mw.Get("type"))
 	}
@@ -704,7 +674,7 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 		t.Errorf("friendly_name = %q, should contain target id", mw.Get("friendly_name"))
 	}
 
-	em := (*requests)[2].form
+	em := formOf(rf.Requests()[2])
 	if em.Get("id") != "777" {
 		t.Errorf("editMonitor id = %q, want 777 (the monitor id)", em.Get("id"))
 	}
@@ -721,9 +691,9 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 // cross-midnight semantics aren't reliably documented; reject and roll
 // back the just-created monitor.
 func TestProvision_MaintenanceCrossingMidnightRejected(t *testing.T) {
-	srv, requests := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
-		{method: "POST", pathPrefix: "/deleteMonitor", status: 200, body: `{"stat":"ok"}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/newMonitor", Status: 200, Body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+		{Method: "POST", PathPrefix: "/deleteMonitor", Status: 200, Body: `{"stat":"ok"}`},
 	})
 	defer srv.Close()
 
@@ -745,13 +715,13 @@ func TestProvision_MaintenanceCrossingMidnightRejected(t *testing.T) {
 		t.Errorf("err = %v, want one mentioning cross-midnight", err)
 	}
 	sawDelete := false
-	for _, r := range *requests {
-		if r.path == "/deleteMonitor" && r.form.Get("id") == "777" {
+	for _, r := range rf.Requests() {
+		if r.Path == "/deleteMonitor" && formOf(r).Get("id") == "777" {
 			sawDelete = true
 		}
 	}
 	if !sawDelete {
-		t.Errorf("expected /deleteMonitor rollback after rejection; got requests: %+v", *requests)
+		t.Errorf("expected /deleteMonitor rollback after rejection; got requests: %+v", rf.Requests())
 	}
 }
 
@@ -759,10 +729,10 @@ func TestProvision_MaintenanceCrossingMidnightRejected(t *testing.T) {
 // fails after /newMonitor succeeded, the adapter must delete the just-
 // created monitor.
 func TestProvision_MWindowCreateFailureRollsBackMonitor(t *testing.T) {
-	srv, requests := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
-		{method: "POST", pathPrefix: "/newMWindow", status: 200, body: `{"stat":"fail","error":{"type":"invalid_parameter","message":"bad start_time"}}`},
-		{method: "POST", pathPrefix: "/deleteMonitor", status: 200, body: `{"stat":"ok"}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/newMonitor", Status: 200, Body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+		{Method: "POST", PathPrefix: "/newMWindow", Status: 200, Body: `{"stat":"fail","error":{"type":"invalid_parameter","message":"bad start_time"}}`},
+		{Method: "POST", PathPrefix: "/deleteMonitor", Status: 200, Body: `{"stat":"ok"}`},
 	})
 	defer srv.Close()
 
@@ -779,25 +749,25 @@ func TestProvision_MWindowCreateFailureRollsBackMonitor(t *testing.T) {
 		t.Fatal("expected error from newMWindow failure")
 	}
 	sawMonitorDelete := false
-	for _, r := range *requests {
-		if r.path == "/deleteMonitor" && r.form.Get("id") == "777" {
+	for _, r := range rf.Requests() {
+		if r.Path == "/deleteMonitor" && formOf(r).Get("id") == "777" {
 			sawMonitorDelete = true
 		}
 	}
 	if !sawMonitorDelete {
-		t.Errorf("expected /deleteMonitor rollback; got %+v", *requests)
+		t.Errorf("expected /deleteMonitor rollback; got %+v", rf.Requests())
 	}
 }
 
 // TestProvision_AttachFailureRollsBackBoth — if /editMonitor fails after
 // the window was already created, both window and monitor get cleaned up.
 func TestProvision_AttachFailureRollsBackBoth(t *testing.T) {
-	srv, requests := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/newMonitor", status: 200, body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
-		{method: "POST", pathPrefix: "/newMWindow", status: 200, body: `{"stat":"ok","mwindow":{"id":9000,"status":1}}`},
-		{method: "POST", pathPrefix: "/editMonitor", status: 200, body: `{"stat":"fail","error":{"type":"invalid_parameter","message":"unknown mwindow"}}`},
-		{method: "POST", pathPrefix: "/deleteMWindow", status: 200, body: `{"stat":"ok"}`},
-		{method: "POST", pathPrefix: "/deleteMonitor", status: 200, body: `{"stat":"ok"}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/newMonitor", Status: 200, Body: `{"stat":"ok","monitor":{"id":777,"status":1}}`},
+		{Method: "POST", PathPrefix: "/newMWindow", Status: 200, Body: `{"stat":"ok","mwindow":{"id":9000,"status":1}}`},
+		{Method: "POST", PathPrefix: "/editMonitor", Status: 200, Body: `{"stat":"fail","error":{"type":"invalid_parameter","message":"unknown mwindow"}}`},
+		{Method: "POST", PathPrefix: "/deleteMWindow", Status: 200, Body: `{"stat":"ok"}`},
+		{Method: "POST", PathPrefix: "/deleteMonitor", Status: 200, Body: `{"stat":"ok"}`},
 	})
 	defer srv.Close()
 
@@ -815,28 +785,28 @@ func TestProvision_AttachFailureRollsBackBoth(t *testing.T) {
 	}
 	sawMWindowDelete := false
 	sawMonitorDelete := false
-	for _, r := range *requests {
-		if r.path == "/deleteMWindow" && r.form.Get("id") == "9000" {
+	for _, r := range rf.Requests() {
+		if r.Path == "/deleteMWindow" && formOf(r).Get("id") == "9000" {
 			sawMWindowDelete = true
 		}
-		if r.path == "/deleteMonitor" && r.form.Get("id") == "777" {
+		if r.Path == "/deleteMonitor" && formOf(r).Get("id") == "777" {
 			sawMonitorDelete = true
 		}
 	}
 	if !sawMWindowDelete {
-		t.Errorf("expected /deleteMWindow rollback for window 9000; got %+v", *requests)
+		t.Errorf("expected /deleteMWindow rollback for window 9000; got %+v", rf.Requests())
 	}
 	if !sawMonitorDelete {
-		t.Errorf("expected /deleteMonitor rollback for monitor 777; got %+v", *requests)
+		t.Errorf("expected /deleteMonitor rollback for monitor 777; got %+v", rf.Requests())
 	}
 }
 
 // TestDeprovision_DeletesMaintenanceFirst — when handle has
 // maintenance_id, Deprovision sends /deleteMWindow before /deleteMonitor.
 func TestDeprovision_DeletesMaintenanceFirst(t *testing.T) {
-	srv, requests := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/deleteMWindow", status: 200, body: `{"stat":"ok"}`},
-		{method: "POST", pathPrefix: "/deleteMonitor", status: 200, body: `{"stat":"ok"}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/deleteMWindow", Status: 200, Body: `{"stat":"ok"}`},
+		{Method: "POST", PathPrefix: "/deleteMonitor", Status: 200, Body: `{"stat":"ok"}`},
 	})
 	defer srv.Close()
 
@@ -848,13 +818,13 @@ func TestDeprovision_DeletesMaintenanceFirst(t *testing.T) {
 	if err := a.Deprovision(context.Background(), handle); err != nil {
 		t.Fatalf("Deprovision: %v", err)
 	}
-	if len(*requests) != 2 {
-		t.Fatalf("expected 2 requests, got %d", len(*requests))
+	if len(rf.Requests()) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(rf.Requests()))
 	}
-	if (*requests)[0].path != "/deleteMWindow" {
-		t.Errorf("first request = %q, want /deleteMWindow (must come first)", (*requests)[0].path)
+	if rf.Requests()[0].Path != "/deleteMWindow" {
+		t.Errorf("first request = %q, want /deleteMWindow (must come first)", rf.Requests()[0].Path)
 	}
-	if (*requests)[1].path != "/deleteMonitor" {
-		t.Errorf("second request = %q, want /deleteMonitor", (*requests)[1].path)
+	if rf.Requests()[1].Path != "/deleteMonitor" {
+		t.Errorf("second request = %q, want /deleteMonitor", rf.Requests()[1].Path)
 	}
 }

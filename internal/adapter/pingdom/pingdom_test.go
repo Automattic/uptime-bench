@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
+	"github.com/Automattic/uptime-bench/internal/adapter/adaptertest"
 )
 
 // ─── boilerplate: a captured-request fake server ───────────────────────────
@@ -44,53 +45,6 @@ func newTestAdapter(srvURL, token string) *Adapter {
 	a := New("pingdom", srvURL, token)
 	a.client = http.DefaultClient
 	return a
-}
-
-// requestRecord captures a single inbound request for tests that exercise
-// multi-call provision flows (e.g. /checks followed by /maintenance).
-type requestRecord struct {
-	method string
-	path   string
-	body   []byte
-}
-
-// routedFake serves a sequence of requests, each of which is matched by
-// (method, pathPrefix). Use for tests that need fine-grained control over
-// the second-and-subsequent calls in a provision sequence.
-type routedFake struct {
-	t         *testing.T
-	requests  []requestRecord
-	responses []routedResponse
-}
-
-type routedResponse struct {
-	method     string
-	pathPrefix string
-	status     int
-	body       string
-}
-
-func newRoutedFake(t *testing.T, responses []routedResponse) (*httptest.Server, *routedFake) {
-	t.Helper()
-	rf := &routedFake{t: t, responses: responses}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		rf.requests = append(rf.requests, requestRecord{
-			method: r.Method,
-			path:   r.URL.Path,
-			body:   body,
-		})
-		for _, resp := range rf.responses {
-			if resp.method == r.Method && strings.HasPrefix(r.URL.Path, resp.pathPrefix) {
-				w.WriteHeader(resp.status)
-				_, _ = w.Write([]byte(resp.body))
-				return
-			}
-		}
-		t.Errorf("routedFake: no response matched %s %s", r.Method, r.URL.Path)
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	return srv, rf
 }
 
 // ─── Conformance ────────────────────────────────────────────────────────────
@@ -586,8 +540,8 @@ func TestDeprovision_EmptyHandleIsNoop(t *testing.T) {
 // is nil, only the /checks call is made; no maintenance_id field is set
 // on the handle.
 func TestProvision_NoMaintenanceWindow(t *testing.T) {
-	srv, rf := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/checks", status: 200, body: `{"check":{"id":555,"status":"unknown"}}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/checks", Status: 200, Body: `{"check":{"id":555,"status":"unknown"}}`},
 	})
 	defer srv.Close()
 
@@ -599,8 +553,8 @@ func TestProvision_NoMaintenanceWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if len(rf.requests) != 1 {
-		t.Errorf("expected 1 request when no maintenance window, got %d", len(rf.requests))
+	if len(rf.Requests()) != 1 {
+		t.Errorf("expected 1 request when no maintenance window, got %d", len(rf.Requests()))
 	}
 	if handle.Fields["maintenance_id"] != "" {
 		t.Errorf("maintenance_id should be empty, got %q", handle.Fields["maintenance_id"])
@@ -611,9 +565,9 @@ func TestProvision_NoMaintenanceWindow(t *testing.T) {
 // Provision posts /checks first, then /maintenance with the right shape;
 // the handle carries maintenance_id.
 func TestProvision_WithMaintenanceWindow(t *testing.T) {
-	srv, rf := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/checks", status: 200, body: `{"check":{"id":555,"status":"unknown"}}`},
-		{method: "POST", pathPrefix: "/maintenance", status: 200, body: `{"maintenance":{"id":9000}}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/checks", Status: 200, Body: `{"check":{"id":555,"status":"unknown"}}`},
+		{Method: "POST", PathPrefix: "/maintenance", Status: 200, Body: `{"maintenance":{"id":9000}}`},
 	})
 	defer srv.Close()
 
@@ -631,18 +585,18 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if len(rf.requests) != 2 {
-		t.Fatalf("expected 2 requests (checks + maintenance), got %d", len(rf.requests))
+	if len(rf.Requests()) != 2 {
+		t.Fatalf("expected 2 requests (checks + maintenance), got %d", len(rf.Requests()))
 	}
-	if rf.requests[0].path != "/checks" {
-		t.Errorf("first request path = %q, want /checks", rf.requests[0].path)
+	if rf.Requests()[0].Path != "/checks" {
+		t.Errorf("first request path = %q, want /checks", rf.Requests()[0].Path)
 	}
-	if rf.requests[1].path != "/maintenance" {
-		t.Errorf("second request path = %q, want /maintenance", rf.requests[1].path)
+	if rf.Requests()[1].Path != "/maintenance" {
+		t.Errorf("second request path = %q, want /maintenance", rf.Requests()[1].Path)
 	}
 
 	var mw newMaintenanceRequest
-	if err := json.Unmarshal(rf.requests[1].body, &mw); err != nil {
+	if err := json.Unmarshal(rf.Requests()[1].Body, &mw); err != nil {
 		t.Fatalf("maintenance body unmarshal: %v", err)
 	}
 	if mw.From != start.Unix() {
@@ -668,10 +622,10 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 // just-created check so the run doesn't leak monitors. Returns a Go
 // error so the runner records adapter_error.
 func TestProvision_MaintenanceFailureRollsBackCheck(t *testing.T) {
-	srv, rf := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/checks", status: 200, body: `{"check":{"id":555,"status":"unknown"}}`},
-		{method: "POST", pathPrefix: "/maintenance", status: 400, body: `{"error":{"statuscode":400,"errormessage":"invalid range"}}`},
-		{method: "DELETE", pathPrefix: "/checks/555", status: 200, body: `{}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/checks", Status: 200, Body: `{"check":{"id":555,"status":"unknown"}}`},
+		{Method: "POST", PathPrefix: "/maintenance", Status: 400, Body: `{"error":{"statuscode":400,"errormessage":"invalid range"}}`},
+		{Method: "DELETE", PathPrefix: "/checks/555", Status: 200, Body: `{}`},
 	})
 	defer srv.Close()
 
@@ -688,14 +642,14 @@ func TestProvision_MaintenanceFailureRollsBackCheck(t *testing.T) {
 	}
 	// Verify rollback: should see DELETE /checks/555 in the request log.
 	sawDelete := false
-	for _, r := range rf.requests {
-		if r.method == "DELETE" && r.path == "/checks/555" {
+	for _, r := range rf.Requests() {
+		if r.Method == "DELETE" && r.Path == "/checks/555" {
 			sawDelete = true
 			break
 		}
 	}
 	if !sawDelete {
-		t.Errorf("expected DELETE /checks/555 rollback after maintenance failure; requests = %+v", rf.requests)
+		t.Errorf("expected DELETE /checks/555 rollback after maintenance failure; requests = %+v", rf.Requests())
 	}
 }
 
@@ -703,9 +657,9 @@ func TestProvision_MaintenanceFailureRollsBackCheck(t *testing.T) {
 // maintenance_id, Deprovision sends DELETE /maintenance/{id} before
 // DELETE /checks/{id}.
 func TestDeprovision_DeletesMaintenanceFirst(t *testing.T) {
-	srv, rf := newRoutedFake(t, []routedResponse{
-		{method: "DELETE", pathPrefix: "/maintenance/", status: 200, body: `{}`},
-		{method: "DELETE", pathPrefix: "/checks/", status: 200, body: `{"message":"deleted"}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "DELETE", PathPrefix: "/maintenance/", Status: 200, Body: `{}`},
+		{Method: "DELETE", PathPrefix: "/checks/", Status: 200, Body: `{"message":"deleted"}`},
 	})
 	defer srv.Close()
 
@@ -717,14 +671,14 @@ func TestDeprovision_DeletesMaintenanceFirst(t *testing.T) {
 	if err := a.Deprovision(context.Background(), handle); err != nil {
 		t.Fatalf("Deprovision: %v", err)
 	}
-	if len(rf.requests) != 2 {
-		t.Fatalf("expected 2 requests, got %d", len(rf.requests))
+	if len(rf.Requests()) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(rf.Requests()))
 	}
-	if rf.requests[0].path != "/maintenance/9000" {
-		t.Errorf("first request = %q, want /maintenance/9000 (must come first)", rf.requests[0].path)
+	if rf.Requests()[0].Path != "/maintenance/9000" {
+		t.Errorf("first request = %q, want /maintenance/9000 (must come first)", rf.Requests()[0].Path)
 	}
-	if rf.requests[1].path != "/checks/555" {
-		t.Errorf("second request = %q, want /checks/555", rf.requests[1].path)
+	if rf.Requests()[1].Path != "/checks/555" {
+		t.Errorf("second request = %q, want /checks/555", rf.Requests()[1].Path)
 	}
 }
 
@@ -733,9 +687,9 @@ func TestDeprovision_DeletesMaintenanceFirst(t *testing.T) {
 // proceeds with check deletion. Maintenance windows self-expire at
 // `to` so a leaked window is a dashboard nuisance, not corruption.
 func TestDeprovision_MaintenanceDeleteFailureDoesNotBlockCheckDelete(t *testing.T) {
-	srv, rf := newRoutedFake(t, []routedResponse{
-		{method: "DELETE", pathPrefix: "/maintenance/", status: 503, body: `{"error":{"statuscode":503}}`},
-		{method: "DELETE", pathPrefix: "/checks/", status: 200, body: `{"message":"deleted"}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "DELETE", PathPrefix: "/maintenance/", Status: 503, Body: `{"error":{"statuscode":503}}`},
+		{Method: "DELETE", PathPrefix: "/checks/", Status: 200, Body: `{"message":"deleted"}`},
 	})
 	defer srv.Close()
 
@@ -747,7 +701,7 @@ func TestDeprovision_MaintenanceDeleteFailureDoesNotBlockCheckDelete(t *testing.
 	if err := a.Deprovision(context.Background(), handle); err != nil {
 		t.Fatalf("Deprovision should not fail when maintenance delete errors: %v", err)
 	}
-	if len(rf.requests) != 2 {
-		t.Errorf("expected 2 requests (try maintenance, then check), got %d", len(rf.requests))
+	if len(rf.Requests()) != 2 {
+		t.Errorf("expected 2 requests (try maintenance, then check), got %d", len(rf.Requests()))
 	}
 }

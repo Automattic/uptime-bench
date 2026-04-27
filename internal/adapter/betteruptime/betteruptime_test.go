@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
+	"github.com/Automattic/uptime-bench/internal/adapter/adaptertest"
 )
 
 type captured struct {
@@ -38,43 +39,6 @@ func newTestAdapter(srvURL, token string) *Adapter {
 	a := New("better-uptime", srvURL, token)
 	a.client = http.DefaultClient
 	return a
-}
-
-// requestRecord captures one inbound request for tests that need to
-// inspect multi-call sequences (e.g. POST /monitors followed by
-// PATCH /monitors/{id} for maintenance).
-type requestRecord struct {
-	method string
-	path   string
-	body   []byte
-}
-
-type routedResponse struct {
-	method     string
-	pathPrefix string
-	status     int
-	body       string
-}
-
-// newRoutedFake serves responses chosen by (method, pathPrefix) and
-// records every inbound request in order.
-func newRoutedFake(t *testing.T, responses []routedResponse) (*httptest.Server, *[]requestRecord) {
-	t.Helper()
-	var requests []requestRecord
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		requests = append(requests, requestRecord{method: r.Method, path: r.URL.Path, body: body})
-		for _, resp := range responses {
-			if resp.method == r.Method && strings.HasPrefix(r.URL.Path, resp.pathPrefix) {
-				w.WriteHeader(resp.status)
-				_, _ = w.Write([]byte(resp.body))
-				return
-			}
-		}
-		t.Errorf("routedFake: no response matched %s %s", r.Method, r.URL.Path)
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	return srv, &requests
 }
 
 // ─── Conformance ────────────────────────────────────────────────────────────
@@ -482,8 +446,8 @@ func TestCapabilities_MaintenanceAndCooldown(t *testing.T) {
 // TestProvision_NoMaintenanceWindow: nil window means a single POST
 // /monitors call and no PATCH.
 func TestProvision_NoMaintenanceWindow(t *testing.T) {
-	srv, requests := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/monitors", status: 201, body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/monitors", Status: 201, Body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
 	})
 	defer srv.Close()
 
@@ -495,17 +459,17 @@ func TestProvision_NoMaintenanceWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if len(*requests) != 1 {
-		t.Errorf("expected 1 request without maintenance, got %d", len(*requests))
+	if len(rf.Requests()) != 1 {
+		t.Errorf("expected 1 request without maintenance, got %d", len(rf.Requests()))
 	}
 }
 
 // TestProvision_WithMaintenanceWindow: in-day window produces a PATCH
 // with HH:MM:SS UTC, today's day name, and timezone=UTC.
 func TestProvision_WithMaintenanceWindow(t *testing.T) {
-	srv, requests := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/monitors", status: 201, body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
-		{method: "PATCH", pathPrefix: "/monitors/42", status: 200, body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/monitors", Status: 201, Body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
+		{Method: "PATCH", PathPrefix: "/monitors/42", Status: 200, Body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
 	})
 	defer srv.Close()
 
@@ -524,18 +488,18 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if len(*requests) != 2 {
-		t.Fatalf("expected 2 requests (POST /monitors + PATCH /monitors/42), got %d", len(*requests))
+	if len(rf.Requests()) != 2 {
+		t.Fatalf("expected 2 requests (POST /monitors + PATCH /monitors/42), got %d", len(rf.Requests()))
 	}
-	if (*requests)[0].method != "POST" || (*requests)[0].path != "/monitors" {
-		t.Errorf("first request = %s %s, want POST /monitors", (*requests)[0].method, (*requests)[0].path)
+	if rf.Requests()[0].Method != "POST" || rf.Requests()[0].Path != "/monitors" {
+		t.Errorf("first request = %s %s, want POST /monitors", rf.Requests()[0].Method, rf.Requests()[0].Path)
 	}
-	if (*requests)[1].method != "PATCH" || (*requests)[1].path != "/monitors/42" {
-		t.Errorf("second request = %s %s, want PATCH /monitors/42", (*requests)[1].method, (*requests)[1].path)
+	if rf.Requests()[1].Method != "PATCH" || rf.Requests()[1].Path != "/monitors/42" {
+		t.Errorf("second request = %s %s, want PATCH /monitors/42", rf.Requests()[1].Method, rf.Requests()[1].Path)
 	}
 
 	var got updateMonitorRequest
-	if err := json.Unmarshal((*requests)[1].body, &got); err != nil {
+	if err := json.Unmarshal(rf.Requests()[1].Body, &got); err != nil {
 		t.Fatalf("PATCH body unmarshal: %v", err)
 	}
 	if got.MaintenanceFrom != "14:30:00" {
@@ -557,10 +521,10 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 // without also affecting the next day's same range. Adapter must reject
 // rather than silently mis-configuring.
 func TestProvision_MaintenanceCrossingMidnightRejected(t *testing.T) {
-	srv, requests := newRoutedFake(t, []routedResponse{
-		{method: "POST", pathPrefix: "/monitors", status: 201, body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
+	srv, rf := adaptertest.NewRoutedFake(t, []adaptertest.RoutedResponse{
+		{Method: "POST", PathPrefix: "/monitors", Status: 201, Body: `{"data":{"id":"42","type":"monitor","attributes":{}}}`},
 		// Rollback delete after the failed PATCH attempt.
-		{method: "DELETE", pathPrefix: "/monitors/42", status: 204, body: ``},
+		{Method: "DELETE", PathPrefix: "/monitors/42", Status: 204, Body: ``},
 	})
 	defer srv.Close()
 
@@ -584,12 +548,12 @@ func TestProvision_MaintenanceCrossingMidnightRejected(t *testing.T) {
 	}
 	// Verify rollback: monitor created → maintenance failed → monitor deleted.
 	sawDelete := false
-	for _, r := range *requests {
-		if r.method == "DELETE" && r.path == "/monitors/42" {
+	for _, r := range rf.Requests() {
+		if r.Method == "DELETE" && r.Path == "/monitors/42" {
 			sawDelete = true
 		}
 	}
 	if !sawDelete {
-		t.Errorf("expected DELETE /monitors/42 rollback after rejection; requests = %+v", *requests)
+		t.Errorf("expected DELETE /monitors/42 rollback after rejection; requests = %+v", rf.Requests())
 	}
 }
