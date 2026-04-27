@@ -1,0 +1,188 @@
+package runner_test
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Automattic/uptime-bench/internal/adapter"
+	"github.com/Automattic/uptime-bench/internal/campaign"
+	"github.com/Automattic/uptime-bench/internal/runner"
+	"github.com/Automattic/uptime-bench/internal/runner/runtest"
+)
+
+// smallCampaign builds a minimal Campaign that produces exactly one
+// design × one replay so RunCampaign tests run in well under a second.
+// Constructing the struct directly skips the parser; validation lives
+// in campaign_test.go and isn't exercised here.
+func smallCampaign(t *testing.T, pool []string, patterns []string) *campaign.Campaign {
+	t.Helper()
+	return &campaign.Campaign{
+		ID:             "rc-test",
+		Description:    "RunCampaign test",
+		Duration:       300 * time.Millisecond,
+		Seed:           1,
+		CheckFrequency: 30 * time.Second,
+		GracePeriod:    50 * time.Millisecond,
+		Targets: campaign.Targets{
+			Pool:     pool,
+			Patterns: patterns,
+		},
+		DurationBuckets: map[string]campaign.DurationBucket{
+			"brief": {Min: 50 * time.Millisecond, Max: 50 * time.Millisecond},
+		},
+		Sampling: campaign.Sampling{SamplesPerCellDefault: 1},
+		FailureTypes: []campaign.FailureType{
+			{Type: "http_status", StatusCodeChoices: []int{503}},
+		},
+	}
+}
+
+// TestRunCampaign_HappyPath drives a tiny single-replay campaign through
+// RunCampaign and verifies the audit-trail row, the per-replay
+// scenario_runs row stamped with campaign_id, and the planned_completion
+// close reason.
+func TestRunCampaign_HappyPath(t *testing.T) {
+	f := runtest.NewFixture(t)
+	f.Adapters = []adapter.Adapter{
+		&runtest.SimpleAdapter{
+			ID:            "svc-a",
+			RetrieveValue: adapter.RetrieveResult{Status: adapter.RetrieveKnown},
+		},
+	}
+
+	c := smallCampaign(t, []string{"bench"}, []string{"single"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	campaignRunID, err := runner.RunCampaign(ctx, c, c.Seed, f.Fleet, f.Recorder, f.Adapters, f.Services, runner.RunCampaignOptions{
+		ConfigTOML:         "id = \"rc-test\"\n",
+		AdapterVersions:    map[string]string{"svc-a": "abc123"},
+		TargetFleetVersion: "deadbeef",
+	})
+	if err != nil {
+		t.Fatalf("RunCampaign: %v", err)
+	}
+	if campaignRunID == "" {
+		t.Fatal("RunCampaign returned empty campaign run ID")
+	}
+
+	if len(f.Recorder.CampaignRuns) != 1 {
+		t.Fatalf("CampaignRuns = %d, want 1", len(f.Recorder.CampaignRuns))
+	}
+	cr := f.Recorder.CampaignRuns[0]
+	if cr.ID != campaignRunID {
+		t.Errorf("CampaignRuns[0].ID = %q, want %q", cr.ID, campaignRunID)
+	}
+	if cr.CampaignID != "rc-test" {
+		t.Errorf("CampaignRuns[0].CampaignID = %q, want rc-test", cr.CampaignID)
+	}
+	if cr.MasterSeed != c.Seed {
+		t.Errorf("CampaignRuns[0].MasterSeed = %d, want %d", cr.MasterSeed, c.Seed)
+	}
+	if !strings.Contains(cr.ConfigTOML, "rc-test") {
+		t.Errorf("CampaignRuns[0].ConfigTOML did not echo passed-in body: %q", cr.ConfigTOML)
+	}
+	if cr.TargetFleetVersion != "deadbeef" {
+		t.Errorf("CampaignRuns[0].TargetFleetVersion = %q", cr.TargetFleetVersion)
+	}
+
+	if f.Recorder.CloseCampaignRunCalls != 1 {
+		t.Errorf("CloseCampaignRunCalls = %d, want 1", f.Recorder.CloseCampaignRunCalls)
+	}
+	if f.Recorder.CloseCampaignRunReason != "planned_completion" {
+		t.Errorf("CloseCampaignRunReason = %q, want planned_completion", f.Recorder.CloseCampaignRunReason)
+	}
+
+	if len(f.Recorder.Runs) != 1 {
+		t.Fatalf("Runs = %d, want 1 replay row", len(f.Recorder.Runs))
+	}
+	if f.Recorder.Runs[0].CampaignID != campaignRunID {
+		t.Errorf("Runs[0].CampaignID = %q, want %q (campaign_id must be stamped on every scenario_runs row)",
+			f.Recorder.Runs[0].CampaignID, campaignRunID)
+	}
+}
+
+// TestRunCampaign_NilCampaign — RunCampaign rejects a nil campaign
+// before touching the database. No campaign_runs row should be written.
+func TestRunCampaign_NilCampaign(t *testing.T) {
+	f := runtest.NewFixture(t)
+
+	ctx := context.Background()
+	_, err := runner.RunCampaign(ctx, nil, 1, f.Fleet, f.Recorder, nil, f.Services, runner.RunCampaignOptions{})
+	if err == nil {
+		t.Fatal("RunCampaign(nil): expected error")
+	}
+	if len(f.Recorder.CampaignRuns) != 0 {
+		t.Errorf("CampaignRuns = %d, want 0 (no insert before validation)", len(f.Recorder.CampaignRuns))
+	}
+}
+
+// TestRunCampaign_ContextCancellation — when the context is cancelled
+// before the first slot fires, RunCampaign returns ctx.Err() and closes
+// the campaign row with reason="aborted". The InsertCampaignRun row
+// must still be written so the abort is visible in the audit trail.
+func TestRunCampaign_ContextCancellation(t *testing.T) {
+	f := runtest.NewFixture(t)
+	f.Adapters = []adapter.Adapter{
+		&runtest.SimpleAdapter{
+			ID:            "svc-a",
+			RetrieveValue: adapter.RetrieveResult{Status: adapter.RetrieveKnown},
+		},
+	}
+
+	c := smallCampaign(t, []string{"bench"}, []string{"single"})
+	// Long enough that the first slot offset is > 0, so the context
+	// cancellation path during the wait-loop is the one that fires.
+	c.Duration = 5 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := runner.RunCampaign(ctx, c, c.Seed, f.Fleet, f.Recorder, f.Adapters, f.Services, runner.RunCampaignOptions{})
+	if err == nil {
+		t.Fatal("RunCampaign with cancelled ctx: expected error")
+	}
+
+	if len(f.Recorder.CampaignRuns) != 1 {
+		t.Errorf("CampaignRuns = %d, want 1", len(f.Recorder.CampaignRuns))
+	}
+	if f.Recorder.CloseCampaignRunReason != "aborted" {
+		t.Errorf("CloseCampaignRunReason = %q, want aborted", f.Recorder.CloseCampaignRunReason)
+	}
+}
+
+// TestRunCampaign_MultiHostDesignSkipped — campaign generator currently
+// produces multi-host designs from "two_random" / "all" patterns. The
+// scenario format is single-host only, so ToScenario rejects them; the
+// campaign must skip the slot and continue rather than abort. Resulting
+// campaign closes as planned_completion with zero scenario_runs rows.
+func TestRunCampaign_MultiHostDesignSkipped(t *testing.T) {
+	f := runtest.NewFixture(t)
+	f.Adapters = []adapter.Adapter{
+		&runtest.SimpleAdapter{
+			ID:            "svc-a",
+			RetrieveValue: adapter.RetrieveResult{Status: adapter.RetrieveKnown},
+		},
+	}
+
+	c := smallCampaign(t, []string{"bench", "bench-other"}, []string{"two_random"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := runner.RunCampaign(ctx, c, c.Seed, f.Fleet, f.Recorder, f.Adapters, f.Services, runner.RunCampaignOptions{})
+	if err != nil {
+		t.Fatalf("RunCampaign: %v", err)
+	}
+
+	if len(f.Recorder.Runs) != 0 {
+		t.Errorf("Runs = %d, want 0 (multi-host design should be skipped)", len(f.Recorder.Runs))
+	}
+	if f.Recorder.CloseCampaignRunReason != "planned_completion" {
+		t.Errorf("CloseCampaignRunReason = %q, want planned_completion (skip is data, not failure)",
+			f.Recorder.CloseCampaignRunReason)
+	}
+}

@@ -33,6 +33,21 @@ type recorder interface {
 	InsertMonitorReport(ctx context.Context, r db.MonitorReportRow) error
 }
 
+// RunOption is a functional option for Run. Used by RunCampaign to
+// stamp campaign_run_id onto each scenario_runs row without changing
+// the public Run signature for direct (non-campaign) callers.
+type RunOption func(*runOpts)
+
+type runOpts struct {
+	campaignRunID string
+}
+
+// WithCampaignRunID stamps the given campaign_run_id on the run row so
+// downstream queries can group every replay back to its parent campaign.
+func WithCampaignRunID(id string) RunOption {
+	return func(o *runOpts) { o.campaignRunID = id }
+}
+
 // Run executes a scenario end-to-end and returns the run ID.
 //
 //  1. Provision each adapter.
@@ -48,7 +63,12 @@ type recorder interface {
 // record a failure_start / failure_end, the run is aborted with
 // resolution_reason = "ground_truth_log_failure" because metrics are
 // recomputed from the log and a missed write silently corrupts the record.
-func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database recorder, adapters []adapter.Adapter, svcCfg *serviceconfig.Config) (string, error) {
+func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database recorder, adapters []adapter.Adapter, svcCfg *serviceconfig.Config, opts ...RunOption) (string, error) {
+	var o runOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	runID := newRunID()
 	startedAt := time.Now()
 
@@ -80,6 +100,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		ScenarioVersion: sc.Version,
 		Seed:            seed,
 		TargetID:        sc.Target,
+		CampaignID:      o.campaignRunID,
 		Parameters:      params,
 		StartedAt:       startedAt,
 	}); err != nil {

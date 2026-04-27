@@ -293,11 +293,11 @@ Per (failure_type, service) statistics:
 
 ### Implementation phases
 
-1. **Campaign config format + parser** — new `internal/campaign` package mirroring `internal/scenario`. Validation rules including "every named failure_type in `high_discrimination` must appear in `[[failure_types]]`." Tests.
-2. **Pure design + schedule generator** — `(config, masterSeed) → (designs, schedule)`. Deterministic, no I/O. Heavy unit-test coverage including fixed-seed regression tests.
-3. **Schema migration for `campaign_runs`** — table creation plus a `campaign_id` foreign key on `scenario_runs`.
-4. **Runner outer loop** — `-campaign` mode flag; schedule walker; resilience to per-run errors. Reuses existing `Run()` for each replay.
-5. **Escalation support** — resolves the "replacement" pattern in the scenario format (per-failure `duration` override or new stage abstraction); generator emits multi-stage scenarios.
+1. ✅ **Campaign config format + parser** — `internal/campaign` package, parser + validator. Tests in `campaign_test.go`.
+2. ✅ **Pure design + schedule generator** — `(config, masterSeed) → (designs, schedule)`. `internal/campaign/generator.go`; deterministic, fixed-seed regression coverage in `generator_test.go` + `no_favoritism_test.go`.
+3. ✅ **Schema migration for `campaign_runs`** — `schema/003_campaign_runs.sql`; `campaign_id` FK on `scenario_runs`. `db.InsertCampaignRun` / `CloseCampaignRun` shipped.
+4. ✅ **Runner outer loop (serial)** — `runner.RunCampaign` walks `Plan.Schedule`, calls existing `Run()` per replay via `WithCampaignRunID`. Per-replay errors don't abort the campaign. Tests in `internal/runner/campaign_test.go`. **Pending: `-campaign` CLI flag in `cmd/harness`** and the metric-derivation strategy for campaign output (per-replay vs. batch at end).
+5. **Escalation support** — resolves the "replacement" pattern in the scenario format (per-failure `duration` override or new stage abstraction); generator emits multi-stage scenarios. Layered escalation already works end-to-end.
 6. **`cmd/uptime-bench-report`** — aggregation tool with the bias self-checks, statistics, and CI computation. Output flags for table / TSV / JSON.
 
 Each phase is independently mergeable. Phases 1–4 deliver the "campaigns work, no escalation" milestone — that alone produces useful comparison data.

@@ -153,21 +153,27 @@ func splitHostPort(t *testing.T, srvURL string) (string, int) {
 
 // ─── FakeRecorder ───────────────────────────────────────────────────────────
 
-// FakeRecorder satisfies the runner's unexported recorder interface
-// structurally. Tests inspect the captured rows after Run.
+// FakeRecorder satisfies the runner's unexported recorder and
+// campaignRecorder interfaces structurally. Tests inspect the captured
+// rows after Run / RunCampaign.
 type FakeRecorder struct {
-	InsertRunErr    error
-	CloseRunErr     error
-	InsertEventErr  error
-	FailEventOfType string
-	InsertReportErr error
+	InsertRunErr         error
+	CloseRunErr          error
+	InsertEventErr       error
+	FailEventOfType      string
+	InsertReportErr      error
+	InsertCampaignRunErr error
+	CloseCampaignRunErr  error
 
-	Runs                []db.RunRecord
-	GroundTruthEvents   []db.GroundTruthEvent
-	MonitorReports      []db.MonitorReportRow
-	CloseRunReason      string
-	CloseRunCalls       int
-	GroundTruthEventLog []string
+	Runs                   []db.RunRecord
+	GroundTruthEvents      []db.GroundTruthEvent
+	MonitorReports         []db.MonitorReportRow
+	CloseRunReason         string
+	CloseRunCalls          int
+	GroundTruthEventLog    []string
+	CampaignRuns           []db.CampaignRunRecord
+	CloseCampaignRunReason string
+	CloseCampaignRunCalls  int
 }
 
 func (f *FakeRecorder) InsertRun(_ context.Context, r db.RunRecord) error {
@@ -196,6 +202,17 @@ func (f *FakeRecorder) InsertGroundTruthEvent(_ context.Context, e db.GroundTrut
 func (f *FakeRecorder) InsertMonitorReport(_ context.Context, r db.MonitorReportRow) error {
 	f.MonitorReports = append(f.MonitorReports, r)
 	return f.InsertReportErr
+}
+
+func (f *FakeRecorder) InsertCampaignRun(_ context.Context, r db.CampaignRunRecord) error {
+	f.CampaignRuns = append(f.CampaignRuns, r)
+	return f.InsertCampaignRunErr
+}
+
+func (f *FakeRecorder) CloseCampaignRun(_ context.Context, _ string, _ time.Time, reason string) error {
+	f.CloseCampaignRunReason = reason
+	f.CloseCampaignRunCalls++
+	return f.CloseCampaignRunErr
 }
 
 // ─── Test adapter ───────────────────────────────────────────────────────────
