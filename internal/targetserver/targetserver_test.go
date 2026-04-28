@@ -247,6 +247,35 @@ func TestVHH_HTTPBody_Ransomware(t *testing.T) {
 	}
 }
 
+func TestVHH_HTTPBody_ContentVariants(t *testing.T) {
+	cases := []struct {
+		content string
+		marker  string
+	}{
+		{content: "error_page", marker: "Error establishing a database connection"},
+		{content: "defacement", marker: "H4CK3D"},
+		{content: "malicious_script", marker: "metrics.evil-cdn.example/collect.js"},
+		{content: "spam_links", marker: "buy cheap viagra online no prescription"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.content, func(t *testing.T) {
+			h, reg := newHandler()
+			reg.Set(control.FailureSpec{
+				Type: "http_body", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+				Params: map[string]any{"content": tc.content},
+			}, 0)
+			w := get(t, h, "site.local", "/")
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			if !strings.Contains(w.Body.String(), tc.marker) {
+				t.Fatalf("body missing marker %q: %s", tc.marker, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestVHH_HTTPBody_KeywordInjected(t *testing.T) {
 	h, reg := newHandler()
 	reg.Set(control.FailureSpec{

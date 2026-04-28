@@ -40,6 +40,29 @@ func TestEntryCoversExactAndWildcardIdentifiers(t *testing.T) {
 	}
 }
 
+func TestLibraryCoveringFiltersEntriesInManifestOrder(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	lib := Library{
+		Version: ManifestVersion,
+		Entries: []Entry{
+			entry("wildcard", now.Add(24*time.Hour), "*.bench.example.com"),
+			entry("other-host", now.Add(24*time.Hour), "*.other.example.com"),
+			entry("exact", now.Add(24*time.Hour), "target.bench.example.com"),
+		},
+	}
+
+	got := lib.Covering("TARGET.BENCH.EXAMPLE.COM:443")
+	if len(got) != 2 {
+		t.Fatalf("Covering returned %d entries, want 2: %+v", len(got), got)
+	}
+	if got[0].ID != "wildcard" || got[1].ID != "exact" {
+		t.Fatalf("Covering returned IDs %q, %q; want wildcard, exact", got[0].ID, got[1].ID)
+	}
+	if got := lib.Covering(""); got != nil {
+		t.Fatalf("Covering empty host = %+v, want nil", got)
+	}
+}
+
 func TestSelectExpiringChoosesClosestFutureCertificate(t *testing.T) {
 	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 	lib := Library{
