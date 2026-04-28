@@ -107,6 +107,91 @@ func TestCertificateSelectorUsesExpiringLibraryCertificate(t *testing.T) {
 	}
 }
 
+func TestTLSConfigSelectorServesLibraryFailureCertificatesInRealHandshake(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name         string
+		failureType  string
+		params       map[string]any
+		entries      []certlibrary.Entry
+		wantNotAfter time.Time
+	}{
+		{
+			name:        "expired",
+			failureType: "tls_expired",
+			params:      map[string]any{"days_expired": float64(30)},
+			entries: []certlibrary.Entry{
+				writeLibraryCert(t, t.TempDir(), "expired-one-day", now.Add(-1*day), "*.bench.example.com"),
+				writeLibraryCert(t, t.TempDir(), "expired-thirty-days", now.Add(-30*day), "*.bench.example.com"),
+				writeLibraryCert(t, t.TempDir(), "expired-one-year", now.Add(-365*day), "*.bench.example.com"),
+			},
+			wantNotAfter: now.Add(-30 * day),
+		},
+		{
+			name:        "expiring",
+			failureType: "tls_expiring",
+			params:      map[string]any{"days_remaining": float64(5)},
+			entries: []certlibrary.Entry{
+				writeLibraryCert(t, t.TempDir(), "expiring-five-days", now.Add(5*day), "*.bench.example.com"),
+				writeLibraryCert(t, t.TempDir(), "expiring-six-days", now.Add(6*day), "*.bench.example.com"),
+				writeLibraryCert(t, t.TempDir(), "expiring-ninety-days", now.Add(90*day), "*.bench.example.com"),
+			},
+			wantNotAfter: now.Add(5 * day),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := control.NewRegistry()
+			registry.Set(control.FailureSpec{
+				Type:     tc.failureType,
+				Host:     "target.bench.example.com",
+				Duration: time.Hour,
+				Params:   tc.params,
+			}, 1)
+			fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)
+			if err != nil {
+				t.Fatalf("SelfSignedCertificate: %v", err)
+			}
+			certSelector := &CertificateSelector{
+				Registry: registry,
+				Fallback: fallback,
+				Now:      func() time.Time { return now },
+			}
+			certSelector.SetLibrary(&certlibrary.Library{
+				Version: certlibrary.ManifestVersion,
+				Entries: tc.entries,
+			})
+			selector := &TLSConfigSelector{
+				Registry:     registry,
+				Certificates: certSelector,
+				Base: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					MaxVersion: tls.VersionTLS13,
+				},
+			}
+
+			result := runTLSHandshake(t, selector, &tls.Config{
+				ServerName:         "target.bench.example.com",
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: true,
+			})
+			if result.clientErr != nil {
+				t.Fatalf("client handshake: %v", result.clientErr)
+			}
+			if result.serverErr != nil {
+				t.Fatalf("server handshake: %v", result.serverErr)
+			}
+			if len(result.clientState.PeerCertificates) == 0 {
+				t.Fatal("client handshake did not receive a peer certificate")
+			}
+			if got := result.clientState.PeerCertificates[0].NotAfter; !got.Equal(tc.wantNotAfter) {
+				t.Fatalf("peer certificate NotAfter = %v, want %v", got, tc.wantNotAfter)
+			}
+		})
+	}
+}
+
 func TestCertificateSelectorUsesDefaultLibraryCertificateWithoutTLSFailure(t *testing.T) {
 	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()

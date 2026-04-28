@@ -130,9 +130,9 @@ The target binary now exposes an HTTPS listener with a generated self-signed fal
 
 - Pre-generate a library of certs at varying ages: fresh (90 days remaining), expiring soon (1, 5, 30 days remaining), already expired (1 day, 30 days, 1 year), self-signed by an unknown CA, signed for the wrong hostname.
 - Producer/consumer split inside the repo: `cmd/certmint` owns real Let's Encrypt/certbot issuance and writes an immutable library plus `manifest.json` (`internal/certmint/`); the target's TLS listener consumes the manifest via `internal/certlibrary/` for SNI-aware selection, with deterministic fleet-CA/self-signed fallbacks when no public cert applies. The `uptime-bench-dns` member exposes `PUT/DELETE /acme/txt` control endpoints so certmint's certbot manual hooks ([deploy/acme-hooks/](deploy/acme-hooks/)) can install DNS-01 challenge records on the same nameservers that resolve the benchmark hostnames — no Cloudflare delegation needed for the runtime domains.
-- New control API params for `tls_expired` / `tls_expiring` select a library member at activation time. `tls_invalid` still needs variant-specific selection.
+- New control API params for `tls_expired` / `tls_expiring` select a library member at activation time. `tls_invalid` supports self-signed and hostname-mismatch variants.
 - Library structure: `manifest.json` is the contract. Filenames may encode age/profile for operator readability, but the target must select by manifest metadata rather than reparsing certificates at request time.
-- Acceptance: `tls_expired days_expired=30` causes the target to serve a cert whose notAfter is 30 days in the past; an OpenSSL probe confirms.
+- Local acceptance: real in-process TLS handshakes confirm `tls_expired days_expired=30` and `tls_expiring days_remaining=5` serve the matching library certificate. Remaining external acceptance should repeat this with OpenSSL/probe tooling against a real cert library.
 
 ### Phase 3 — TLS protocol-level injection
 

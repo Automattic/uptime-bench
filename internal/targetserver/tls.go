@@ -256,8 +256,8 @@ func loadLibraryCertificate(entry certlibrary.Entry) (*tls.Certificate, error) {
 }
 
 // SelfSignedCertificate returns a default TLS server certificate for the
-// target's HTTPS listener. It is intentionally only the Phase 1 fallback:
-// tls_expired/tls_expiring scenarios will later select real library certs.
+// target's HTTPS listener. Library-backed TLS failures override it when a
+// matching manifest entry is configured for the requested SNI host.
 func SelfSignedCertificate(hosts []string, now time.Time) (tls.Certificate, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
