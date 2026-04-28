@@ -1,0 +1,51 @@
+name: Probe IP Refresh
+
+on:
+  schedule:
+    - cron: "21 10 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: probe-ips-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    name: Generate probe range review PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate probe range fragment
+        run: |
+          mkdir -p generated
+          go run ./cmd/probe-ips-refresh > generated/probe-ranges.toml
+
+      - name: Write pull request body
+        run: |
+          cat > /tmp/probe-ips-refresh-body.md <<'EOF'
+          Weekly probe IP refresh generated a review fragment at `generated/probe-ranges.toml`.
+
+          Review the warnings in the file, compare the ranges against vendor documentation, then merge the relevant `[services.probe_ranges]` changes into your runtime `services.toml` by hand.
+
+          This PR intentionally does not edit `services.example.toml` or any deployment config because vendor feeds can rename regions, add IPv6-only ranges, or drop probes in ways that need operator review.
+          EOF
+
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          branch: automation/probe-ip-refresh
+          delete-branch: true
+          commit-message: "probeips: refresh generated ranges"
+          title: "probeips: refresh generated ranges"
+          body-path: /tmp/probe-ips-refresh-body.md
+          add-paths: generated/probe-ranges.toml

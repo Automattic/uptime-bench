@@ -71,6 +71,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## Operations, testing, and hardening
 
 - **Fleet provisioning and deploy flow** — scripts create config skeletons, install systemd units, handle DNS port conflicts, deploy binaries, and cover target, DNS, harness, and certmint roles.
+- **Probe IP refresh automation** — `cmd/probe-ips-refresh` generates reviewable probe-range fragments, and a weekly GitHub Action opens a PR with the latest generated fragment for operator review.
 - **Regression coverage** — tests cover parsers, runner error handling, adapter factories, DNS handlers, target handlers, cert selection, campaign anti-favoritism, reporting, and live-test compilation.
 - **CI checks** — build, vet, live-test compilation, race testing, and formatting/tidiness checks are represented in the project workflow.
 
@@ -456,7 +457,7 @@ This and "Maintenance window suppression" should be designed together — they'r
 
 ## Probe IP CIDR refresh tool
 
-**Status:** MVP implemented. `cmd/probe-ips-refresh` fetches public vendor probe lists, normalizes IPs/CIDRs, and emits a reviewable TOML fragment. Manual review is still required for vendor feeds that lack stable regional metadata.
+**Status:** MVP implemented. `cmd/probe-ips-refresh` fetches public vendor probe lists, normalizes IPs/CIDRs, and emits a reviewable TOML fragment. A weekly GitHub Action opens a PR with the latest generated fragment. Manual review is still required for vendor feeds that lack stable regional metadata.
 
 `services.toml`'s `[services.probe_ranges]` blocks list per-region CIDRs for each vendor's published probe pool. Vendors update these lists periodically. Each vendor publishes (or doesn't) in machine-readable form:
 
@@ -478,7 +479,7 @@ This and "Maintenance window suppression" should be designed together — they'r
 - UptimeRobot doesn't tag regions. Maintain a hand-edited `internal/probeips/uptimerobot_regions.json` that maps IP prefixes to regions; the tool warns when a new IP doesn't fall in any known prefix. Keep this file in the repo so updates are visible in PRs.
 - Better Uptime publishes IPs in HTML prose with broad region annotations; the tool parses the current FAQ page best-effort and warns that mappings need review.
 
-**Remaining:** seed the UptimeRobot region map with verified prefixes, decide whether Pingdom should stay `global` or use a separate curated map, and add the weekly GitHub Action that opens a PR with the diff.
+**Remaining:** seed the UptimeRobot region map with verified prefixes and decide whether Pingdom should stay `global` or use a separate curated map.
 
 ---
 
