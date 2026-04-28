@@ -170,6 +170,70 @@ func TestRunCampaign_GatesAdaptersWithoutCooldownReset(t *testing.T) {
 	}
 }
 
+func TestRunCampaignRejectsScheduleOverBudget(t *testing.T) {
+	f := runtest.NewFixture(t)
+	f.Adapters = []adapter.Adapter{
+		&runtest.SimpleAdapter{
+			ID:            "svc-a",
+			Caps:          adapter.Capabilities{SupportsCooldownReset: true},
+			RetrieveValue: adapter.RetrieveResult{Status: adapter.RetrieveKnown},
+		},
+	}
+
+	c := smallCampaign(t, []string{"bench"}, []string{"single"})
+	c.Sampling.SamplesPerCellDefault = 2
+	c.Budget = map[string]campaign.ServiceBudget{
+		"svc-a": {MaxRunsPerHour: 1},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := runner.RunCampaign(ctx, c, c.Seed, f.Fleet, f.Recorder, f.Adapters, f.Services, runner.RunCampaignOptions{})
+	if err == nil {
+		t.Fatal("RunCampaign: expected budget error, got nil")
+	}
+	if !strings.Contains(err.Error(), "budget for svc-a exceeded") {
+		t.Fatalf("RunCampaign error = %v, want svc-a budget detail", err)
+	}
+	if len(f.Recorder.CampaignRuns) != 0 {
+		t.Fatalf("CampaignRuns = %d, want 0 (budget failure should happen before audit row insert)", len(f.Recorder.CampaignRuns))
+	}
+	if len(f.Recorder.Runs) != 0 {
+		t.Fatalf("Runs = %d, want 0 (budget failure should happen before replay execution)", len(f.Recorder.Runs))
+	}
+}
+
+func TestRunCampaignAllowsUnlimitedBudget(t *testing.T) {
+	f := runtest.NewFixture(t)
+	f.Adapters = []adapter.Adapter{
+		&runtest.SimpleAdapter{
+			ID:            "svc-a",
+			Caps:          adapter.Capabilities{SupportsCooldownReset: true},
+			RetrieveValue: adapter.RetrieveResult{Status: adapter.RetrieveKnown},
+		},
+	}
+
+	c := smallCampaign(t, []string{"bench"}, []string{"single"})
+	c.Sampling.SamplesPerCellDefault = 2
+	c.Budget = map[string]campaign.ServiceBudget{
+		"svc-a": {MaxRunsPerHour: 0},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := runner.RunCampaign(ctx, c, c.Seed, f.Fleet, f.Recorder, f.Adapters, f.Services, runner.RunCampaignOptions{}); err != nil {
+		t.Fatalf("RunCampaign: %v", err)
+	}
+	if len(f.Recorder.CampaignRuns) != 1 {
+		t.Fatalf("CampaignRuns = %d, want 1", len(f.Recorder.CampaignRuns))
+	}
+	if len(f.Recorder.Runs) != 2 {
+		t.Fatalf("Runs = %d, want 2 replay rows", len(f.Recorder.Runs))
+	}
+}
+
 // TestRunCampaign_NilCampaign — RunCampaign rejects a nil campaign
 // before touching the database. No campaign_runs row should be written.
 func TestRunCampaign_NilCampaign(t *testing.T) {

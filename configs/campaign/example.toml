@@ -71,10 +71,10 @@ inter_stage_range = { min = "30s", max = "90s" }
 patterns          = ["layered", "replacement", "recovery"]
 
 [budget]
-pingdom            = { max_runs_per_hour = 10 }
-uptimerobot        = { max_runs_per_hour = 1 }
-datadog-synthetics = { max_runs_per_hour = 30 }
-better-uptime      = { max_runs_per_hour = 5 }
+pingdom            = { max_runs_per_hour = 12 }
+uptimerobot        = { max_runs_per_hour = 12 }
+datadog-synthetics = { max_runs_per_hour = 12 }
+better-uptime      = { max_runs_per_hour = 12 }
 jetmon-v2          = {}
 
 [cooldown]

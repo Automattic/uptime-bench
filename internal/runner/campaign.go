@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
@@ -83,6 +84,9 @@ func RunCampaign(
 	plan, err := campaign.Generate(c, masterSeed)
 	if err != nil {
 		return "", fmt.Errorf("runner: RunCampaign: %w", err)
+	}
+	if err := validateCampaignBudgets(c, plan, adapters); err != nil {
+		return "", err
 	}
 
 	campaignRunID := newRunID()
@@ -207,4 +211,53 @@ func mixedContentEscalationCount(designs []campaign.Design) int {
 		}
 	}
 	return count
+}
+
+func validateCampaignBudgets(c *campaign.Campaign, plan *campaign.Plan, adapters []adapter.Adapter) error {
+	if c == nil || plan == nil || len(c.Budget) == 0 {
+		return nil
+	}
+	if len(plan.Schedule) == 0 {
+		return nil
+	}
+	maxStarts := maxReplayStartsInWindow(plan.Schedule, time.Hour)
+	for _, a := range adapters {
+		budget, ok := c.Budget[a.ServiceID()]
+		if !ok || budget.MaxRunsPerHour == 0 {
+			continue
+		}
+		if maxStarts > budget.MaxRunsPerHour {
+			return fmt.Errorf("runner: RunCampaign: budget for %s exceeded by generated schedule: max %d replay(s) in a rolling hour, budget %d; increase campaign duration, reduce sample counts, or exclude the service from this campaign",
+				a.ServiceID(), maxStarts, budget.MaxRunsPerHour)
+		}
+	}
+	return nil
+}
+
+func maxReplayStartsInWindow(slots []campaign.ReplaySlot, window time.Duration) int {
+	if len(slots) == 0 {
+		return 0
+	}
+	offsets := make([]time.Duration, 0, len(slots))
+	for _, slot := range slots {
+		offsets = append(offsets, slot.Offset)
+	}
+	sort.Slice(offsets, func(i, j int) bool {
+		return offsets[i] < offsets[j]
+	})
+
+	maxCount := 0
+	end := 0
+	for start, offset := range offsets {
+		if end < start {
+			end = start
+		}
+		for end < len(offsets) && offsets[end]-offset < window {
+			end++
+		}
+		if count := end - start; count > maxCount {
+			maxCount = count
+		}
+	}
+	return maxCount
 }
