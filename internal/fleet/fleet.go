@@ -16,6 +16,39 @@ type Config struct {
 	Nameservers []Nameserver
 	Targets     []Target
 	Domains     []Domain
+	Certmint    *Certmint
+}
+
+// Certmint locates the cert-library producer for the fleet. It is
+// optional: a fleet without a certmint endpoint serves only fleet-CA
+// / generated certs and cannot run real-cert TLS expiration scenarios.
+//
+// The harness reads this section and forwards LibraryURL to targets
+// at provision time so each target's TLS listener can poll certmint
+// for new entries. The token file matches the rest of the control
+// plane — same shared secret as harness/dns/target.
+type Certmint struct {
+	// ID is the fleet member ID (e.g. "certmint-01").
+	ID string
+	// Address is the host the certmint daemon listens on.
+	Address string
+	// LibraryPort is the port serving the cert-library HTTP API
+	// targets poll for manifest + cert files. Default 9200.
+	LibraryPort int
+}
+
+// LibraryURL returns the base URL targets should poll for the cert
+// library, derived from Address + LibraryPort. Returns "" when no
+// Certmint is configured.
+func (c *Certmint) LibraryURL() string {
+	if c == nil || c.Address == "" {
+		return ""
+	}
+	port := c.LibraryPort
+	if port == 0 {
+		port = 9200
+	}
+	return fmt.Sprintf("http://%s:%d", c.Address, port)
 }
 
 type ControlConfig struct {
@@ -164,6 +197,20 @@ func convert(r rawConfig) (*Config, error) {
 		})
 	}
 
+	if r.Certmint != nil {
+		if r.Certmint.ID == "" {
+			return nil, fmt.Errorf("fleet: certmint.id is required")
+		}
+		if r.Certmint.Address == "" {
+			return nil, fmt.Errorf("fleet: certmint %q: address is required", r.Certmint.ID)
+		}
+		c.Certmint = &Certmint{
+			ID:          r.Certmint.ID,
+			Address:     r.Certmint.Address,
+			LibraryPort: r.Certmint.LibraryPort,
+		}
+	}
+
 	return c, nil
 }
 
@@ -175,6 +222,13 @@ type rawConfig struct {
 	Nameservers []rawNameserver       `toml:"nameservers"`
 	Targets     []rawTarget           `toml:"targets"`
 	Domains     []rawDomain           `toml:"domains"`
+	Certmint    *rawCertmint          `toml:"certmint"`
+}
+
+type rawCertmint struct {
+	ID          string `toml:"id"`
+	Address     string `toml:"address"`
+	LibraryPort int    `toml:"library_port"`
 }
 
 type rawControl struct {

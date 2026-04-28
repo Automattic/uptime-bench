@@ -138,3 +138,20 @@ name        = "probe.example.net"
 registrar   = "Namecheap"
 nameservers = ["ns-01", "ns-02"]
 ttl         = 30
+
+# ---------------------------------------------------------------------------
+# Certmint
+# ---------------------------------------------------------------------------
+# The certificate-library producer. Optional: a fleet without certmint can
+# still run scenarios that don't need real-CA TLS expiration coverage,
+# falling back to fleet-CA / generated certs.
+#
+# When configured, the harness reads this section and forwards the
+# library URL to targets at provision time so each target's TLS listener
+# polls certmint for new manifest entries. The same shared CONTROL_TOKEN
+# used elsewhere in the fleet authenticates the polling.
+
+[certmint]
+id           = "certmint-01"
+address      = "203.0.113.30"
+library_port = 9200

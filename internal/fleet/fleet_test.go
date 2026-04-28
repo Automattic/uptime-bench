@@ -119,6 +119,81 @@ domains = ["example.com"]
 	}
 }
 
+func TestParse_CertmintRoundTrip(t *testing.T) {
+	in := `
+[control]
+auth_token_file = "/tmp/tok"
+
+[certmint]
+id           = "certmint-01"
+address      = "10.0.0.30"
+library_port = 9200
+`
+	cfg, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Certmint == nil {
+		t.Fatal("Certmint = nil, want populated")
+	}
+	if cfg.Certmint.ID != "certmint-01" {
+		t.Fatalf("ID = %q", cfg.Certmint.ID)
+	}
+	if got := cfg.Certmint.LibraryURL(); got != "http://10.0.0.30:9200" {
+		t.Fatalf("LibraryURL = %q", got)
+	}
+}
+
+func TestParse_CertmintOptional(t *testing.T) {
+	in := `
+[control]
+auth_token_file = "/tmp/tok"
+`
+	cfg, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Certmint != nil {
+		t.Fatalf("Certmint = %+v, want nil when section omitted", cfg.Certmint)
+	}
+	// Methods on nil should be safe — used in code paths that
+	// branch on whether certmint is configured.
+	if cfg.Certmint.LibraryURL() != "" {
+		t.Fatal("nil Certmint.LibraryURL() should return empty string")
+	}
+}
+
+func TestParse_CertmintRequiresIDAndAddress(t *testing.T) {
+	missingID := `
+[control]
+auth_token_file = "/tmp/tok"
+
+[certmint]
+address = "10.0.0.30"
+`
+	if _, err := Parse([]byte(missingID)); err == nil || !strings.Contains(err.Error(), "certmint.id") {
+		t.Fatalf("missing id err = %v", err)
+	}
+
+	missingAddr := `
+[control]
+auth_token_file = "/tmp/tok"
+
+[certmint]
+id = "certmint-01"
+`
+	if _, err := Parse([]byte(missingAddr)); err == nil || !strings.Contains(err.Error(), "address is required") {
+		t.Fatalf("missing address err = %v", err)
+	}
+}
+
+func TestCertmint_LibraryURLDefaultsPort(t *testing.T) {
+	c := &Certmint{ID: "x", Address: "10.0.0.30"}
+	if got := c.LibraryURL(); got != "http://10.0.0.30:9200" {
+		t.Fatalf("LibraryURL = %q, want default port 9200", got)
+	}
+}
+
 func TestParse_DefaultControlTimeout(t *testing.T) {
 	in := `
 [control]
