@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -29,6 +30,33 @@ func TestRegistry_KnownTypes(t *testing.T) {
 		if !known {
 			t.Errorf("registry has unexpected entry %q — update TestRegistry_KnownTypes if intended", typ)
 		}
+	}
+}
+
+func TestParseMonitorOverride(t *testing.T) {
+	got, err := parseMonitorOverride("jetmon-v2, pingdom")
+	if err != nil {
+		t.Fatalf("parseMonitorOverride: %v", err)
+	}
+	want := []string{"jetmon-v2", "pingdom"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseMonitorOverride = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseMonitorOverrideRejectsInvalidLists(t *testing.T) {
+	cases := []string{
+		"",
+		"jetmon-v2,",
+		"jetmon-v2,,pingdom",
+		"jetmon-v2, jetmon-v2",
+	}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := parseMonitorOverride(raw); err == nil {
+				t.Fatal("expected error")
+			}
+		})
 	}
 }
 

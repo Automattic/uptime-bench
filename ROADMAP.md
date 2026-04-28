@@ -3,8 +3,8 @@
 Deferred features that are intentionally not yet implemented. Items below the active line are accommodated in the schema and data model so they can be added without breaking changes — but the implementation work is deferred. Items above the line are next-up. The completed section summarizes major shipped capabilities from the commit history so the roadmap shows how the current shape of the system came together.
 
 **Active priorities (next-up, in rough order):**
-1. [Jetmon v2 deployed scenario smoke](#jetmon-v2-deployed-scenario-smoke)
-2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
+1. [Jetmon v2 deployed scenario smoke](#jetmon-v2-deployed-scenario-smoke) — blocked on a current token and runner-to-API reachability.
+2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs) — next implementable work while Jetmon v2 smoke is blocked.
 3. [TLS monitor-facing validation](#tls-monitor-facing-validation)
 4. [Live maintenance-window validation](#live-maintenance-window-validation)
 5. [Campaign hardening dry run](#campaign-hardening-dry-run)
@@ -78,6 +78,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 - **Fleet provisioning and deploy flow** — scripts create config skeletons, install systemd units, handle DNS port conflicts, deploy binaries, and cover target, DNS, harness, and certmint roles.
 - **Deployed fleet smoke tooling** — `deploy/target-smoke.sh` and `deploy/dns-smoke.sh` exercise target HTTP/TCP/TLS injection and DNS-member injection through the real deployed control APIs, including cleanup checks that fail if active failures remain.
+- **Adapter smoke ergonomics** — the harness supports a `-monitors` override for single-scenario runs, so operators can reuse the checked-in scenario corpus against a specific adapter without creating temporary scenario copies.
 - **Probe IP refresh automation** — `cmd/probe-ips-refresh` generates reviewable probe-range fragments, `make refresh-probe-ips` gives operators a local review command, and a weekly GitHub Action opens a PR with the latest generated fragment for operator review.
 - **Regression coverage** — tests cover parsers, runner error handling, adapter factories, DNS handlers, target handlers, cert selection, campaign anti-favoritism, reporting, and live-test compilation.
 - **CI checks** — build, vet, live-test compilation, race testing, and formatting/tidiness checks are represented in the project workflow.
@@ -88,7 +89,16 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 ## Jetmon v2 deployed scenario smoke
 
-**Status:** Next. Direct deployed target/DNS smoke passed on 2026-04-28; the next proof point is the full harness path against Jetmon v2.
+**Status:** Blocked. Direct deployed target/DNS smoke passed on 2026-04-28; the full harness path against Jetmon v2 is still the next proof point, but the first deployed attempt exposed two prerequisites rather than a product result.
+
+Attempted on 2026-04-28:
+
+- The deployed harness binary was stale and could not parse `http_method_status`; redeploying the current harness fixed that parser gap.
+- The deployed harness did not have a configured Jetmon v2 `url` / token in `/etc/uptime-bench/services.toml`.
+- The deployed harness could not reach the developer Jetmon v2 API at the private test address, while the local workstation could reach `/health`.
+- The previously supplied Jetmon v2 tokens returned 401 from `/api/v1/me`, so local smoke could not provision a site. The partial run deactivated the target failure normally and the target control registry was clean afterward.
+
+Resume this item when the runner host has a reachable Jetmon v2 API URL and a current write-scope token. The harness now supports `-monitors=jetmon-v2`, so the checked-in scenario corpus can be reused for Jetmon v2 smoke without creating temporary scenario copies.
 
 Run a small monitor-facing scenario set through the real deployed fleet and the Jetmon v2 adapter before broadening to cross-vendor campaigns. This should validate the complete loop: harness provisioning, Jetmon v2 API calls, monitor behavior against injected target failures, retrieval, metric derivation, cleanup, and no remaining active fleet failures.
 
@@ -500,7 +510,7 @@ Most monitors suppress repeated alerts for the same site within a cooldown windo
 - *Datadog Synthetics* — delete/recreate cycles the synthetic test and attached monitor state; `SupportsCooldownReset = true`.
 - *Better Uptime* — delete/recreate cycles monitor and incident state; `SupportsCooldownReset = true`.
 - *Jetmon v2* — adapter provisions sites with `alert_cooldown_minutes = 0`; `SupportsCooldownReset = true`.
-- *Jetmon v1* — still needs bridge/API support; campaign runs gate it as `capability_mismatch`.
+- *Jetmon v1* — still needs bridge/API support; campaign runs gate it as `capability_mismatch`. The bridge should expose an explicit alert-state reset path, or document that delete/reactivate clears Jetmon's cooldown fields, before the adapter claims `SupportsCooldownReset = true`.
 
 Each adapter must document how it handles this in its implementation notes.
 

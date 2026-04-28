@@ -400,6 +400,15 @@ JETMON_V2_TARGET_URL=http://example.com/ \
 go test -tags live -run Live ./internal/adapter/jetmonv2/ -v
 ```
 
+Before a monitor-facing smoke run, verify the API from the host that will run the harness, not just from your workstation:
+
+```sh
+curl -fsS http://jetmon-host:8081/api/v1/health
+curl -fsS -H "Authorization: Bearer ${JETMON_V2_TOKEN}" http://jetmon-host:8081/api/v1/me
+```
+
+The second command should return token metadata. A 401 means the token is stale or has the wrong scope; a timeout means the harness host cannot reach the API and the scenario smoke should not start yet.
+
 ---
 
 ## Step 8 — Deploy binaries
@@ -473,6 +482,19 @@ sudo -u uptime-bench bash -c '
     -fleet=/etc/uptime-bench/fleet.toml \
     -services=/etc/uptime-bench/services.toml \
     -scenario=/tmp/http-503.toml
+'
+```
+
+Use `-monitors` for adapter smoke runs where the scenario file is otherwise correct but its checked-in `monitors` list targets a different service:
+
+```sh
+sudo -u uptime-bench bash -c '
+  set -a; . /etc/uptime-bench/harness.env; set +a
+  exec /usr/local/bin/uptime-bench-harness \
+    -fleet=/etc/uptime-bench/fleet.toml \
+    -services=/etc/uptime-bench/services.toml \
+    -scenario=/tmp/http-head-405-get-200.toml \
+    -monitors=jetmon-v2
 '
 ```
 

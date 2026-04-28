@@ -101,11 +101,15 @@ func main() {
 	servicesPath := flag.String("services", "services.toml", "path to services configuration file")
 	scenarioPath := flag.String("scenario", "", "path to scenario TOML file to run")
 	campaignPath := flag.String("campaign", "", "path to campaign TOML file to run")
+	monitorOverride := flag.String("monitors", "", "comma-separated monitor IDs to use for a scenario run (overrides scenario monitors)")
 	dsnFlag := flag.String("dsn", "", "MySQL DSN (overrides DB_DSN env var)")
 	flag.Parse()
 
 	if (*scenarioPath == "") == (*campaignPath == "") {
 		log.Fatal("harness: set exactly one of -scenario or -campaign")
+	}
+	if *campaignPath != "" && strings.TrimSpace(*monitorOverride) != "" {
+		log.Fatal("harness: -monitors is only valid with -scenario")
 	}
 
 	fl, err := fleet.Load(*fleetPath)
@@ -138,6 +142,14 @@ func main() {
 		sc, err = scenario.Parse(scData)
 		if err != nil {
 			log.Fatalf("harness: scenario: parse: %v", err)
+		}
+		if strings.TrimSpace(*monitorOverride) != "" {
+			monitors, err := parseMonitorOverride(*monitorOverride)
+			if err != nil {
+				log.Fatalf("harness: monitors: %v", err)
+			}
+			sc.Monitors = monitors
+			log.Printf("harness: scenario monitors overridden: %s", strings.Join(monitors, ","))
 		}
 		log.Printf("harness: scenario loaded: %s v%s", sc.ID, sc.Version)
 	} else {
@@ -224,6 +236,24 @@ func main() {
 		os.Exit(1)
 	}
 	log.Println("harness: done")
+}
+
+func parseMonitorOverride(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	monitors := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		id := strings.TrimSpace(part)
+		if id == "" {
+			return nil, fmt.Errorf("empty monitor id in %q", raw)
+		}
+		if _, ok := seen[id]; ok {
+			return nil, fmt.Errorf("duplicate monitor id %q", id)
+		}
+		seen[id] = struct{}{}
+		monitors = append(monitors, id)
+	}
+	return monitors, nil
 }
 
 func adaptersForScenario(svcCfg *serviceconfig.Config, monitorIDs []string) ([]adapter.Adapter, error) {

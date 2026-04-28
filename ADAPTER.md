@@ -315,7 +315,7 @@ Many monitoring services suppress repeated alerts for the same monitor within a 
 
 **`Deprovision` should clear cooldown state.** If the service API supports resetting alert state (e.g., acknowledging an incident, toggling the monitor off and on), do so in `Deprovision`. If the API does not support this, delete and recreate the monitor — the cost of reprovisioning is acceptable to ensure clean state between runs.
 
-**If neither is possible:** record the monitor's current alert state at the start of `Retrieve`. If the service reports that an alert is currently suppressed, include `"alert_suppressed": true` in `MonitorReport.Metadata`. The measurement engine will distinguish this from a genuine missed detection.
+**If neither is possible:** record the monitor's current alert state at the start of `Retrieve`. If the service reports that an alert is currently suppressed, include `"cooldown_state": "suppressed"` in `MonitorReport.Metadata`; if reset state is ambiguous, include `"cooldown_state": "uncertain"` or `"cooldown_reset_failed": true`. Add `"cooldown_explanation"` when the service returns a useful reason. The measurement engine will distinguish these rows from genuine missed detections.
 
 ### Per-component timing breakdown
 

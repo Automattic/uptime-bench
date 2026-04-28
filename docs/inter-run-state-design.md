@@ -34,7 +34,7 @@ This table is the load-bearing reference. Each entry below was verified against 
 | UptimeRobot | No traditional cooldown — every state change emits a notification per docs/community reports. Adapter already delete-recreates each run. | **No additional work needed.** Set `SupportsCooldownReset = true` because deletion is the reset mechanism. |
 | Datadog Synthetics | Synthetic test is delete-recreated each run (current adapter behaviour). The attached monitor goes with it. | **No additional work needed.** |
 | Better Uptime | Monitor is delete-recreated each run (current adapter behaviour). Any incident state from the prior monitor doesn't transfer. | **No additional work needed.** |
-| Jetmon (self-hosted) | Direct DB access via the bridge; trivial to add a `clear_alert_state` endpoint. Currently the adapter (in write mode) creates/reactivates rows; would need bridge-side support to also clear `last_alert_at` or equivalent. | Implement alongside maintenance window bridge changes. |
+| Jetmon v1 (self-hosted) | Direct DB access via the bridge; add an explicit alert-state reset endpoint before uptime-bench claims cooldown reset support. The endpoint should clear the fields Jetmon uses to suppress repeated alerts for a monitor, such as `last_alert_at` or the equivalent incident/cooldown marker. The uptime-bench adapter should not infer reset support from `DELETE /monitors` until the bridge documents that delete/reactivate clears that state. | Implement alongside maintenance window bridge changes. |
 
 **Implication:** all four probe-based adapters get cooldown reset essentially for free because they already delete+recreate per run. `SupportsCooldownReset = true` is the default for the four; Jetmon v2 disables alert cooldown at provision time; Jetmon v1 still needs bridge work to claim it. Campaign replays now enforce this flag and record `capability_mismatch` rows for adapters that cannot guarantee clean alert state.
 
@@ -177,7 +177,7 @@ For each adapter:
 2. **Datadog Synthetics** — `/api/v1/downtime` is well-documented but requires a one-time live experiment to learn how to get the monitor_id from a freshly-created synthetic test (the docs don't pin it down). Once that's known, straightforward.
 3. **Better Uptime** — formerly assumed to lack a maintenance API; **research surfaced it**. The recurring-day-with-HH:MM:SS model is awkward but workable. Adapter must convert absolute window times to today's HH:MM:SS + today's day name, and reset the maintenance fields on Deprovision to avoid the recurrence applying tomorrow.
 4. **UptimeRobot** — three-call provision flow (`newMonitor` → `newMWindow` → `editMonitor`) makes this the most expensive in API calls per run. Free-tier 10-req/min budget is tight but workable. Plus the `value` / `start_time` fields needed spec-level corrections (see table above).
-5. **Jetmon** — requires bridge changes. Schedule alongside the next bridge release.
+5. **Jetmon v1** — requires bridge changes. Schedule alongside the next bridge release, then update `internal/adapter/jetmonv1` to call the bridge reset path during `Deprovision` and set `SupportsCooldownReset = true` only after live reset behavior is verified.
 
 ### Phase C — measurement engine extensions
 
