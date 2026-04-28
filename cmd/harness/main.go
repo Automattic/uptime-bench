@@ -89,7 +89,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("harness: fleet: %v", err)
 	}
-	log.Printf("harness: fleet loaded (%d targets, %d nameservers)", len(fl.Targets), len(fl.Nameservers))
+	certmintLabel := "none"
+	if url := fl.Certmint.LibraryURL(); url != "" {
+		certmintLabel = url
+	}
+	log.Printf("harness: fleet loaded (%d targets, %d nameservers, certmint=%s)", len(fl.Targets), len(fl.Nameservers), certmintLabel)
 
 	var sc *scenario.Scenario
 	var c *campaign.Campaign
