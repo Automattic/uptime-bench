@@ -145,6 +145,72 @@ func writeCommandConfig(t *testing.T, dir string) string {
 	return path
 }
 
+// TestLoadFleetEnv_DerivesDNSControlURLs — the integration point with
+// fleet.toml. Operators don't hand-edit DNS topology into certmint.env;
+// it falls out of [[nameservers]] in fleet.toml automatically.
+func TestLoadFleetEnv_DerivesDNSControlURLs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fleet.toml")
+	contents := `
+[control]
+auth_token_file = "/tmp/tok"
+
+[[nameservers]]
+id           = "ns-01"
+address      = "10.0.0.10"
+control_port = 9100
+
+[[nameservers]]
+id           = "ns-02"
+address      = "10.0.0.11"
+control_port = 9100
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env, err := loadFleetEnv(path)
+	if err != nil {
+		t.Fatalf("loadFleetEnv: %v", err)
+	}
+	if len(env) != 1 {
+		t.Fatalf("env = %v, want one entry", env)
+	}
+	want := "UPTIME_BENCH_DNS_CONTROL_URLS=http://10.0.0.10:9100 http://10.0.0.11:9100"
+	if env[0] != want {
+		t.Fatalf("env[0] = %q, want %q", env[0], want)
+	}
+}
+
+// TestLoadFleetEnv_EmptyPathOptsOut — leaving -fleet unset is the
+// "no integration" path; certmint should not error.
+func TestLoadFleetEnv_EmptyPathOptsOut(t *testing.T) {
+	env, err := loadFleetEnv("")
+	if err != nil {
+		t.Fatalf("loadFleetEnv: %v", err)
+	}
+	if env != nil {
+		t.Fatalf("env = %v, want nil for empty path", env)
+	}
+}
+
+// TestLoadFleetEnv_ErrorsWhenFleetHasNoNameservers — guards a
+// confusing failure mode where the operator pointed at the wrong
+// fleet.toml. Certbot would silently inherit no DNS URL and the
+// hooks would fail with a less-helpful message.
+func TestLoadFleetEnv_ErrorsWhenFleetHasNoNameservers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fleet.toml")
+	if err := os.WriteFile(path, []byte(`[control]
+auth_token_file = "/tmp/tok"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFleetEnv(path); err == nil || !strings.Contains(err.Error(), "no [[nameservers]]") {
+		t.Fatalf("err = %v, want one mentioning no [[nameservers]]", err)
+	}
+}
+
 // TestWaitForQuietPeriod_FirstOrderHasNoDelay — when no prior order
 // for the domain has been recorded (zero-value lastDone), the wait
 // should return immediately regardless of quiet duration.

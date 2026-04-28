@@ -10,7 +10,9 @@ Type=simple
 # Config file lives next to the rest of the fleet's config files; env file
 # carries CONTROL_TOKEN (shared with the rest of the fleet) plus
 # UPTIME_BENCH_DNS_CONTROL_URLS for the certbot manual hooks.
-ExecStart=/usr/local/bin/uptime-bench-certmint daemon -config /etc/uptime-bench/certmint.json
+ExecStart=/usr/local/bin/uptime-bench-certmint daemon \
+    -config /etc/uptime-bench/certmint.json \
+    -fleet  /etc/uptime-bench/fleet.toml
 EnvironmentFile=/etc/uptime-bench/certmint.env
 
 Restart=always

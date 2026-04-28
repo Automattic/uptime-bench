@@ -106,8 +106,9 @@ scp $SCP_OPTS \
 
 # Upload example config files for the roles that consume them.
 # Harness reads both; DNS reads fleet.toml for zone records; target needs neither.
-# Certmint has its own JSON config example.
-if [[ "$TYPE" == "harness" || "$TYPE" == "dns" ]]; then
+# Certmint reads fleet.toml at run time to derive DNS control URLs for the
+# certbot manual hooks, so it gets a copy too.
+if [[ "$TYPE" == "harness" || "$TYPE" == "dns" || "$TYPE" == "certmint" ]]; then
     section "Uploading fleet.example.toml"
     scp $SCP_OPTS \
         "${REPO_ROOT}/fleet.example.toml" \

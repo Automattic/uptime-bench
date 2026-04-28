@@ -16,13 +16,20 @@ the order finishes.
 
 Both hooks read:
 
-| Variable                          | Purpose                                                                 |
-|-----------------------------------|-------------------------------------------------------------------------|
-| `UPTIME_BENCH_DNS_CONTROL_URLS`   | Space-separated control base URLs, e.g. `http://dns-01.bench:9100 http://dns-02.bench:9100`. |
-| `UPTIME_BENCH_CONTROL_TOKEN`      | Bearer token configured on the DNS members.                             |
+| Variable                        | Purpose                                                                                          | Source                                                            |
+|---------------------------------|--------------------------------------------------------------------------------------------------|-------------------------------------------------------------------|
+| `UPTIME_BENCH_DNS_CONTROL_URLS` | Space-separated control base URLs, e.g. `http://dns-01.bench:9100 http://dns-02.bench:9100`.     | Set by `cmd/certmint` from `[[nameservers]]` in `fleet.toml`.     |
+| `CONTROL_TOKEN`                 | Bearer token configured on the DNS members.                                                      | Read from `/etc/uptime-bench/certmint.env` via `EnvironmentFile=`. |
 
 Certbot itself populates `CERTBOT_IDENTIFIER`, `CERTBOT_VALIDATION`, and
 the other `CERTBOT_*` variables.
+
+The `UPTIME_BENCH_DNS_CONTROL_URLS` value isn't carried in
+`certmint.env` — `cmd/certmint` derives it from `fleet.toml` at run
+time and injects it into the certbot child process's environment, so
+DNS topology lives in one place across the fleet. Hooks invoked
+outside certmint (e.g. the manual smoke test below) need to set it
+themselves.
 
 ## Use from certmint
 
@@ -71,7 +78,7 @@ With a DNS member running locally on port 9100:
 
 ```sh
 export UPTIME_BENCH_DNS_CONTROL_URLS="http://127.0.0.1:9100"
-export UPTIME_BENCH_CONTROL_TOKEN="$(cat /etc/uptime-bench/control-token)"
+export CONTROL_TOKEN="$(cat /etc/uptime-bench/control-token)"
 CERTBOT_IDENTIFIER="bench.example.com" \
 CERTBOT_VALIDATION="manual-smoke-token" \
   ./deploy/acme-hooks/auth.sh

@@ -4,6 +4,7 @@ package certbot
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -54,8 +55,17 @@ func CommandLine(cfg config.CertbotConfig, order planner.Order) string {
 }
 
 // Run executes certbot and returns combined stdout/stderr.
-func Run(ctx context.Context, cfg config.CertbotConfig, order planner.Order) (string, error) {
+//
+// extraEnv is appended to the parent process environment when launching
+// certbot. The certmint daemon uses this to inject UPTIME_BENCH_DNS_CONTROL_URLS
+// derived from fleet.toml into the manual-auth/manual-cleanup hook
+// scripts, so operators don't have to maintain a separate copy of the
+// DNS topology in certmint.env.
+func Run(ctx context.Context, cfg config.CertbotConfig, order planner.Order, extraEnv []string) (string, error) {
 	cmd := exec.CommandContext(ctx, cfg.Binary, Args(cfg, order)...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("certbot: %s: %w", order.CertName, err)

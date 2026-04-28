@@ -498,3 +498,22 @@ uptime-bench's target fleet is currently passive — it responds to probes. Simu
 - Adapter support to provision a heartbeat monitor (endpoint URL, expected interval).
 
 This architectural extension should be designed when the first monitor service ships heartbeat support. The control API and scenario schema are designed to accommodate new failure types without breaking changes.
+
+---
+
+## Centralized fleet-topology API on the harness
+
+**Status:** Not implemented. Deferred while the file-shipped `fleet.toml` model is sufficient.
+
+The current model has every member that needs fleet topology — DNS for zones, certmint for DNS control URLs, and (in Phase B) targets for the certmint URL — read a copy of `fleet.toml` from `/etc/uptime-bench/`. When the operator changes topology, they edit the file on the harness and redeploy it to every member that consumes it. Same friction as today's DNS deployment.
+
+The desired endpoint is a harness-mediated control API: the harness reads `fleet.toml`, exposes a small read-only HTTP endpoint (e.g. `GET /fleet/topology`), and every other fleet member polls it on a schedule. Operators edit `fleet.toml` once on the harness, restart the harness, and the rest of the fleet picks up the change without any further action. New hosts joining the fleet need only know the harness's URL and the shared control token — they don't need a synchronized copy of `fleet.toml`.
+
+**What's needed:**
+
+- An inbound HTTP server on the harness, behind the existing bearer-token middleware. The harness has none today; it's currently a pure client of the control plane.
+- A polling client baked into target, dns, and certmint binaries, with cached last-known-good fallback so a brief harness outage doesn't take down dependents.
+- Schema for the topology payload (subset of fleet.toml relevant to each role).
+- A migration path: each role keeps the file-based fallback, gains the polling client, and the systemd units pass the harness URL via env when the operator opts in.
+
+**Why deferred:** the file-shipped model does the job at our scale (single-digit fleet size, low rate of topology change). Centralizing wins clearly when (a) fleets get bigger, (b) topology changes more often, or (c) auto-recovery / dynamic fleet membership becomes a real requirement. Until then, a `make deploy-dns; make deploy-certmint` after a `fleet.toml` edit is acceptable friction. Worth pulling forward if any of those three pressures materialize.

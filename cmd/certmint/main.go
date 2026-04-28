@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,7 +20,41 @@ import (
 	"github.com/Automattic/uptime-bench/internal/certmint/lockfile"
 	"github.com/Automattic/uptime-bench/internal/certmint/manifest"
 	"github.com/Automattic/uptime-bench/internal/certmint/planner"
+	"github.com/Automattic/uptime-bench/internal/fleet"
 )
+
+// loadFleetEnv reads fleet.toml at path and returns the env-var
+// settings certbot's manual hooks need. UPTIME_BENCH_DNS_CONTROL_URLS
+// is derived from [[nameservers]] so the operator maintains DNS
+// topology in one place — fleet.toml on the harness — instead of
+// duplicating it into every box's env file.
+//
+// Returns (nil, nil) when path is empty: callers opted out of
+// fleet-derived env. Returns an error if path is non-empty but the
+// file is unreadable or has no nameservers — running certmint with a
+// broken fleet pointer is a configuration mistake worth surfacing
+// loudly rather than silently falling back to env-only.
+func loadFleetEnv(path string) ([]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	fl, err := fleet.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("certmint: load fleet %s: %w", path, err)
+	}
+	if len(fl.Nameservers) == 0 {
+		return nil, fmt.Errorf("certmint: fleet %s has no [[nameservers]] entries", path)
+	}
+	urls := make([]string, 0, len(fl.Nameservers))
+	for _, ns := range fl.Nameservers {
+		port := ns.ControlPort
+		if port == 0 {
+			port = 9100
+		}
+		urls = append(urls, fmt.Sprintf("http://%s:%d", ns.Address, port))
+	}
+	return []string{"UPTIME_BENCH_DNS_CONTROL_URLS=" + strings.Join(urls, " ")}, nil
+}
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
@@ -81,11 +116,16 @@ func runPlan(args []string) error {
 func runOnceCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("once", flag.ContinueOnError)
 	configPath := fs.String("config", "", "config file path")
+	fleetPath := fs.String("fleet", "", "path to fleet.toml — DNS control URLs for ACME hooks are derived from [[nameservers]]. Production systemd unit passes /etc/uptime-bench/fleet.toml; leave empty for ad-hoc local runs")
 	dryRun := fs.Bool("dry-run", false, "print due certbot commands without issuing certs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	fleetEnv, err := loadFleetEnv(*fleetPath)
 	if err != nil {
 		return err
 	}
@@ -98,17 +138,22 @@ func runOnceCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	return runOnce(ctx, cfg, &current, *dryRun)
+	return runOnce(ctx, cfg, &current, fleetEnv, *dryRun)
 }
 
 func runDaemon(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	configPath := fs.String("config", "", "config file path")
+	fleetPath := fs.String("fleet", "", "path to fleet.toml — DNS control URLs for ACME hooks are derived from [[nameservers]]. Production systemd unit passes /etc/uptime-bench/fleet.toml; leave empty for ad-hoc local runs")
 	dryRun := fs.Bool("dry-run", false, "log due certbot commands without issuing certs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	fleetEnv, err := loadFleetEnv(*fleetPath)
 	if err != nil {
 		return err
 	}
@@ -126,7 +171,16 @@ func runDaemon(ctx context.Context, args []string) error {
 	defer stop()
 
 	for {
-		if err := runOnce(ctx, cfg, &current, *dryRun); err != nil {
+		// Reload fleet on each iteration so a fleet.toml edit
+		// (e.g. adding a DNS member) propagates without a daemon
+		// restart. Failure to reload is logged but doesn't stop
+		// issuance — we keep using the last-good env.
+		if reloaded, err := loadFleetEnv(*fleetPath); err != nil {
+			log.Printf("certmint: fleet reload failed, keeping last env: %v", err)
+		} else {
+			fleetEnv = reloaded
+		}
+		if err := runOnce(ctx, cfg, &current, fleetEnv, *dryRun); err != nil {
 			log.Printf("certmint: run failed: %v", err)
 		}
 
@@ -158,7 +212,7 @@ func runInspect(args []string) error {
 	return enc.Encode(current)
 }
 
-func runOnce(ctx context.Context, cfg config.Config, current *manifest.Manifest, dryRun bool) error {
+func runOnce(ctx context.Context, cfg config.Config, current *manifest.Manifest, fleetEnv []string, dryRun bool) error {
 	orders := planner.Due(cfg, *current, time.Now())
 	if len(orders) == 0 {
 		return nil
@@ -181,7 +235,7 @@ func runOnce(ctx context.Context, cfg config.Config, current *manifest.Manifest,
 		if err := waitForQuietPeriod(ctx, cfg.InterOrderQuiet.Duration, lastDone[order.DomainName], order); err != nil {
 			return err
 		}
-		if err := issueAndArchive(ctx, cfg, current, order); err != nil {
+		if err := issueAndArchive(ctx, cfg, current, order, fleetEnv); err != nil {
 			log.Printf("certmint: order %s failed: %v", order.CertName, err)
 			errs = append(errs, fmt.Errorf("%s: %w", order.CertName, err))
 			lastDone[order.DomainName] = time.Now()
@@ -215,11 +269,11 @@ func waitForQuietPeriod(ctx context.Context, quiet time.Duration, lastDone time.
 	}
 }
 
-func issueAndArchive(ctx context.Context, cfg config.Config, current *manifest.Manifest, order planner.Order) error {
+func issueAndArchive(ctx context.Context, cfg config.Config, current *manifest.Manifest, order planner.Order, extraEnv []string) error {
 	if !library.LiveCertExists(cfg.Certbot, order.CertName) {
 		log.Printf("certmint: issuing %s profile=%s identifiers=%v", order.DomainName, order.ProfileName, order.Identifiers)
 		issueCtx, cancel := context.WithTimeout(ctx, cfg.Certbot.IssuanceTimeout.Duration)
-		out, err := certbot.Run(issueCtx, cfg.Certbot, order)
+		out, err := certbot.Run(issueCtx, cfg.Certbot, order, extraEnv)
 		cancel()
 		if out != "" {
 			log.Print(out)

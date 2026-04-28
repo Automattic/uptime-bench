@@ -273,13 +273,12 @@ EOF
 #   uses it to authenticate target polls.
 #   Must match the value in /etc/uptime-bench/harness.env on the harness VM.
 #
-# UPTIME_BENCH_DNS_CONTROL_URLS: space-separated control base URLs of every
-#   uptime-bench-dns member. The certbot manual-auth and manual-cleanup hooks
-#   read this to fan out TXT challenge records.
-#   Example: "http://203.0.113.10:9100 http://203.0.113.11:9100"
+# DNS control URLs aren't carried here — cmd/certmint reads them from
+# /etc/uptime-bench/fleet.toml at run time and injects
+# UPTIME_BENCH_DNS_CONTROL_URLS into the certbot child process. To
+# rotate or add a DNS member, edit fleet.toml on the harness, redeploy
+# it to certmint (and dns members), and restart the daemon.
 CONTROL_TOKEN=CHANGE_ME
-UPTIME_BENCH_CONTROL_TOKEN=CHANGE_ME
-UPTIME_BENCH_DNS_CONTROL_URLS="http://CHANGE_ME:9100"
 EOF
         ;;
 esac
@@ -377,6 +376,7 @@ case "$TYPE" in
         ;;
     certmint)
         ensure_config_file "/etc/uptime-bench/certmint.example.json" "/etc/uptime-bench/certmint.json"
+        ensure_config_file "/etc/uptime-bench/fleet.example.toml"    "/etc/uptime-bench/fleet.toml"
         ;;
 esac
 

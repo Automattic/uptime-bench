@@ -70,12 +70,18 @@ sudoedit /etc/uptime-bench/certmint.json
 ```
 
 Set:
-- `CONTROL_TOKEN` and `UPTIME_BENCH_CONTROL_TOKEN` to the same value used on
-  every other fleet member.
-- `UPTIME_BENCH_DNS_CONTROL_URLS` to the space-separated control base URLs
-  of every dns member, e.g. `"http://203.0.113.10:9100 http://203.0.113.11:9100"`.
+- `CONTROL_TOKEN` to the same value used on every other fleet member.
 - The `domains[]`, `profiles[]`, and ACME settings in `certmint.json` per
   your fleet.
+
+DNS control URLs aren't in `certmint.env`. The systemd unit passes
+`-fleet /etc/uptime-bench/fleet.toml` to the daemon, which reads
+`[[nameservers]]` and injects `UPTIME_BENCH_DNS_CONTROL_URLS` into the
+certbot child process when running the manual hooks. To rotate or add a
+DNS member, edit `fleet.toml` on the harness, redeploy it to certmint
+(and to the dns members), and restart the daemon — the daemon also
+re-reads fleet.toml on every iteration of its poll loop, so a redeploy
+without restart eventually picks up the change too.
 
 ## Deploy the binary
 
