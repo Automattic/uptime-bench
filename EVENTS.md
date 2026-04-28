@@ -75,7 +75,7 @@ One row per monitor service per metric per run.
 
 | Metric | Definition |
 |--------|-----------|
-| `detection_latency_seconds` | `alert_fired.reported_at` − `failure_start.timestamp`. Null if no alert fired. |
+| `detection_latency_s` | `alert_fired.reported_at` − `failure_start.timestamp`. Null if no alert fired. |
 | `true_positive` | Alert fired while a ground-truth failure was active. |
 | `false_positive` | Alert fired when no ground-truth failure was active. |
 | `false_negative` | No alert fired during a ground-truth failure window. |
@@ -83,6 +83,9 @@ One row per monitor service per metric per run.
 | `maintenance_suppressed` | No alert fired because the scenario's maintenance window covered the failure period. Correct behaviour, excluded from false negatives. |
 | `cooldown_suppressed` | No alert fired and adapter metadata says a prior alert cooldown suppressed it. Excluded from false negatives. |
 | `cooldown_uncertain` | No alert fired and adapter metadata says cooldown reset state was uncertain. Excluded from false negatives because the run is not cleanly attributable. |
+| `tls_advisory_detected` | `tls_deprecated` was active and the service reported a TLS advisory instead of an outage. |
+| `tls_advisory_missed` | `tls_deprecated` was active and the service reported no TLS advisory. Excluded from false negatives because the HTTP request still succeeds. |
+| `tls_advisory_false_outage` | `tls_deprecated` was active and the service reported an outage-style alert instead of an advisory. |
 | `classification_match` | Boolean: the service's normalized classification matches the injected failure mode. |
 
 ---
@@ -111,9 +114,9 @@ Both Unknown and capability mismatch are recorded with `retrieve_status = unknow
 - True/false positives and true/false negatives are computed only over rows where `reason_code` is empty and no suppression-specific metadata explains the missing alert.
 - Unknown rates are computed over rows where `reason_code` indicates an adapter-side or API-side problem (e.g. `api_unreachable`, `rate_limited`, `auth_failed`).
 - Capability-mismatch rates are computed over rows where `reason_code = "capability_mismatch"` and form the **support matrix** — for any given scenario, which services have the feature needed to detect the failure. This is a first-class deliverable of the project, not a noise filter.
-- Maintenance and cooldown suppression are computed as derived metrics (`maintenance_suppressed`, `cooldown_suppressed`, `cooldown_uncertain`) and stay out of the false-negative denominator.
+- Maintenance, cooldown, and TLS advisory outcomes are computed as derived metrics (`maintenance_suppressed`, `cooldown_suppressed`, `cooldown_uncertain`, `tls_advisory_detected`, `tls_advisory_missed`, `tls_advisory_false_outage`) and stay out of the false-negative denominator.
 
-Never count Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, or cooldown_uncertain as a false negative in accuracy calculations. Reports that aggregate without filtering these categories will conflate "the service missed the failure" with "the service was never asked or was intentionally/possibly suppressed," which is the central data-integrity hazard the harness is built to avoid.
+Never count Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, cooldown_uncertain, or TLS advisory outcomes as a false negative in accuracy calculations. Reports that aggregate without filtering these categories will conflate "the service missed the failure" with "the service was never asked, was intentionally/possibly suppressed, or saw a successful request with an advisory-level TLS concern," which is the central data-integrity hazard the harness is built to avoid.
 
 `cmd/uptime-bench-report` loads `monitor_reports.reason_code` alongside
 `derived_metrics`, surfaces `capability_mismatch` counts as a separate report
@@ -138,6 +141,6 @@ If the same event is written twice, the second write updates the existing row ra
 
 1. Every scenario run has a `resolution_reason` on close — no run ends without one.
 2. Replaying the same scenario with the same seed produces the same ground-truth event sequence.
-3. Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, and cooldown_uncertain outcomes do not appear as false negatives in derived metric rows. Capability_mismatch rows are separately queryable so the support matrix can be reported without re-deriving it from logs.
-4. `detection_latency_seconds` is null when no `alert_fired` event exists for that run × service pair — never zero or negative.
+3. Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, cooldown_uncertain, and TLS advisory outcomes do not appear as false negatives in derived metric rows. Capability_mismatch rows are separately queryable so the support matrix can be reported without re-deriving it from logs.
+4. `detection_latency_s` is null when no `alert_fired` event exists for that run × service pair — never zero or negative.
 5. Adapter deprovision runs and is recorded even when a scenario aborts midway.

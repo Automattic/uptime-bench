@@ -19,7 +19,15 @@ import (
 	"github.com/Automattic/uptime-bench/internal/db"
 )
 
-type failureWindow struct{ start, end time.Time }
+const (
+	failureTLSDeprecated      = "tls_deprecated"
+	classificationTLSAdvisory = "tls_advisory"
+)
+
+type failureWindow struct {
+	kind       string
+	start, end time.Time
+}
 
 type serviceData struct {
 	unknown             bool
@@ -75,7 +83,7 @@ func Derive(ctx context.Context, database runStore, runID string) error {
 			startsByType[e.FailureType] = e.OccurredAt
 		case "failure_end":
 			if s, ok := startsByType[e.FailureType]; ok {
-				failureWindows = append(failureWindows, failureWindow{start: s, end: e.OccurredAt})
+				failureWindows = append(failureWindows, failureWindow{kind: e.FailureType, start: s, end: e.OccurredAt})
 				delete(startsByType, e.FailureType)
 			}
 		case "maintenance_start":
@@ -160,21 +168,27 @@ func computeMetrics(sr *serviceData, windows []failureWindow, maintenance *failu
 		return out
 	}
 
+	normalWindows, tlsAdvisoryWindows := splitWindows(windows)
+
 	// Single pass over alerts: classify each one as in-window (true positive,
-	// candidate detection-latency sample) or out-of-window (false positive).
+	// candidate detection-latency sample), deprecated-TLS advisory, deprecated-
+	// TLS false outage report, or out-of-window false positive.
 	truePositive := false
-	falseNegative := len(windows) > 0
+	falseNegative := len(normalWindows) > 0
 	falsePositive := false
+	tlsAdvisoryDetected := false
+	tlsAdvisoryMissed := len(tlsAdvisoryWindows) > 0
+	tlsAdvisoryFalseOutage := false
 	var detectionLatency *float64
 
 	for _, alert := range sr.alerts {
 		if alert.ReportedAt == nil {
 			continue
 		}
-		inWindow := false
-		for _, w := range windows {
-			if !alert.ReportedAt.Before(w.start) && !alert.ReportedAt.After(w.end) {
-				inWindow = true
+		inNormalWindow := false
+		for _, w := range normalWindows {
+			if containsTime(w, *alert.ReportedAt) {
+				inNormalWindow = true
 				if detectionLatency == nil {
 					latency := alert.ReportedAt.Sub(w.start).Seconds()
 					detectionLatency = &latency
@@ -182,10 +196,25 @@ func computeMetrics(sr *serviceData, windows []failureWindow, maintenance *failu
 				break
 			}
 		}
-		if inWindow {
+		inTLSAdvisoryWindow := false
+		for _, w := range tlsAdvisoryWindows {
+			if containsTime(w, *alert.ReportedAt) {
+				inTLSAdvisoryWindow = true
+				break
+			}
+		}
+		switch {
+		case inTLSAdvisoryWindow && alert.NormalizedClassification == classificationTLSAdvisory:
+			tlsAdvisoryDetected = true
+			tlsAdvisoryMissed = false
+		case inTLSAdvisoryWindow:
+			tlsAdvisoryFalseOutage = true
+			tlsAdvisoryMissed = false
+		}
+		if inNormalWindow {
 			truePositive = true
 			falseNegative = false
-		} else {
+		} else if !inTLSAdvisoryWindow {
 			falsePositive = true
 		}
 	}
@@ -231,12 +260,30 @@ func computeMetrics(sr *serviceData, windows []failureWindow, maintenance *failu
 	out["maintenance_suppressed"] = db.DerivedMetricRow{MetricValue: boolVal(maintenanceSuppressed)}
 	out["cooldown_suppressed"] = db.DerivedMetricRow{MetricValue: boolVal(cooldownSuppressed), MetricText: sr.cooldownExplanation}
 	out["cooldown_uncertain"] = db.DerivedMetricRow{MetricValue: boolVal(cooldownUncertain), MetricText: sr.cooldownExplanation}
+	out["tls_advisory_detected"] = db.DerivedMetricRow{MetricValue: boolVal(tlsAdvisoryDetected)}
+	out["tls_advisory_missed"] = db.DerivedMetricRow{MetricValue: boolVal(tlsAdvisoryMissed)}
+	out["tls_advisory_false_outage"] = db.DerivedMetricRow{MetricValue: boolVal(tlsAdvisoryFalseOutage)}
 
 	if detectionLatency != nil {
 		out["detection_latency_s"] = db.DerivedMetricRow{MetricValue: detectionLatency}
 	}
 
 	return out
+}
+
+func splitWindows(windows []failureWindow) (normal []failureWindow, tlsAdvisory []failureWindow) {
+	for _, w := range windows {
+		if w.kind == failureTLSDeprecated {
+			tlsAdvisory = append(tlsAdvisory, w)
+			continue
+		}
+		normal = append(normal, w)
+	}
+	return normal, tlsAdvisory
+}
+
+func containsTime(w failureWindow, t time.Time) bool {
+	return !t.Before(w.start) && !t.After(w.end)
 }
 
 func cooldownState(r db.MonitorReportRow) (state string, explanation string) {

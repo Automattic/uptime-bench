@@ -381,7 +381,7 @@ reason = "no_common_cipher"
 
 ### `tls_deprecated`
 
-Serves the HTTPS connection using only a deprecated TLS protocol version (TLS 1.0 or TLS 1.1). The connection succeeds — the monitor is not blocked — but uses a deprecated cipher. Tests whether monitors detect and report advisory-level TLS version warnings separately from hard failures.
+Serves the HTTPS connection using only a deprecated TLS protocol version (TLS 1.0 or TLS 1.1). The connection succeeds — the monitor is not blocked — but uses a deprecated cipher. Tests whether monitors detect and report advisory-level TLS version warnings separately from hard failures. Measurement records this as `tls_advisory_detected`, `tls_advisory_missed`, or `tls_advisory_false_outage` rather than folding it into ordinary true-positive / false-negative outage accuracy.
 
 This is distinct from `tls_handshake`: the handshake completes and the monitor receives an HTTP response, but via a protocol version that browsers and security scanners flag. Some monitors classify this as a warning rather than a downtime event.
 

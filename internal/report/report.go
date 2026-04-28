@@ -96,27 +96,30 @@ func MetaFromLookup(l *db.CampaignLookup) Meta {
 
 // Summary is one campaign report row for a failure type and service.
 type Summary struct {
-	FailureType           string         `json:"failure_type"`
-	ServiceID             string         `json:"service_id"`
-	Samples               int            `json:"samples"`
-	DetectionRate         *float64       `json:"detection_rate,omitempty"`
-	DetectionRateCI95     *CI            `json:"detection_rate_ci95,omitempty"`
-	TruePositive          int            `json:"true_positive"`
-	FalseNegative         int            `json:"false_negative"`
-	FalsePositive         int            `json:"false_positive"`
-	Unknown               int            `json:"unknown"`
-	CapabilityMismatch    int            `json:"capability_mismatch"`
-	ReasonCodes           map[string]int `json:"reason_codes,omitempty"`
-	MaintenanceSuppressed int            `json:"maintenance_suppressed"`
-	CooldownSuppressed    int            `json:"cooldown_suppressed"`
-	CooldownUncertain     int            `json:"cooldown_uncertain"`
-	LatencyMinSeconds     *float64       `json:"latency_min_s,omitempty"`
-	LatencyAvgSeconds     *float64       `json:"latency_avg_s,omitempty"`
-	LatencyP50Seconds     *float64       `json:"latency_p50_s,omitempty"`
-	LatencyP50CI95Seconds *CI            `json:"latency_p50_ci95_s,omitempty"`
-	LatencyP95Seconds     *float64       `json:"latency_p95_s,omitempty"`
-	LatencyP95CI95Seconds *CI            `json:"latency_p95_ci95_s,omitempty"`
-	LatencyMaxSeconds     *float64       `json:"latency_max_s,omitempty"`
+	FailureType            string         `json:"failure_type"`
+	ServiceID              string         `json:"service_id"`
+	Samples                int            `json:"samples"`
+	DetectionRate          *float64       `json:"detection_rate,omitempty"`
+	DetectionRateCI95      *CI            `json:"detection_rate_ci95,omitempty"`
+	TruePositive           int            `json:"true_positive"`
+	FalseNegative          int            `json:"false_negative"`
+	FalsePositive          int            `json:"false_positive"`
+	Unknown                int            `json:"unknown"`
+	CapabilityMismatch     int            `json:"capability_mismatch"`
+	ReasonCodes            map[string]int `json:"reason_codes,omitempty"`
+	MaintenanceSuppressed  int            `json:"maintenance_suppressed"`
+	CooldownSuppressed     int            `json:"cooldown_suppressed"`
+	CooldownUncertain      int            `json:"cooldown_uncertain"`
+	TLSAdvisoryDetected    int            `json:"tls_advisory_detected"`
+	TLSAdvisoryMissed      int            `json:"tls_advisory_missed"`
+	TLSAdvisoryFalseOutage int            `json:"tls_advisory_false_outage"`
+	LatencyMinSeconds      *float64       `json:"latency_min_s,omitempty"`
+	LatencyAvgSeconds      *float64       `json:"latency_avg_s,omitempty"`
+	LatencyP50Seconds      *float64       `json:"latency_p50_s,omitempty"`
+	LatencyP50CI95Seconds  *CI            `json:"latency_p50_ci95_s,omitempty"`
+	LatencyP95Seconds      *float64       `json:"latency_p95_s,omitempty"`
+	LatencyP95CI95Seconds  *CI            `json:"latency_p95_ci95_s,omitempty"`
+	LatencyMaxSeconds      *float64       `json:"latency_max_s,omitempty"`
 }
 
 // CI is a two-sided 95% confidence interval for a report statistic.
@@ -140,16 +143,19 @@ type summaryKey struct {
 }
 
 type accumulator struct {
-	runs                  map[string]struct{}
-	truePositive          int
-	falseNegative         int
-	falsePositive         int
-	unknown               int
-	maintenanceSuppressed int
-	cooldownSuppressed    int
-	cooldownUncertain     int
-	latencies             []float64
-	reasonRuns            map[string]map[string]struct{}
+	runs                   map[string]struct{}
+	truePositive           int
+	falseNegative          int
+	falsePositive          int
+	unknown                int
+	maintenanceSuppressed  int
+	cooldownSuppressed     int
+	cooldownUncertain      int
+	tlsAdvisoryDetected    int
+	tlsAdvisoryMissed      int
+	tlsAdvisoryFalseOutage int
+	latencies              []float64
+	reasonRuns             map[string]map[string]struct{}
 }
 
 // Summarize folds campaign metric rows into one row per
@@ -187,6 +193,12 @@ func Summarize(rows []db.CampaignMetricRow, reasonRows ...[]db.CampaignReasonRow
 			acc.cooldownSuppressed += boolMetric(value)
 		case "cooldown_uncertain":
 			acc.cooldownUncertain += boolMetric(value)
+		case "tls_advisory_detected":
+			acc.tlsAdvisoryDetected += boolMetric(value)
+		case "tls_advisory_missed":
+			acc.tlsAdvisoryMissed += boolMetric(value)
+		case "tls_advisory_false_outage":
+			acc.tlsAdvisoryFalseOutage += boolMetric(value)
 		case "detection_latency_s":
 			if row.MetricValue != nil {
 				acc.latencies = append(acc.latencies, *row.MetricValue)
@@ -221,16 +233,19 @@ func Summarize(rows []db.CampaignMetricRow, reasonRows ...[]db.CampaignReasonRow
 	out := make([]Summary, 0, len(byKey))
 	for key, acc := range byKey {
 		s := Summary{
-			FailureType:           key.failureType,
-			ServiceID:             key.serviceID,
-			Samples:               len(acc.runs),
-			TruePositive:          acc.truePositive,
-			FalseNegative:         acc.falseNegative,
-			FalsePositive:         acc.falsePositive,
-			Unknown:               acc.unknown,
-			MaintenanceSuppressed: acc.maintenanceSuppressed,
-			CooldownSuppressed:    acc.cooldownSuppressed,
-			CooldownUncertain:     acc.cooldownUncertain,
+			FailureType:            key.failureType,
+			ServiceID:              key.serviceID,
+			Samples:                len(acc.runs),
+			TruePositive:           acc.truePositive,
+			FalseNegative:          acc.falseNegative,
+			FalsePositive:          acc.falsePositive,
+			Unknown:                acc.unknown,
+			MaintenanceSuppressed:  acc.maintenanceSuppressed,
+			CooldownSuppressed:     acc.cooldownSuppressed,
+			CooldownUncertain:      acc.cooldownUncertain,
+			TLSAdvisoryDetected:    acc.tlsAdvisoryDetected,
+			TLSAdvisoryMissed:      acc.tlsAdvisoryMissed,
+			TLSAdvisoryFalseOutage: acc.tlsAdvisoryFalseOutage,
 		}
 		if len(acc.reasonRuns) > 0 {
 			s.ReasonCodes = make(map[string]int, len(acc.reasonRuns))
@@ -609,8 +624,9 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 	header := []string{
 		"failure_type", "service", "n", "tp_rate", "tp_rate_ci95", "tp", "fn", "fp",
 		"unknown", "cap_mismatch", "maint_suppressed", "cooldown_suppressed",
-		"cooldown_uncertain", "min_s", "avg_s", "p50_s", "p50_ci95_s", "p95_s",
-		"p95_ci95_s", "max_s",
+		"cooldown_uncertain", "tls_adv_detected", "tls_adv_missed",
+		"tls_adv_false_outage", "min_s", "avg_s", "p50_s", "p50_ci95_s",
+		"p95_s", "p95_ci95_s", "max_s",
 	}
 	if _, err := fmt.Fprintln(out, strings.Join(header, sep)); err != nil {
 		return err
@@ -634,6 +650,9 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 			strconv.Itoa(s.MaintenanceSuppressed),
 			strconv.Itoa(s.CooldownSuppressed),
 			strconv.Itoa(s.CooldownUncertain),
+			strconv.Itoa(s.TLSAdvisoryDetected),
+			strconv.Itoa(s.TLSAdvisoryMissed),
+			strconv.Itoa(s.TLSAdvisoryFalseOutage),
 			formatSeconds(s.LatencyMinSeconds),
 			formatSeconds(s.LatencyAvgSeconds),
 			formatSeconds(s.LatencyP50Seconds),

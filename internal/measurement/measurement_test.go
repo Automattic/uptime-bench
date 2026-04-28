@@ -20,6 +20,10 @@ func window(start, end time.Time) failureWindow {
 	return failureWindow{start: start, end: end}
 }
 
+func typedWindow(kind string, start, end time.Time) failureWindow {
+	return failureWindow{kind: kind, start: start, end: end}
+}
+
 // TestComputeMetrics_TruePositive — alert inside the failure window.
 func TestComputeMetrics_TruePositive(t *testing.T) {
 	start := time.Now()
@@ -75,6 +79,67 @@ func TestComputeMetrics_FalsePositive(t *testing.T) {
 	}
 	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
 		t.Fatalf("true_positive = %v, want 0", v)
+	}
+}
+
+func TestComputeMetrics_TLSDeprecatedMissedAdvisory(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	sr := &serviceData{}
+
+	out := computeMetrics(sr, []failureWindow{typedWindow(failureTLSDeprecated, start, end)}, nil)
+
+	if v := out["tls_advisory_missed"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("tls_advisory_missed = %v, want 1", v)
+	}
+	if v := out["false_negative"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_negative = %v, want 0 (tls_deprecated is advisory, not outage)", v)
+	}
+	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("true_positive = %v, want 0", v)
+	}
+}
+
+func TestComputeMetrics_TLSDeprecatedAdvisoryDetected(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	alert := alertAt(start.Add(10 * time.Second))
+	alert.NormalizedClassification = classificationTLSAdvisory
+	sr := &serviceData{alerts: []db.MonitorReportRow{alert}}
+
+	out := computeMetrics(sr, []failureWindow{typedWindow(failureTLSDeprecated, start, end)}, nil)
+
+	if v := out["tls_advisory_detected"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("tls_advisory_detected = %v, want 1", v)
+	}
+	if v := out["tls_advisory_missed"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("tls_advisory_missed = %v, want 0", v)
+	}
+	if v := out["tls_advisory_false_outage"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("tls_advisory_false_outage = %v, want 0", v)
+	}
+	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("true_positive = %v, want 0 (advisory is separate from outage TP)", v)
+	}
+}
+
+func TestComputeMetrics_TLSDeprecatedFalseOutage(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	alert := alertAt(start.Add(10 * time.Second))
+	alert.NormalizedClassification = "tls_failure"
+	sr := &serviceData{alerts: []db.MonitorReportRow{alert}}
+
+	out := computeMetrics(sr, []failureWindow{typedWindow(failureTLSDeprecated, start, end)}, nil)
+
+	if v := out["tls_advisory_false_outage"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("tls_advisory_false_outage = %v, want 1", v)
+	}
+	if v := out["tls_advisory_missed"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("tls_advisory_missed = %v, want 0", v)
+	}
+	if v := out["false_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_positive = %v, want 0 (false outage is reported separately)", v)
 	}
 }
 

@@ -43,6 +43,9 @@ func TestSummarize_GroupsMetricsByFailureAndService(t *testing.T) {
 		metric("run-4", "http_status", "svc-a", "maintenance_suppressed", 1),
 		metric("run-7", "http_status", "svc-a", "cooldown_suppressed", 1),
 		metric("run-8", "http_status", "svc-a", "cooldown_uncertain", 1),
+		metric("run-9", "http_status", "svc-a", "tls_advisory_detected", 1),
+		metric("run-10", "http_status", "svc-a", "tls_advisory_missed", 1),
+		metric("run-11", "http_status", "svc-a", "tls_advisory_false_outage", 1),
 		metric("run-5", "http_status", "svc-a", "true_positive", 1),
 		metric("run-5", "http_status", "svc-a", "false_negative", 0),
 		metric("run-5", "http_status", "svc-a", "detection_latency_s", 80),
@@ -59,8 +62,8 @@ func TestSummarize_GroupsMetricsByFailureAndService(t *testing.T) {
 	if http.FailureType != "http_status" || http.ServiceID != "svc-a" {
 		t.Fatalf("first summary = %+v, want http_status/svc-a", http)
 	}
-	if http.Samples != 7 {
-		t.Fatalf("Samples = %d, want 7", http.Samples)
+	if http.Samples != 10 {
+		t.Fatalf("Samples = %d, want 10", http.Samples)
 	}
 	if http.TruePositive != 2 || http.FalseNegative != 1 || http.FalsePositive != 1 {
 		t.Fatalf("TP/FN/FP = %d/%d/%d, want 2/1/1", http.TruePositive, http.FalseNegative, http.FalsePositive)
@@ -70,6 +73,10 @@ func TestSummarize_GroupsMetricsByFailureAndService(t *testing.T) {
 	}
 	if http.CooldownSuppressed != 1 || http.CooldownUncertain != 1 {
 		t.Fatalf("CooldownSuppressed/CooldownUncertain = %d/%d, want 1/1", http.CooldownSuppressed, http.CooldownUncertain)
+	}
+	if http.TLSAdvisoryDetected != 1 || http.TLSAdvisoryMissed != 1 || http.TLSAdvisoryFalseOutage != 1 {
+		t.Fatalf("TLS advisory counts = %d/%d/%d, want 1/1/1",
+			http.TLSAdvisoryDetected, http.TLSAdvisoryMissed, http.TLSAdvisoryFalseOutage)
 	}
 	if http.DetectionRate == nil || *http.DetectionRate != 2.0/3.0 {
 		t.Fatalf("DetectionRate = %v, want 2/3", http.DetectionRate)
@@ -295,6 +302,41 @@ func TestWriteTable_EmitsMetaCommentLine(t *testing.T) {
 	}
 	if strings.Index(out, "# bias") > strings.Index(out, "failure_type") {
 		t.Fatalf("bias checks should be printed before data header: %q", out)
+	}
+}
+
+func TestWriteTSV_EmitsTLSAdvisoryCounts(t *testing.T) {
+	r := Report{
+		Summaries: []Summary{
+			{
+				FailureType:            "tls_deprecated",
+				ServiceID:              "svc",
+				Samples:                3,
+				TLSAdvisoryDetected:    1,
+				TLSAdvisoryMissed:      1,
+				TLSAdvisoryFalseOutage: 1,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := Write(&buf, "tsv", r); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "tls_adv_detected\ttls_adv_missed\ttls_adv_false_outage") {
+		t.Fatalf("TSV header missing TLS advisory columns: %q", out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("TSV lines = %d, want 2: %q", len(lines), out)
+	}
+	fields := strings.Split(lines[1], "\t")
+	if len(fields) < 16 {
+		t.Fatalf("TSV row has %d fields, want at least 16: %q", len(fields), lines[1])
+	}
+	if fields[13] != "1" || fields[14] != "1" || fields[15] != "1" {
+		t.Fatalf("TSV row missing TLS advisory counts: %q", out)
 	}
 }
 

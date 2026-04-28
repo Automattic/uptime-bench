@@ -33,8 +33,8 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## End-to-end run pipeline
 
 - **Single-scenario execution** — the harness can provision monitors, activate controlled failures, record ground truth, retrieve monitor events, deprovision, and close the run.
-- **Measurement engine** — raw events are converted into true positive, false negative, false positive, unknown, maintenance-suppressed, cooldown-suppressed/uncertain, and latency metrics.
-- **Reporting tool** — `cmd/uptime-bench-report` produces table, TSV, and JSON campaign summaries with aggregation metadata, bias checks, confidence intervals, and capability-mismatch counts.
+- **Measurement engine** — raw events are converted into true positive, false negative, false positive, unknown, maintenance-suppressed, cooldown-suppressed/uncertain, TLS advisory, and latency metrics.
+- **Reporting tool** — `cmd/uptime-bench-report` produces table, TSV, and JSON campaign summaries with aggregation metadata, bias checks, confidence intervals, capability-mismatch counts, suppression counts, and TLS advisory counts.
 
 ## Monitoring adapters
 
@@ -143,7 +143,7 @@ The target binary now exposes an HTTPS listener with a generated self-signed fal
 - `tls_deprecated`: implemented for target-side config selection by clamping `tls.Config.MaxVersion` to TLS 1.1 or TLS 1.0. In-process TLS handshake tests cover the target behavior.
 - OpenSSL acceptance: `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active. `deploy/tls-smoke.sh` repeats the protocol checks against deployed targets through the control API. Remaining fleet acceptance is monitor-facing probe smoke against a real certmint-produced library.
 
-**Measurement note for `tls_deprecated`**: because the request actually returns 200 OK, monitor outcomes split three ways — missed advisory, correct "TLS advisory" classification, false outage report. The measurement engine needs a third category here, distinct from true-positive and false-negative.
+**Measurement note for `tls_deprecated`**: implemented. Because the request actually returns 200 OK, monitor outcomes split three ways: missed advisory, correct `tls_advisory` classification, or false outage report. The measurement engine records these as `tls_advisory_missed`, `tls_advisory_detected`, and `tls_advisory_false_outage`, distinct from true-positive and false-negative.
 
 ### Phase 4 — Long-term: fleet CA
 
@@ -362,7 +362,7 @@ Output formats: human-readable table (default), TSV, JSON. Backed by SQL queries
 
 Per (failure_type, service) statistics:
 
-- Detection rate (true_positive / (true_positive + false_negative), excluding capability_mismatch, maintenance_suppressed, cooldown_suppressed, and cooldown_uncertain).
+- Detection rate (true_positive / (true_positive + false_negative), excluding capability_mismatch, maintenance_suppressed, cooldown_suppressed, cooldown_uncertain, and TLS advisory outcomes).
 - Detection latency min/max/avg/p50/p95, with 95% confidence intervals for p50 and p95.
 - False-positive rate.
 - `capability_mismatch` count (separately surfaced; not folded into detection rate).
@@ -374,7 +374,7 @@ Per (failure_type, service) statistics:
 2. ✅ **Pure design + schedule generator** — `(config, masterSeed) → (designs, schedule)`. `internal/campaign/generator.go`; deterministic, fixed-seed regression coverage in `generator_test.go` + `no_favoritism_test.go`.
 3. ✅ **Schema migration for `campaign_runs`** — `schema/003_campaign_runs.sql`; `campaign_id` FK on `scenario_runs`. `db.InsertCampaignRun` / `CloseCampaignRun` shipped.
 4. ✅ **Runner outer loop (serial)** — `runner.RunCampaign` walks `Plan.Schedule`, calls existing `Run()` per replay via `WithCampaignRunID`. Per-replay errors don't abort the campaign. Tests in `internal/runner/campaign_test.go`. `cmd/harness` accepts `-campaign=<config.toml>` as a mutually exclusive alternative to `-scenario`; campaign mode runs every enabled service from `services.toml`. Metrics are derived in one batch at campaign end via `measurement.DeriveCampaign`, keyed by `scenario_runs.campaign_id`.
-5. ✅ **Initial `cmd/uptime-bench-report`** — campaign metrics can be summarized from `derived_metrics` into table / TSV / JSON output. Current scope: per-(failure_type, service) samples, detection rate, TP/FN/FP/Unknown/maintenance/cooldown counts, and latency min/avg/p50/p95/max.
+5. ✅ **Initial `cmd/uptime-bench-report`** — campaign metrics can be summarized from `derived_metrics` into table / TSV / JSON output. Current scope: per-(failure_type, service) samples, detection rate, TP/FN/FP/Unknown/maintenance/cooldown/TLS advisory counts, and latency min/avg/p50/p95/max.
 6. ✅ **Full report statistics** — table/JSON reports now include bias self-checks, Wilson 95% detection-rate intervals, deterministic nearest-rank percentile intervals for p50/p95, and explicit `capability_mismatch` counts from `monitor_reports.reason_code`. TSV stays row-only for scripts but includes the additional columns.
 7. **Escalation support** — per-failure `duration` overrides and generator pattern sampling now cover layered, replacement, and recovery representations. Reports use campaign replay metadata to label multi-stage shapes by pattern and stage order. Remaining work: settle the exact pattern mix for published benchmark configs.
 
@@ -396,7 +396,7 @@ When campaign data is published, the methodology section must include, at minimu
 - Adapter and target-fleet commit SHAs.
 - Total wall-clock duration and any campaign interruptions.
 - Confidence intervals on all reported percentiles.
-- The full count of `capability_mismatch`, `adapter_error`, `maintenance_suppressed`, `cooldown_suppressed`, and `cooldown_uncertain` outcomes per service — these are part of the data, not filtered out.
+- The full count of `capability_mismatch`, `adapter_error`, `maintenance_suppressed`, `cooldown_suppressed`, `cooldown_uncertain`, `tls_advisory_detected`, `tls_advisory_missed`, and `tls_advisory_false_outage` outcomes per service — these are part of the data, not filtered out.
 - The percentile method used. `cmd/uptime-bench-report` uses the **nearest-rank** convention (`idx = ⌈p·N⌉ − 1` on the sorted sample, NIST / Wikipedia "C = 1"). Different from R's default `quantile()` (type 7, linear interpolation) and numpy's default `percentile()`, which produce slightly different numbers for the same data. Nearest-rank always returns an observed sample value — the published p95 is a number that actually occurred in the campaign — but skeptics recomputing with a different method will see ±1-bucket drift.
 - The aggregation depth. `cmd/uptime-bench-report` accepts either a concrete `campaign_runs.id` (one run) or a stable `campaign_id` from the campaign TOML (every matching run aggregated). The report header line discloses which interpretation matched and how many runs were folded together — quote that line in any published post so readers know the numbers span N runs, not 1.
 

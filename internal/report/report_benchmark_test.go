@@ -49,6 +49,9 @@ func benchmarkCampaignMetricRows() []db.CampaignMetricRow {
 		"maintenance_suppressed",
 		"cooldown_suppressed",
 		"cooldown_uncertain",
+		"tls_advisory_detected",
+		"tls_advisory_missed",
+		"tls_advisory_false_outage",
 	}
 
 	const replays = 150

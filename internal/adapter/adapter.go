@@ -47,6 +47,7 @@ type Adapter interface {
 	//	"http_failure"    — non-2xx/3xx response or connection-level HTTP error
 	//	"dns_failure"     — DNS resolution failure of any kind
 	//	"tls_failure"     — TLS handshake or certificate error
+	//	"tls_advisory"    — TLS concern where the HTTP request can still succeed
 	//	"timeout"         — response timeout (any phase)
 	//	"content_failure" — body content check failed
 	//	"recovered"       — incident resolved
