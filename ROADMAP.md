@@ -1,6 +1,6 @@
 # uptime-bench Roadmap
 
-Deferred features that are intentionally not yet implemented. Items below the active line are accommodated in the schema and data model so they can be added without breaking changes — but the implementation work is deferred. Items above the line are next-up.
+Deferred features that are intentionally not yet implemented. Items below the active line are accommodated in the schema and data model so they can be added without breaking changes — but the implementation work is deferred. Items above the line are next-up. The completed section summarizes major shipped capabilities from the commit history so the roadmap shows how the current shape of the system came together.
 
 **Active priorities (next-up, in rough order):**
 1. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
@@ -19,6 +19,60 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 - [Per-component timing retrieval from adapters](#per-component-timing-retrieval-from-adapters)
 - [Redirect baseline change detection](#redirect-baseline-change-detection)
 - [Heartbeat and agent-based reverse checks](#heartbeat-and-agent-based-reverse-checks)
+
+---
+
+# Completed
+
+## Core platform and architecture
+
+- **Project foundation** — repo scaffold, Makefile targets, Docker Compose local dev, operations docs, schema docs, adapter docs, event model, and the system map are in place.
+- **Service-agnostic design** — the harness no longer carries vendor-specific branches; service details live in `services.toml` and adapter implementations.
+- **Canonical event log** — MySQL-backed `scenario_runs`, `ground_truth_events`, `monitor_reports`, `derived_metrics`, and `campaign_runs` preserve raw data and support recomputation.
+
+## End-to-end run pipeline
+
+- **Single-scenario execution** — the harness can provision monitors, activate controlled failures, record ground truth, retrieve monitor events, deprovision, and close the run.
+- **Measurement engine** — raw events are converted into true positive, false negative, false positive, unknown, maintenance-suppressed, and latency metrics.
+- **Reporting tool** — `cmd/uptime-bench-report` produces table, TSV, and JSON campaign summaries with aggregation metadata, bias checks, confidence intervals, and capability-mismatch counts.
+
+## Monitoring adapters
+
+- **Adapter contract and capability gating** — adapters declare check frequency, keyword, maintenance, cooldown, and agent support; incompatible scenario/service pairs become `capability_mismatch` rows instead of misleading false negatives.
+- **Implemented adapters** — Jetmon v1, Jetmon v2, UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime all have concrete adapters.
+- **Live API smoke coverage** — the public probe-based adapters, Jetmon v1 bridge, and Jetmon v2 API have build-tagged live smoke tests or live-test history captured in docs.
+- **Per-adapter normalization** — each adapter owns raw classification mapping into uptime-bench's common vocabulary.
+
+## Failure-injection fleet
+
+- **Target server** — `cmd/target` serves realistic virtual hosts and injects HTTP status, timeout, partial body, redirect, content, method-specific status, TCP, and TLS failures.
+- **Content failure library** — target pages cover canary removal, bad-keyword injection, CMS-style error pages, ransomware, defacement, malicious scripts, and hidden spam links while preserving realistic HTTP behavior.
+- **DNS server** — `cmd/dns` acts as authoritative DNS for the fleet, supports DNS failure modes, serves A/NS/SOA/TXT records, and has ACME TXT control endpoints.
+- **Geo and method-sensitive cases** — source-IP filtering enables geo-scoped failures, and HEAD/GET mismatch scenarios cover false-up and false-down risks for HEAD-only monitors.
+
+## TLS and certificate infrastructure
+
+- **Certmint integrated in-repo** — `cmd/certmint` mints and archives certificates, publishes a cert library API, trims stale entries, and has operator docs and provisioning hooks.
+- **ACME DNS-01 path** — DNS members support ACME TXT records and certbot manual hooks, so certmint can issue public certificates through the benchmark nameservers.
+- **Target TLS support** — the target has HTTPS/SNI handling, library certificate selection, healthy certificate fallback, expired/expiring selection, invalid-certificate variants, deprecated TLS modes, and handshake-abort behavior.
+- **Dynamic cert-library distribution** — the harness forwards cert-library URLs to targets; targets poll, cache, swap, prune, and persist certificate-library config across restarts.
+
+## Campaigns and statistical comparison
+
+- **Campaign methodology** — stratified sampling, two-tier sample depth, reproducible seeds, audit trail, and anti-favoritism constraints are documented.
+- **Campaign implementation** — config parsing, pure design/schedule generation, `campaign_runs` schema, scenario translation, serial campaign runner, campaign CLI, and campaign metric derivation are implemented.
+- **Bias-aware reporting** — reports flag service/sample imbalance, missing failure/service cells, capability mismatches, uncategorized Unknown rows, and include confidence intervals before readers compare latency numbers.
+
+## Inter-run state and suppression
+
+- **Maintenance windows** — scenario parsing, runner gating, adapter provisioning, vendor-side APIs for Pingdom, UptimeRobot, Datadog, Better Uptime, and Jetmon v2, plus `maintenance_suppressed` measurement classification are implemented.
+- **Cooldown groundwork** — capability flags and delete/recreate cleanup paths exist where supported; dedicated cooldown-suppression measurement remains an active follow-up.
+
+## Operations, testing, and hardening
+
+- **Fleet provisioning and deploy flow** — scripts create config skeletons, install systemd units, handle DNS port conflicts, deploy binaries, and cover target, DNS, harness, and certmint roles.
+- **Regression coverage** — tests cover parsers, runner error handling, adapter factories, DNS handlers, target handlers, cert selection, campaign anti-favoritism, reporting, and live-test compilation.
+- **CI checks** — build, vet, live-test compilation, race testing, and formatting/tidiness checks are represented in the project workflow.
 
 ---
 
@@ -106,7 +160,7 @@ Required by Phase 1 once we have multiple virtual hosts, but ordering with the p
 
 ## Automated randomized testing campaigns
 
-**Status:** Not implemented. Methodology locked 2026-04-27 (this entry). Implementation gated on the maintenance/cooldown work above. Foundational for the project's statistical-comparison value proposition.
+**Status:** Partially implemented. Methodology locked 2026-04-27. Config parsing, deterministic generation, serial execution, metric derivation, and reporting are in place; remaining work is escalation support, concurrent execution, and live-campaign hardening around cooldown behavior.
 
 The harness today runs one scripted scenario at a time. That model is fine for *targeted* tests ("does Pingdom detect a 503?") but it can't produce the data the project actually exists to publish: **min, max, and average detection times of specific kinds of failures across the different services**, computed from enough samples that the numbers are defensible.
 
