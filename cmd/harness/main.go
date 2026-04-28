@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
 	"github.com/Automattic/uptime-bench/internal/adapter/betteruptime"
@@ -23,6 +27,7 @@ import (
 	"github.com/Automattic/uptime-bench/internal/runner"
 	"github.com/Automattic/uptime-bench/internal/scenario"
 	"github.com/Automattic/uptime-bench/internal/serviceconfig"
+	"github.com/Automattic/uptime-bench/internal/targetserver"
 )
 
 // adapterFactory builds an adapter from a service config entry.
@@ -94,6 +99,15 @@ func main() {
 		certmintLabel = url
 	}
 	log.Printf("harness: fleet loaded (%d targets, %d nameservers, certmint=%s)", len(fl.Targets), len(fl.Nameservers), certmintLabel)
+
+	if err := pushCertLibraryConfig(fl); err != nil {
+		// Logged but not fatal: targets may have a working
+		// configuration from a previous push, and a benchmark run
+		// that doesn't exercise TLS scenarios doesn't need
+		// cert-library state to be current. Operators see the line
+		// in the harness log and can react.
+		log.Printf("harness: cert-library config push: %v", err)
+	}
 
 	var sc *scenario.Scenario
 	var c *campaign.Campaign
@@ -251,4 +265,63 @@ func adapterForService(svc serviceconfig.Service) (adapter.Adapter, error) {
 		return nil, fmt.Errorf("service %q: %w", svc.ID, err)
 	}
 	return a, nil
+}
+
+// pushCertLibraryConfig forwards the certmint cert-library URL from
+// fleet.toml's [certmint] section to every distinct target control
+// address in the fleet. Same-address [[targets]] entries (the
+// virtual-host pattern, where bench-a / bench-b / probe-a all share
+// one VM at one control port) collapse to a single push because the
+// underlying CertLibraryController dedupes anyway and we want clean
+// per-host log lines.
+//
+// No-op when fleet.toml has no [certmint] section configured. Errors
+// from individual targets are aggregated; the harness keeps running
+// regardless because the cert-library controller on each target keeps
+// its previous config when a push fails.
+func pushCertLibraryConfig(fl *fleet.Config) error {
+	url := fl.Certmint.LibraryURL()
+	if url == "" {
+		return nil
+	}
+	token, err := readControlToken(fl)
+	if err != nil {
+		return fmt.Errorf("read control token: %w", err)
+	}
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	seen := make(map[string]struct{}, len(fl.Targets))
+	var errs []error
+	for _, t := range fl.Targets {
+		addr := fmt.Sprintf("http://%s:%d", t.Address, t.ControlPort)
+		if _, dup := seen[addr]; dup {
+			continue
+		}
+		seen[addr] = struct{}{}
+
+		client := targetserver.NewCertLibraryClient(addr, token, httpClient)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := client.Configure(ctx, targetserver.CertLibraryConfigRequest{URL: url})
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", addr, err))
+			continue
+		}
+		log.Printf("harness: cert-library config pushed to %s (source=%s)", addr, url)
+	}
+	return errors.Join(errs...)
+}
+
+// readControlToken reads the shared bearer token at
+// fl.Control.AuthTokenFile, mirroring runner.readFleetToken without
+// taking a dependency on the runner package's internals.
+func readControlToken(fl *fleet.Config) (string, error) {
+	if fl.Control.AuthTokenFile == "" {
+		return "", fmt.Errorf("control.auth_token_file is required")
+	}
+	data, err := os.ReadFile(fl.Control.AuthTokenFile)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }

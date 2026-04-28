@@ -48,13 +48,6 @@ func main() {
 
 	registry := control.NewRegistry()
 
-	// Control API server.
-	controlSrv := control.NewServer(*memberID, token, registry)
-	controlHTTP := &http.Server{
-		Addr:    fmt.Sprintf(":%d", *controlPort),
-		Handler: controlSrv.Handler(),
-	}
-
 	dataHandler := &targetserver.VirtualHostHandler{Registry: registry}
 
 	// Internal HTTP data server. Listens on a localhost port that the TCP
@@ -66,7 +59,11 @@ func main() {
 		Addr:    internalAddr,
 		Handler: dataHandler,
 	}
-	var httpsHTTP *http.Server
+
+	var (
+		httpsHTTP         *http.Server
+		certLibController *targetserver.CertLibraryController
+	)
 	if *httpsPort > 0 {
 		cert, err := targetserver.SelfSignedCertificate(splitCSV(*tlsHosts), time.Now())
 		if err != nil {
@@ -76,7 +73,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("target: tls mismatch cert: %v", err)
 		}
-		selector := &targetserver.CertificateSelector{
+		certSelector := &targetserver.CertificateSelector{
 			Registry:         registry,
 			Fallback:         cert,
 			HostnameMismatch: mismatchCert,
@@ -86,23 +83,31 @@ func main() {
 			if err != nil {
 				log.Fatalf("target: load cert library: %v", err)
 			}
-			selector.SetLibrary(&loaded)
+			certSelector.SetLibrary(&loaded)
 			log.Printf("target: loaded cert library %s entries=%d", *certLibraryManifest, len(loaded.Entries))
 		}
+		certLibController = &targetserver.CertLibraryController{
+			Selector:            certSelector,
+			Token:               token,
+			CacheDir:            *certLibraryCacheDir,
+			DefaultPollInterval: *certLibraryPollInterval,
+		}
 		if *certLibrarySource != "" {
-			poller := &certlibrary.Poller{
-				BaseURL:  *certLibrarySource,
-				Token:    token,
-				CacheDir: *certLibraryCacheDir,
+			// -cert-library-source is the dev path (operator
+			// passes a flag). Production targets receive the same
+			// config via the harness control plane; the flag and
+			// the control plane share the same controller so
+			// either path produces the same running poll loop.
+			if err := certLibController.Apply(targetserver.CertLibraryConfigRequest{URL: *certLibrarySource}); err != nil {
+				log.Fatalf("target: cert-library: %v", err)
 			}
-			go runCertLibraryPoller(context.Background(), poller, *certLibraryPollInterval, selector)
 		}
 		baseTLS := &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}
 		configSelector := &targetserver.TLSConfigSelector{
 			Registry:     registry,
-			Certificates: selector,
+			Certificates: certSelector,
 			Base:         baseTLS,
 		}
 		httpsHTTP = &http.Server{
@@ -112,6 +117,21 @@ func main() {
 				GetConfigForClient: configSelector.GetConfigForClient,
 			},
 		}
+	}
+
+	// Compose the control mux with both the standard fleet-control
+	// routes and the target-specific cert-library config endpoint
+	// behind a single auth wrap, mirroring how the dns binary mounts
+	// its ACME endpoints alongside control.
+	controlSrv := control.NewServer(*memberID, token, registry)
+	controlMux := http.NewServeMux()
+	controlSrv.RegisterRoutes(controlMux)
+	if certLibController != nil {
+		targetserver.RegisterCertLibraryConfigHandler(controlMux, certLibController)
+	}
+	controlHTTP := &http.Server{
+		Addr:    fmt.Sprintf(":%d", *controlPort),
+		Handler: control.AuthMiddleware(token)(controlMux),
 	}
 
 	go func() {
@@ -164,35 +184,6 @@ func main() {
 	if httpsHTTP != nil {
 		if err := httpsHTTP.Shutdown(ctx); err != nil {
 			log.Printf("target: https shutdown: %v", err)
-		}
-	}
-}
-
-// runCertLibraryPoller drives the cert-library polling loop. First poll
-// runs immediately so a freshly-started target catches up to certmint's
-// current library before its first TLS handshake; subsequent polls fire
-// on `interval`. Errors are logged and the loop continues — a brief
-// certmint outage shouldn't kill the target's existing library state,
-// since the atomic swap only happens on a successful fetch.
-func runCertLibraryPoller(ctx context.Context, poller *certlibrary.Poller, interval time.Duration, selector *targetserver.CertificateSelector) {
-	poll := func() {
-		lib, err := poller.Poll(ctx)
-		if err != nil {
-			log.Printf("target: cert-library poll: %v", err)
-			return
-		}
-		selector.SetLibrary(lib)
-		log.Printf("target: cert-library refreshed from %s entries=%d", poller.BaseURL, len(lib.Entries))
-	}
-	poll()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			poll()
 		}
 	}
 }
