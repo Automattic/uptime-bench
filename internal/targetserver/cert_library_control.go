@@ -132,6 +132,15 @@ func (c *CertLibraryController) runPoller(ctx context.Context, p *certlibrary.Po
 		}
 		c.Selector.SetLibrary(lib)
 		log.Printf("target: cert-library refreshed from %s entries=%d", p.BaseURL, len(lib.Entries))
+		// Prune AFTER SetLibrary so the in-memory cert cache is
+		// already cleared and the selector's view is the new
+		// library — no handshake path can still try to load a
+		// cached cert from a directory we're about to delete.
+		if removed, err := p.PruneCache(lib); err != nil {
+			log.Printf("target: cert-library prune: %v", err)
+		} else if len(removed) > 0 {
+			log.Printf("target: cert-library pruned %d stale cache entries: %v", len(removed), removed)
+		}
 	}
 	poll()
 	ticker := time.NewTicker(interval)

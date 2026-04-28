@@ -222,6 +222,83 @@ func TestPoller_RejectsUnauthorizedManifest(t *testing.T) {
 	}
 }
 
+// TestPoller_PruneCacheRemovesOrphans — after a manifest trims an
+// entry, the next poll should drop the corresponding cache subdir.
+// This is the GC the target relies on so a long-running fleet doesn't
+// accumulate stale staging certs forever.
+func TestPoller_PruneCacheRemovesOrphans(t *testing.T) {
+	cacheDir := t.TempDir()
+	// Pre-seed three subdirs as if they were prior poll results.
+	for _, id := range []string{"alive", "orphan-a", "orphan-b"} {
+		if err := os.MkdirAll(filepath.Join(cacheDir, id), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cacheDir, id, "cert.pem"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// And a non-directory file at top level — must be ignored.
+	if err := os.WriteFile(filepath.Join(cacheDir, "stray.txt"), []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lib := &Library{
+		Version: ManifestVersion,
+		Entries: []Entry{{ID: "alive", Domain: "x.example.com", Profile: "p", Identifiers: []string{"x.example.com"}, NotAfter: time.Now().Add(time.Hour), Paths: Paths{Cert: "/c", FullChain: "/c", PrivKey: "/c"}}},
+	}
+
+	p := &Poller{CacheDir: cacheDir}
+	removed, err := p.PruneCache(lib)
+	if err != nil {
+		t.Fatalf("PruneCache: %v", err)
+	}
+	gotMap := make(map[string]bool, len(removed))
+	for _, r := range removed {
+		gotMap[r] = true
+	}
+	if !gotMap["orphan-a"] || !gotMap["orphan-b"] || gotMap["alive"] {
+		t.Fatalf("removed = %v, want orphan-a + orphan-b but not alive", removed)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "alive")); err != nil {
+		t.Fatalf("alive dir was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "stray.txt")); err != nil {
+		t.Fatalf("non-directory file was touched: %v", err)
+	}
+}
+
+func TestPoller_PruneCacheNoOpOnEmptyAndNilLib(t *testing.T) {
+	p := &Poller{CacheDir: t.TempDir()}
+	removed, err := p.PruneCache(nil)
+	if err != nil {
+		t.Fatalf("PruneCache nil: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want empty", removed)
+	}
+	removed, err = p.PruneCache(&Library{Version: ManifestVersion})
+	if err != nil {
+		t.Fatalf("PruneCache empty: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want empty", removed)
+	}
+}
+
+// TestPoller_PruneCacheMissingDirIsNoOp — first run on a fresh box,
+// /var/cache/uptime-bench-target/cert-library doesn't exist yet.
+// Prune must not error.
+func TestPoller_PruneCacheMissingDirIsNoOp(t *testing.T) {
+	p := &Poller{CacheDir: filepath.Join(t.TempDir(), "does-not-exist")}
+	removed, err := p.PruneCache(&Library{Version: ManifestVersion})
+	if err != nil {
+		t.Fatalf("PruneCache: %v", err)
+	}
+	if removed != nil {
+		t.Fatalf("removed = %v, want nil", removed)
+	}
+}
+
 // TestPoller_WriteIsAtomic — a partial fetch (server returns
 // truncated body or the connection drops mid-stream) must not leave
 // a half-written file under the published path. This guards against

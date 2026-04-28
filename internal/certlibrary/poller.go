@@ -206,6 +206,51 @@ func verifyLeafFingerprint(certPath, expected string) error {
 	return nil
 }
 
+// PruneCache removes cache subdirectories whose names aren't entry IDs
+// in lib. Called by the target after SetLibrary so the in-memory cert
+// cache has already been cleared and the running selector points at
+// lib — there's no remaining handshake path that could read the
+// to-be-deleted files. Returns the slice of removed directory names
+// for logging.
+//
+// Called only on the cache directory's immediate children, not
+// recursively, so an unrelated subdirectory an operator placed there
+// (unlikely but possible) is never traversed deeper than top-level
+// "is this an entry-id-named directory" check.
+func (p *Poller) PruneCache(lib *Library) ([]string, error) {
+	if p.CacheDir == "" {
+		return nil, nil
+	}
+	keep := make(map[string]struct{}, 0)
+	if lib != nil {
+		for _, e := range lib.Entries {
+			keep[sanitizeForFilesystem(e.ID)] = struct{}{}
+		}
+	}
+	entries, err := os.ReadDir(p.CacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("certlibrary: read cache dir: %w", err)
+	}
+	var removed []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, ok := keep[e.Name()]; ok {
+			continue
+		}
+		path := filepath.Join(p.CacheDir, e.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return removed, fmt.Errorf("certlibrary: remove stale cache %s: %w", path, err)
+		}
+		removed = append(removed, e.Name())
+	}
+	return removed, nil
+}
+
 // sanitizeForFilesystem strips path separators and parent-dir traversal
 // from an entry ID before joining it into a filesystem path. The
 // server-side handler already validates entry IDs; this is defense in
