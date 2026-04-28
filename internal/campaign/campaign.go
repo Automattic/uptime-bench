@@ -133,7 +133,15 @@ type Escalation struct {
 	Probability     float64       // [0, 1]
 	StagesRange     IntRange      // typically {2, 3}
 	InterStageRange DurationRange // delay between consecutive stages
+	Patterns        []string      // escalation shape choices
 }
+
+// Escalation pattern values.
+const (
+	EscalationPatternLayered     = "layered"
+	EscalationPatternReplacement = "replacement"
+	EscalationPatternRecovery    = "recovery"
+)
 
 // IntRange is a closed [Min, Max] integer interval.
 type IntRange struct {
@@ -225,6 +233,7 @@ type rawEscalation struct {
 	Probability     float64         `toml:"probability"`
 	StagesRange     rawIntRange     `toml:"stages_range"`
 	InterStageRange *rawDurationRng `toml:"inter_stage_range"`
+	Patterns        []string        `toml:"patterns"`
 }
 
 type rawIntRange struct {
@@ -551,10 +560,28 @@ func validateEscalation(re rawEscalation) (*Escalation, error) {
 	if err != nil {
 		return nil, err
 	}
+	patterns := re.Patterns
+	if len(patterns) == 0 {
+		patterns = []string{EscalationPatternLayered}
+	}
+	seen := make(map[string]bool, len(patterns))
+	for _, p := range patterns {
+		switch p {
+		case EscalationPatternLayered, EscalationPatternReplacement, EscalationPatternRecovery:
+		default:
+			return nil, fmt.Errorf("campaign: escalation.patterns contains unknown pattern %q (allowed: %q, %q, %q)",
+				p, EscalationPatternLayered, EscalationPatternReplacement, EscalationPatternRecovery)
+		}
+		if seen[p] {
+			return nil, fmt.Errorf("campaign: escalation.patterns contains duplicate pattern %q", p)
+		}
+		seen[p] = true
+	}
 	return &Escalation{
 		Probability:     re.Probability,
 		StagesRange:     IntRange{Min: re.StagesRange.Min, Max: re.StagesRange.Max},
 		InterStageRange: *dr,
+		Patterns:        patterns,
 	}, nil
 }
 

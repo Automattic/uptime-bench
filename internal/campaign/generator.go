@@ -68,14 +68,14 @@ type Cell struct {
 // scenario. Stages run in order; each Stage carries an Offset relative
 // to scenario start and its own Duration.
 type EscalationDesign struct {
-	Stages []EscalationStage
+	Pattern string
+	Stages  []EscalationStage
 }
 
-// EscalationStage is one segment of an escalating failure. The
-// generator currently models the "layered" pattern (stage 2 starts
-// while stage 1 is still active). Scenario translation preserves
-// Duration so future generator modes can express replacement and
-// recovery patterns without changing the scenario schema again.
+// EscalationStage is one segment of an escalating failure. Pattern
+// controls how stage windows relate: layered stages overlap,
+// replacement stages hand off at the next stage start, and recovery
+// stages leave a quiet gap before the next stage.
 type EscalationStage struct {
 	FailureType string
 	Params      map[string]any
@@ -289,20 +289,40 @@ func pickFailureParams(r *rand.Rand, ft *FailureType) map[string]any {
 	return p
 }
 
-// pickEscalation builds a multi-stage escalation. Currently models the
-// "layered" pattern only — each stage starts at the previous stage's
-// activation + a sampled inter-stage delay, and runs for the rest of
-// the scenario. Replacement and recovery generation are now schema-
-// representable but still need sampling policy.
+// pickEscalation builds a multi-stage escalation. Each stage starts at the
+// previous stage's activation plus a sampled inter-stage delay. The selected
+// pattern decides how long each stage remains active.
 func pickEscalation(r *rand.Rand, c *Campaign, baseFailureType string, scenarioDuration time.Duration) *EscalationDesign {
 	stages := c.Escalation.StagesRange.Min
 	if c.Escalation.StagesRange.Max > c.Escalation.StagesRange.Min {
 		stages += r.IntN(c.Escalation.StagesRange.Max - c.Escalation.StagesRange.Min + 1)
 	}
 
-	out := &EscalationDesign{Stages: make([]EscalationStage, 0, stages)}
+	pattern := EscalationPatternLayered
+	if len(c.Escalation.Patterns) > 0 {
+		pattern = c.Escalation.Patterns[r.IntN(len(c.Escalation.Patterns))]
+	}
+
+	offsets := make([]time.Duration, 0, stages)
 	offset := time.Duration(0)
 	for i := 0; i < stages; i++ {
+		offsets = append(offsets, offset)
+		if i < stages-1 {
+			offset += durationIn(r, c.Escalation.InterStageRange.Min, c.Escalation.InterStageRange.Max)
+			// Don't push past scenario end; truncate the remaining
+			// schedule rather than producing a stage that starts after
+			// the scenario ends.
+			if offset >= scenarioDuration {
+				break
+			}
+		}
+	}
+
+	out := &EscalationDesign{
+		Pattern: pattern,
+		Stages:  make([]EscalationStage, 0, len(offsets)),
+	}
+	for i, offset := range offsets {
 		// Stage 1 reuses the base failure type so the scenario's
 		// primary failure is always present from t=0; later stages
 		// pick another type from the campaign's failure_types.
@@ -317,21 +337,35 @@ func pickEscalation(r *rand.Rand, c *Campaign, baseFailureType string, scenarioD
 			FailureType: ftName,
 			Params:      params,
 			Offset:      offset,
-			// Layered: each stage runs from its offset to scenario end.
-			Duration: scenarioDuration - offset,
+			Duration:    escalationStageDuration(pattern, offsets, i, scenarioDuration),
 		})
-
-		if i < stages-1 {
-			offset += durationIn(r, c.Escalation.InterStageRange.Min, c.Escalation.InterStageRange.Max)
-			// Don't push past scenario end; truncate the remaining
-			// schedule rather than producing a stage that starts after
-			// the scenario ends.
-			if offset >= scenarioDuration {
-				break
-			}
-		}
 	}
 	return out
+}
+
+func escalationStageDuration(pattern string, offsets []time.Duration, i int, scenarioDuration time.Duration) time.Duration {
+	remaining := scenarioDuration - offsets[i]
+	switch pattern {
+	case EscalationPatternReplacement:
+		if i+1 < len(offsets) {
+			return offsets[i+1] - offsets[i]
+		}
+		return remaining
+	case EscalationPatternRecovery:
+		if i+1 < len(offsets) {
+			return halfPositive(offsets[i+1] - offsets[i])
+		}
+		return halfPositive(remaining)
+	default:
+		return remaining
+	}
+}
+
+func halfPositive(d time.Duration) time.Duration {
+	if d <= 1 {
+		return d
+	}
+	return d / 2
 }
 
 // replayPair is the generator's internal representation of one requested

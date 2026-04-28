@@ -49,6 +49,7 @@ samples_per_cell = 60
 probability       = 0.20
 stages_range      = { min = 2, max = 3 }
 inter_stage_range = { min = "30s", max = "5m" }
+patterns          = ["layered", "replacement", "recovery"]
 
 [budget]
 pingdom     = { max_runs_per_hour = 10 }
@@ -112,6 +113,9 @@ jetmon-v1   = {}
 	if c.Escalation.InterStageRange.Min != 30*time.Second || c.Escalation.InterStageRange.Max != 5*time.Minute {
 		t.Errorf("Escalation.InterStageRange = %+v", c.Escalation.InterStageRange)
 	}
+	if got := c.Escalation.Patterns; len(got) != 3 || got[0] != EscalationPatternLayered || got[2] != EscalationPatternRecovery {
+		t.Errorf("Escalation.Patterns = %v", got)
+	}
 
 	if c.Budget["pingdom"].MaxRunsPerHour != 10 {
 		t.Errorf("Budget[pingdom] = %+v", c.Budget["pingdom"])
@@ -134,6 +138,25 @@ func TestParse_NoEscalationLeavesItNil(t *testing.T) {
 	}
 	if c.Escalation != nil {
 		t.Errorf("Escalation should be nil when omitted, got %+v", c.Escalation)
+	}
+}
+
+func TestParse_EscalationDefaultsToLayeredPattern(t *testing.T) {
+	body := validHeader + `
+[escalation]
+probability       = 0.20
+stages_range      = { min = 2, max = 3 }
+inter_stage_range = { min = "30s", max = "5m" }
+`
+	c, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if c.Escalation == nil {
+		t.Fatal("Escalation should be non-nil")
+	}
+	if got := c.Escalation.Patterns; len(got) != 1 || got[0] != EscalationPatternLayered {
+		t.Fatalf("Escalation.Patterns = %v, want [layered]", got)
 	}
 }
 
@@ -251,6 +274,28 @@ probability  = 0.2
 stages_range = { min = 2, max = 3 }
 `,
 			wantSubstr: "inter_stage_range is required",
+		},
+		{
+			name: "escalation unknown pattern",
+			body: validHeader + `
+[escalation]
+probability       = 0.2
+stages_range      = { min = 2, max = 3 }
+inter_stage_range = { min = "30s", max = "5m" }
+patterns          = ["rolling"]
+`,
+			wantSubstr: "unknown pattern",
+		},
+		{
+			name: "escalation duplicate pattern",
+			body: validHeader + `
+[escalation]
+probability       = 0.2
+stages_range      = { min = 2, max = 3 }
+inter_stage_range = { min = "30s", max = "5m" }
+patterns          = ["layered", "layered"]
+`,
+			wantSubstr: "duplicate pattern",
 		},
 		{
 			name: "negative budget",

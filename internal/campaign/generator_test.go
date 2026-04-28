@@ -522,6 +522,121 @@ inter_stage_range = { min = "30s", max = "1m" }
 	}
 }
 
+func TestGenerate_ReplacementEscalationPattern(t *testing.T) {
+	c, err := Parse([]byte(`
+id              = "replacement-test"
+duration        = "1h"
+seed            = 0
+check_frequency = "60s"
+
+[targets]
+pool     = ["bench-a"]
+patterns = ["single"]
+
+[duration_buckets]
+fixed = { min = "10m", max = "10m" }
+
+[sampling]
+samples_per_cell_default = 1
+
+[[failure_types]]
+type = "http_status"
+status_code_choices = [503]
+
+[escalation]
+probability       = 1.0
+stages_range      = { min = 2, max = 2 }
+inter_stage_range = { min = "2m", max = "2m" }
+patterns          = ["replacement"]
+
+[cooldown]
+per_target_minimum = "0s"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, err := Generate(c, 42)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	d := plan.Designs[0]
+	if d.Escalation == nil {
+		t.Fatal("Escalation is nil")
+	}
+	if d.Escalation.Pattern != EscalationPatternReplacement {
+		t.Fatalf("Pattern = %q, want replacement", d.Escalation.Pattern)
+	}
+	stages := d.Escalation.Stages
+	if len(stages) != 2 {
+		t.Fatalf("len(Stages) = %d, want 2", len(stages))
+	}
+	if stages[0].Offset != 0 || stages[0].Duration != 2*time.Minute {
+		t.Fatalf("stage 0 = %+v, want offset 0 duration 2m", stages[0])
+	}
+	if stages[1].Offset != 2*time.Minute || stages[1].Duration != 8*time.Minute {
+		t.Fatalf("stage 1 = %+v, want offset 2m duration 8m", stages[1])
+	}
+}
+
+func TestGenerate_RecoveryEscalationPatternLeavesQuietGap(t *testing.T) {
+	c, err := Parse([]byte(`
+id              = "recovery-test"
+duration        = "1h"
+seed            = 0
+check_frequency = "60s"
+
+[targets]
+pool     = ["bench-a"]
+patterns = ["single"]
+
+[duration_buckets]
+fixed = { min = "10m", max = "10m" }
+
+[sampling]
+samples_per_cell_default = 1
+
+[[failure_types]]
+type = "http_status"
+status_code_choices = [503]
+
+[escalation]
+probability       = 1.0
+stages_range      = { min = 2, max = 2 }
+inter_stage_range = { min = "4m", max = "4m" }
+patterns          = ["recovery"]
+
+[cooldown]
+per_target_minimum = "0s"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, err := Generate(c, 42)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	d := plan.Designs[0]
+	if d.Escalation == nil {
+		t.Fatal("Escalation is nil")
+	}
+	if d.Escalation.Pattern != EscalationPatternRecovery {
+		t.Fatalf("Pattern = %q, want recovery", d.Escalation.Pattern)
+	}
+	stages := d.Escalation.Stages
+	if len(stages) != 2 {
+		t.Fatalf("len(Stages) = %d, want 2", len(stages))
+	}
+	if stages[0].Offset != 0 || stages[0].Duration != 2*time.Minute {
+		t.Fatalf("stage 0 = %+v, want offset 0 duration 2m", stages[0])
+	}
+	if end := stages[0].Offset + stages[0].Duration; end >= stages[1].Offset {
+		t.Fatalf("stage 0 end = %v, stage 1 offset = %v; want quiet gap", end, stages[1].Offset)
+	}
+	if stages[1].Offset != 4*time.Minute || stages[1].Duration != 3*time.Minute {
+		t.Fatalf("stage 1 = %+v, want offset 4m duration 3m", stages[1])
+	}
+}
+
 // TestGenerate_ZeroSampleCellsSkipped — cells whose tier resolves to
 // zero samples emit no design (defensive; current validation forbids
 // this, but the generator shouldn't crash if it ever happens).
