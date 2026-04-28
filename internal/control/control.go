@@ -17,11 +17,11 @@ type FailureSpec struct {
 	// Type is the failure type discriminator (e.g. "http_status", "dns_nxdomain").
 	Type string `json:"type"`
 
-	// Host is the virtual host this failure applies to (target VMs only).
+	// Host is the virtual host this failure applies to (target servers only).
 	// Empty means the failure applies at the network level (e.g. TCP failures).
 	Host string `json:"host,omitempty"`
 
-	// Path is the specific path this failure applies to (target VMs only).
+	// Path is the specific path this failure applies to (target servers only).
 	// Empty means all paths on the host.
 	Path string `json:"path,omitempty"`
 

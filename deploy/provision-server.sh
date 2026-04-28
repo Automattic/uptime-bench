@@ -226,7 +226,7 @@ case "$TYPE" in
 #
 # CONTROL_TOKEN: shared bearer token used for control-plane requests to
 #   every fleet member. Generate once with `openssl rand -hex 32` and
-#   reuse the exact same value on every fleet VM.
+#   reuse the exact same value on every fleet server.
 # Values are quoted so this file is valid both for systemd's
 # EnvironmentFile= parser and for shell sourcing (the parens in tcp(...)
 # would otherwise be a bash syntax error during `. harness.env`).
@@ -245,9 +245,9 @@ EOF
 #   sudoedit target.env
 #
 # CONTROL_TOKEN: shared bearer token for control-plane requests.
-#   Must match the value in /etc/uptime-bench/harness.env on the harness VM.
+#   Must match the value in /etc/uptime-bench/harness.env on the harness server.
 #
-# MEMBER_ID: this VM's id field from the [[targets]] block in fleet.toml.
+# MEMBER_ID: this server's id field from the [[targets]] block in fleet.toml.
 #   The target binary reports this id in control responses so the harness
 #   can correlate results across a multi-target fleet.
 CONTROL_TOKEN=CHANGE_ME
@@ -265,9 +265,9 @@ EOF
 #   sudoedit dns.env
 #
 # CONTROL_TOKEN: shared bearer token for control-plane requests.
-#   Must match the value in /etc/uptime-bench/harness.env on the harness VM.
+#   Must match the value in /etc/uptime-bench/harness.env on the harness server.
 #
-# MEMBER_ID: this VM's id field from the [[nameservers]] block in fleet.toml.
+# MEMBER_ID: this server's id field from the [[nameservers]] block in fleet.toml.
 #   The DNS binary uses it to look up which zones it should serve.
 CONTROL_TOKEN=CHANGE_ME
 MEMBER_ID=ns-XX
@@ -287,7 +287,7 @@ EOF
 #   certbot manual hooks use this to PUT/DELETE TXT records on every
 #   uptime-bench-dns member, and (Phase B) the cert-library HTTP server
 #   uses it to authenticate target polls.
-#   Must match the value in /etc/uptime-bench/harness.env on the harness VM.
+#   Must match the value in /etc/uptime-bench/harness.env on the harness server.
 #
 # DNS control URLs aren't carried here — cmd/certmint reads them from
 # /etc/uptime-bench/fleet.toml at run time and injects
@@ -304,7 +304,7 @@ ok "Wrote /etc/uptime-bench/${TYPE}.env.example"
 
 cat > /etc/uptime-bench/control-token.example <<'EOF'
 # Replace this entire file with the same hex string used for CONTROL_TOKEN
-# in /etc/uptime-bench/harness.env on the harness VM.
+# in /etc/uptime-bench/harness.env on the harness server.
 #
 # To use:
 #   sudo cp control-token.example control-token

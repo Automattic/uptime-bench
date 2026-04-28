@@ -289,7 +289,7 @@ func adapterForService(svc serviceconfig.Service) (adapter.Adapter, error) {
 // fleet.toml's [certmint] section to every distinct target control
 // address in the fleet. Same-address [[targets]] entries (the
 // virtual-host pattern, where bench-a / bench-b / probe-a all share
-// one VM at one control port) collapse to a single push because the
+// one server at one control port) collapse to a single push because the
 // underlying CertLibraryController dedupes anyway and we want clean
 // per-host log lines.
 //

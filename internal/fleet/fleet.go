@@ -61,7 +61,7 @@ type AdapterConfig struct {
 	MaxCallsPerRun int
 }
 
-// Nameserver is one authoritative DNS VM in the fleet.
+// Nameserver is one authoritative DNS server in the fleet.
 type Nameserver struct {
 	ID          string
 	Address     string
@@ -80,7 +80,7 @@ type Nameserver struct {
 	Hosts []string
 }
 
-// Target is one target VM in the fleet.
+// Target is one target server in the fleet.
 type Target struct {
 	ID          string
 	Address     string
@@ -88,7 +88,7 @@ type Target struct {
 	Sites       []Site
 }
 
-// Site is one virtual host served by a target VM.
+// Site is one virtual host served by a target server.
 type Site struct {
 	ID    string
 	Host  string
