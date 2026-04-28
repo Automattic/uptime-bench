@@ -3,7 +3,7 @@
 Deferred features that are intentionally not yet implemented. Items below the active line are accommodated in the schema and data model so they can be added without breaking changes — but the implementation work is deferred. Items above the line are next-up. The completed section summarizes major shipped capabilities from the commit history so the roadmap shows how the current shape of the system came together.
 
 **Active priorities (next-up, in rough order):**
-1. [Jetmon v2 deployed scenario smoke](#jetmon-v2-deployed-scenario-smoke) — blocked on a current token and runner-to-API reachability.
+1. [Jetmon v2 deployed scenario smoke](#jetmon-v2-deployed-scenario-smoke) — blocked on runner-to-API reachability and deployed harness config.
 2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
 3. [TLS monitor-facing validation](#tls-monitor-facing-validation)
 4. [Live maintenance-window validation](#live-maintenance-window-validation)
@@ -90,12 +90,12 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 ## Jetmon v2 deployed scenario smoke
 
-**Status:** Blocked. Direct deployed target/DNS smoke passed on 2026-04-28; the full harness path against Jetmon v2 is still the next proof point, but the first deployed attempt exposed two prerequisites rather than a product result.
+**Status:** Blocked on the deployed harness path. Direct deployed target/DNS smoke passed on 2026-04-28, and local Jetmon v2 API contract smoke now passes with a current token. The full harness path against Jetmon v2 is still the next proof point, but the runner host cannot currently reach the dev API and its service config is not enabled for Jetmon v2.
 
 Rechecked on 2026-04-28:
 
 - The Jetmon v2 API health endpoint at the current dev address is reachable from the workstation.
-- The last supplied API token still returns `401 invalid_token` from `/api/v1/me`, so adapter provisioning cannot proceed.
+- A replacement API token returns `200 OK` from `/api/v1/me` and the build-tagged Jetmon v2 live adapter tests pass locally, including provision, retrieve, API contract, and deprovision.
 - The harness server times out when calling the same API health endpoint, so runner-to-API reachability is still blocked.
 - The deployed harness `/etc/uptime-bench/services.toml` still has `jetmon-v2` disabled with no API URL or token configured.
 
@@ -106,7 +106,7 @@ Attempted on 2026-04-28:
 - The deployed harness could not reach the developer Jetmon v2 API at the private test address, while the local workstation could reach `/health`.
 - The previously supplied Jetmon v2 tokens returned 401 from `/api/v1/me`, so local smoke could not provision a site. The partial run deactivated the target failure normally and the target control registry was clean afterward.
 
-Resume this item when the runner host has a reachable Jetmon v2 API URL and a current write-scope token. The harness now supports `-monitors=jetmon-v2`, so the checked-in scenario corpus can be reused for Jetmon v2 smoke without creating temporary scenario copies.
+Resume this item when the runner host has a reachable Jetmon v2 API URL and the deployed harness service config is enabled with a current write-scope token. The harness now supports `-monitors=jetmon-v2`, so the checked-in scenario corpus can be reused for Jetmon v2 smoke without creating temporary scenario copies.
 
 Run a small monitor-facing scenario set through the real deployed fleet and the Jetmon v2 adapter before broadening to cross-vendor campaigns. This should validate the complete loop: harness provisioning, Jetmon v2 API calls, monitor behavior against injected target failures, retrieval, metric derivation, cleanup, and no remaining active fleet failures.
 
