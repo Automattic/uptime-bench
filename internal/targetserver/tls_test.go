@@ -93,10 +93,10 @@ func TestCertificateSelectorUsesExpiringLibraryCertificate(t *testing.T) {
 	}
 	selector := &CertificateSelector{
 		Registry: registry,
-		Library:  library,
 		Fallback: fallback,
 		Now:      func() time.Time { return now },
 	}
+	selector.SetLibrary(library)
 
 	got, err := selector.GetCertificate(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
 	if err != nil {
@@ -125,10 +125,10 @@ func TestCertificateSelectorUsesDefaultLibraryCertificateWithoutTLSFailure(t *te
 	}
 	selector := &CertificateSelector{
 		Registry: control.NewRegistry(),
-		Library:  library,
 		Fallback: fallback,
 		Now:      func() time.Time { return now },
 	}
+	selector.SetLibrary(library)
 
 	got, err := selector.GetCertificate(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
 	if err != nil {
@@ -162,10 +162,10 @@ func TestCertificateSelectorTLSInvalidSelfSignedOverridesLibraryDefault(t *testi
 	}
 	selector := &CertificateSelector{
 		Registry: registry,
-		Library:  library,
 		Fallback: fallback,
 		Now:      func() time.Time { return now },
 	}
+	selector.SetLibrary(library)
 
 	got, err := selector.GetCertificate(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
 	if err != nil {
@@ -435,6 +435,56 @@ func TestTLSConfigSelectorRejectsUnsupportedTLSDeprecatedVariant(t *testing.T) {
 
 	if _, err := selector.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"}); err == nil {
 		t.Fatal("GetConfigForClient returned nil error for unsupported tls_deprecated variant")
+	}
+}
+
+// TestCertificateSelector_SetLibrarySwapsAndClearsCache — the
+// atomic-swap contract Phase B-3 relies on. After SetLibrary, the
+// next handshake must see the new library, and a previously-cached
+// *tls.Certificate from the old library must not shadow a freshly
+// rotated entry with the same ID.
+func TestCertificateSelector_SetLibrarySwapsAndClearsCache(t *testing.T) {
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	// Two physically-distinct cert directories with the SAME entry
+	// ID — simulates a lineage rotation where the manifest re-uses
+	// the ID but the on-disk PEMs (and their fingerprints) change.
+	v1 := writeLibraryCert(t, t.TempDir(), "rotating-id", now.Add(90*day), "*.bench.example.com")
+	v2 := writeLibraryCert(t, t.TempDir(), "rotating-id", now.Add(180*day), "*.bench.example.com")
+	libV1 := &certlibrary.Library{
+		Version: certlibrary.ManifestVersion,
+		Entries: []certlibrary.Entry{v1},
+	}
+	libV2 := &certlibrary.Library{
+		Version: certlibrary.ManifestVersion,
+		Entries: []certlibrary.Entry{v2},
+	}
+
+	selector := &CertificateSelector{
+		Registry: control.NewRegistry(),
+		Now:      func() time.Time { return now },
+	}
+	selector.SetLibrary(libV1)
+
+	// Prime the cert cache by serving v1 once.
+	first, err := selector.GetCertificate(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
+	if err != nil {
+		t.Fatalf("GetCertificate v1: %v", err)
+	}
+	if !first.Leaf.NotAfter.Equal(v1.NotAfter) {
+		t.Fatalf("v1 NotAfter = %v, want %v", first.Leaf.NotAfter, v1.NotAfter)
+	}
+
+	// Swap. The new entry has the same ID but a different file on
+	// disk and a 180-day NotAfter. The cache eviction is what
+	// prevents the v1 in-memory cert from masking v2.
+	selector.SetLibrary(libV2)
+
+	second, err := selector.GetCertificate(&tls.ClientHelloInfo{ServerName: "target.bench.example.com"})
+	if err != nil {
+		t.Fatalf("GetCertificate v2: %v", err)
+	}
+	if !second.Leaf.NotAfter.Equal(v2.NotAfter) {
+		t.Fatalf("post-swap NotAfter = %v, want %v (cache may not have been cleared)", second.Leaf.NotAfter, v2.NotAfter)
 	}
 }
 

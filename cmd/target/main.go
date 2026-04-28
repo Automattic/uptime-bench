@@ -34,7 +34,10 @@ func main() {
 	memberID := flag.String("id", "target", "fleet member ID for control status responses")
 	tlsHosts := flag.String("tls-hosts", "localhost,bench.local,probe.local", "comma-separated SANs for the generated default self-signed HTTPS certificate")
 	tlsMismatchHost := flag.String("tls-mismatch-host", "uptime-bench-invalid.local", "SAN for the generated tls_invalid hostname_mismatch certificate")
-	certLibraryManifest := flag.String("cert-library-manifest", "", "path to uptime-bench-certmint manifest.json for TLS expiration scenarios")
+	certLibraryManifest := flag.String("cert-library-manifest", "", "path to a local uptime-bench-certmint manifest.json — for ad-hoc tests; production targets pull from -cert-library-source instead")
+	certLibrarySource := flag.String("cert-library-source", "", "base URL of certmint's cert-library HTTP API, e.g. http://certmint-01.bench:9200; when set, the target polls it on -cert-library-poll-interval and atomically swaps the in-memory library on each successful fetch")
+	certLibraryPollInterval := flag.Duration("cert-library-poll-interval", 30*time.Minute, "how often to re-fetch the cert library from -cert-library-source")
+	certLibraryCacheDir := flag.String("cert-library-cache-dir", "/var/cache/uptime-bench-target/cert-library", "local directory the polled library mirrors into")
 	tokenFile := flag.String("token-file", "", "path to control token file (default: CONTROL_TOKEN env)")
 	flag.Parse()
 
@@ -73,20 +76,26 @@ func main() {
 		if err != nil {
 			log.Fatalf("target: tls mismatch cert: %v", err)
 		}
-		var library *certlibrary.Library
+		selector := &targetserver.CertificateSelector{
+			Registry:         registry,
+			Fallback:         cert,
+			HostnameMismatch: mismatchCert,
+		}
 		if *certLibraryManifest != "" {
 			loaded, err := certlibrary.Load(*certLibraryManifest)
 			if err != nil {
 				log.Fatalf("target: load cert library: %v", err)
 			}
-			library = &loaded
+			selector.SetLibrary(&loaded)
 			log.Printf("target: loaded cert library %s entries=%d", *certLibraryManifest, len(loaded.Entries))
 		}
-		selector := &targetserver.CertificateSelector{
-			Registry:         registry,
-			Library:          library,
-			Fallback:         cert,
-			HostnameMismatch: mismatchCert,
+		if *certLibrarySource != "" {
+			poller := &certlibrary.Poller{
+				BaseURL:  *certLibrarySource,
+				Token:    token,
+				CacheDir: *certLibraryCacheDir,
+			}
+			go runCertLibraryPoller(context.Background(), poller, *certLibraryPollInterval, selector)
 		}
 		baseTLS := &tls.Config{
 			MinVersion: tls.VersionTLS12,
@@ -155,6 +164,35 @@ func main() {
 	if httpsHTTP != nil {
 		if err := httpsHTTP.Shutdown(ctx); err != nil {
 			log.Printf("target: https shutdown: %v", err)
+		}
+	}
+}
+
+// runCertLibraryPoller drives the cert-library polling loop. First poll
+// runs immediately so a freshly-started target catches up to certmint's
+// current library before its first TLS handshake; subsequent polls fire
+// on `interval`. Errors are logged and the loop continues — a brief
+// certmint outage shouldn't kill the target's existing library state,
+// since the atomic swap only happens on a successful fetch.
+func runCertLibraryPoller(ctx context.Context, poller *certlibrary.Poller, interval time.Duration, selector *targetserver.CertificateSelector) {
+	poll := func() {
+		lib, err := poller.Poll(ctx)
+		if err != nil {
+			log.Printf("target: cert-library poll: %v", err)
+			return
+		}
+		selector.SetLibrary(lib)
+		log.Printf("target: cert-library refreshed from %s entries=%d", poller.BaseURL, len(lib.Entries))
+	}
+	poll()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			poll()
 		}
 	}
 }

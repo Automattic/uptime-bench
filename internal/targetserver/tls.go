@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/certlibrary"
@@ -27,15 +28,40 @@ const day = 24 * time.Hour
 // CertificateSelector chooses the TLS certificate to present for one
 // ClientHello. Normal traffic gets the library default or fallback cert;
 // active TLS certificate failures override that with the requested variant.
+//
+// The library pointer is held atomically so a polling goroutine can
+// SetLibrary() with a freshly-fetched library while in-flight handshakes
+// finish cleanly with whatever they read at GetCertificate-time.
 type CertificateSelector struct {
 	Registry         *control.FailureRegistry
-	Library          *certlibrary.Library
 	Fallback         tls.Certificate
 	HostnameMismatch tls.Certificate
 	Now              func() time.Time
 
+	library atomic.Pointer[certlibrary.Library]
+
 	mu    sync.Mutex
 	cache map[string]*tls.Certificate
+}
+
+// SetLibrary atomically replaces the cert library and clears the
+// in-memory tls.Certificate cache so a rotated lineage (same entry
+// ID, new fingerprint on disk) doesn't shadow the new files. Safe
+// to call from a goroutine while handshakes are in flight: a
+// handshake that already loaded a *tls.Certificate from the old
+// library finishes with that cert; the next handshake sees the
+// new library.
+func (s *CertificateSelector) SetLibrary(lib *certlibrary.Library) {
+	s.library.Store(lib)
+	s.mu.Lock()
+	s.cache = nil
+	s.mu.Unlock()
+}
+
+// Library returns the currently-active cert library, or nil when no
+// library is configured.
+func (s *CertificateSelector) Library() *certlibrary.Library {
+	return s.library.Load()
 }
 
 // TLSConfigSelector chooses the per-ClientHello TLS protocol configuration.
@@ -138,7 +164,8 @@ func (s *CertificateSelector) failureCertificate(host string) (*tls.Certificate,
 			return nil, fmt.Errorf("target: unsupported tls_invalid variant %q", variant)
 		}
 	}
-	if s.Library == nil {
+	lib := s.Library()
+	if lib == nil {
 		return nil, nil
 	}
 	now := time.Now().UTC()
@@ -147,7 +174,7 @@ func (s *CertificateSelector) failureCertificate(host string) (*tls.Certificate,
 	}
 	if spec, ok := s.Registry.Lookup("tls_expired", host, ""); ok {
 		daysExpired := paramInt(spec.Params["days_expired"], 1)
-		entry, err := s.Library.SelectExpired(host, now, time.Duration(daysExpired)*day)
+		entry, err := lib.SelectExpired(host, now, time.Duration(daysExpired)*day)
 		if err != nil {
 			return nil, err
 		}
@@ -155,7 +182,7 @@ func (s *CertificateSelector) failureCertificate(host string) (*tls.Certificate,
 	}
 	if spec, ok := s.Registry.Lookup("tls_expiring", host, ""); ok {
 		daysRemaining := paramInt(spec.Params["days_remaining"], 1)
-		entry, err := s.Library.SelectExpiring(host, now, time.Duration(daysRemaining)*day)
+		entry, err := lib.SelectExpiring(host, now, time.Duration(daysRemaining)*day)
 		if err != nil {
 			return nil, err
 		}
@@ -166,14 +193,15 @@ func (s *CertificateSelector) failureCertificate(host string) (*tls.Certificate,
 
 func (s *CertificateSelector) defaultCertificate(host string) (*tls.Certificate, error) {
 	host = normalizeTLSHost(host)
-	if host == "" || s.Library == nil {
+	lib := s.Library()
+	if host == "" || lib == nil {
 		return nil, nil
 	}
 	now := time.Now().UTC()
 	if s.Now != nil {
 		now = s.Now().UTC()
 	}
-	entry, err := s.Library.SelectDefault(host, now)
+	entry, err := lib.SelectDefault(host, now)
 	if errors.Is(err, certlibrary.ErrNoCertificate) {
 		return nil, nil
 	}
