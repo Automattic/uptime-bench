@@ -306,7 +306,7 @@ A *single* run with multiple chained failures, not a sequence of separate runs. 
 - **Replacement**: HTTP 503 at t=0 → escalates to TCP refused at t=2m. Stage 1 ends when stage 2 begins.
 - **Recovery test**: failure at t=0..t=2m → silence until t=5m → second failure at t=5m..t=7m. Tests whether the monitor cleared the first incident before the second arrived.
 
-The scenario format's `[[failures]]` blocks now support both `offset` and per-failure `duration`, so layered, replacement, and recovery patterns are representable without a new stage abstraction. The campaign generator accepts `[escalation].patterns = ["layered", "replacement", "recovery"]`; omitted `patterns` defaults to `["layered"]` for compatibility. Remaining escalation work is hardening reporting labels for multi-stage runs and deciding which pattern mix to use for published benchmark configs.
+The scenario format's `[[failures]]` blocks now support both `offset` and per-failure `duration`, so layered, replacement, and recovery patterns are representable without a new stage abstraction. The campaign generator accepts `[escalation].patterns = ["layered", "replacement", "recovery"]`; omitted `patterns` defaults to `["layered"]` for compatibility. Reports label multi-stage runs by escalation pattern and stage order. Remaining escalation work is deciding which pattern mix to use for published benchmark configs.
 
 ### Two-tier execution: designs and replays
 

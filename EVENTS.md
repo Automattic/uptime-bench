@@ -138,6 +138,6 @@ If the same event is written twice, the second write updates the existing row ra
 
 1. Every scenario run has a `resolution_reason` on close — no run ends without one.
 2. Replaying the same scenario with the same seed produces the same ground-truth event sequence.
-3. Neither Unknown nor capability_mismatch adapter results appear as false negatives in derived metric rows. Capability_mismatch rows are separately queryable so the support matrix can be reported without re-deriving it from logs.
+3. Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, and cooldown_uncertain outcomes do not appear as false negatives in derived metric rows. Capability_mismatch rows are separately queryable so the support matrix can be reported without re-deriving it from logs.
 4. `detection_latency_seconds` is null when no `alert_fired` event exists for that run × service pair — never zero or negative.
 5. Adapter deprovision runs and is recorded even when a scenario aborts midway.

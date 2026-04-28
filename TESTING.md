@@ -110,7 +110,7 @@ SELECT * FROM ground_truth_events WHERE run_id = '<run-id>';
 -- What the service reported
 SELECT * FROM monitor_reports WHERE run_id = '<run-id>';
 
--- Derived metrics: true positives, false negatives, detection latency
+-- Derived metrics: true positives, false negatives, suppression categories, latency
 SELECT * FROM derived_metrics WHERE run_id = '<run-id>';
 ```
 
