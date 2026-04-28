@@ -1,6 +1,7 @@
 package targetserver
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -187,6 +189,63 @@ func TestTLSConfigSelectorServesLibraryFailureCertificatesInRealHandshake(t *tes
 			}
 			if got := result.clientState.PeerCertificates[0].NotAfter; !got.Equal(tc.wantNotAfter) {
 				t.Fatalf("peer certificate NotAfter = %v, want %v", got, tc.wantNotAfter)
+			}
+		})
+	}
+}
+
+func TestTLSConfigSelectorOpenSSLServesLibraryFailureCertificates(t *testing.T) {
+	openssl := requireOpenSSL(t)
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name         string
+		failureType  string
+		params       map[string]any
+		entries      []certlibrary.Entry
+		wantNotAfter time.Time
+	}{
+		{
+			name:        "expired",
+			failureType: "tls_expired",
+			params:      map[string]any{"days_expired": float64(30)},
+			entries: []certlibrary.Entry{
+				writeLibraryCert(t, t.TempDir(), "openssl-expired-one-day", now.Add(-1*day), "*.bench.example.com"),
+				writeLibraryCert(t, t.TempDir(), "openssl-expired-thirty-days", now.Add(-30*day), "*.bench.example.com"),
+			},
+			wantNotAfter: now.Add(-30 * day),
+		},
+		{
+			name:        "expiring",
+			failureType: "tls_expiring",
+			params:      map[string]any{"days_remaining": float64(5)},
+			entries: []certlibrary.Entry{
+				writeLibraryCert(t, t.TempDir(), "openssl-expiring-five-days", now.Add(5*day), "*.bench.example.com"),
+				writeLibraryCert(t, t.TempDir(), "openssl-expiring-ninety-days", now.Add(90*day), "*.bench.example.com"),
+			},
+			wantNotAfter: now.Add(5 * day),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			selector := tlsSelectorWithLibraryFailure(t, now, tc.failureType, tc.params, tc.entries)
+			output, clientErr, serverErr := runOpenSSLSClient(t, openssl, selector, func(addr string) []string {
+				return []string{
+					"s_client",
+					"-connect", addr,
+					"-servername", "target.bench.example.com",
+					"-showcerts",
+				}
+			})
+			if clientErr != nil {
+				t.Fatalf("openssl s_client failed: %v\n%s", clientErr, output)
+			}
+			if serverErr != nil {
+				t.Fatalf("server handshake: %v\n%s", serverErr, output)
+			}
+			cert := firstCertificateFromOpenSSL(t, output)
+			if !cert.NotAfter.Equal(tc.wantNotAfter) {
+				t.Fatalf("OpenSSL peer certificate NotAfter = %v, want %v", cert.NotAfter, tc.wantNotAfter)
 			}
 		})
 	}
@@ -493,6 +552,85 @@ func TestTLSConfigSelectorTLSDeprecatedNegotiatesRealDeprecatedHandshake(t *test
 	}
 }
 
+func TestTLSConfigSelectorOpenSSLProtocolFailures(t *testing.T) {
+	openssl := requireOpenSSL(t)
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+
+	t.Run("handshake abort", func(t *testing.T) {
+		registry := control.NewRegistry()
+		registry.Set(control.FailureSpec{
+			Type:     "tls_handshake",
+			Host:     "target.bench.example.com",
+			Duration: time.Hour,
+			Params:   map[string]any{"reason": "version_mismatch"},
+		}, 1)
+		selector := &TLSConfigSelector{Registry: registry}
+
+		output, clientErr, serverErr := runOpenSSLSClient(t, openssl, selector, func(addr string) []string {
+			return []string{
+				"s_client",
+				"-connect", addr,
+				"-servername", "target.bench.example.com",
+				"-tls1_3",
+				"-brief",
+			}
+		})
+		if clientErr == nil {
+			t.Fatalf("openssl s_client succeeded, want tls_handshake failure\n%s", output)
+		}
+		if serverErr == nil || !strings.Contains(serverErr.Error(), "tls_handshake active") {
+			t.Fatalf("serverErr = %v, want tls_handshake active", serverErr)
+		}
+	})
+
+	t.Run("deprecated TLS 1.1", func(t *testing.T) {
+		fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)
+		if err != nil {
+			t.Fatalf("SelfSignedCertificate: %v", err)
+		}
+		registry := control.NewRegistry()
+		registry.Set(control.FailureSpec{
+			Type:     "tls_deprecated",
+			Host:     "target.bench.example.com",
+			Duration: time.Hour,
+			Params:   map[string]any{"variant": "TLS11"},
+		}, 1)
+		certSelector := &CertificateSelector{
+			Registry: registry,
+			Fallback: fallback,
+			Now:      func() time.Time { return now },
+		}
+		selector := &TLSConfigSelector{
+			Registry:     registry,
+			Certificates: certSelector,
+			Base: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				MaxVersion: tls.VersionTLS13,
+			},
+		}
+
+		output, clientErr, serverErr := runOpenSSLSClient(t, openssl, selector, func(addr string) []string {
+			return []string{
+				"s_client",
+				"-connect", addr,
+				"-servername", "target.bench.example.com",
+				"-tls1_1",
+				"-cipher", "DEFAULT:@SECLEVEL=0",
+				"-brief",
+			}
+		})
+		if clientErr != nil {
+			t.Fatalf("openssl s_client failed: %v\n%s", clientErr, output)
+		}
+		if serverErr != nil {
+			t.Fatalf("server handshake: %v\n%s", serverErr, output)
+		}
+		if !strings.Contains(output, "TLSv1.1") {
+			t.Fatalf("openssl output does not report TLSv1.1\n%s", output)
+		}
+	})
+}
+
 func TestTLSConfigSelectorRejectsUnsupportedTLSHandshakeReason(t *testing.T) {
 	registry := control.NewRegistry()
 	registry.Set(control.FailureSpec{
@@ -646,6 +784,114 @@ func runTLSHandshake(t *testing.T, selector *TLSConfigSelector, clientConfig *tl
 		clientErr:   clientErr,
 		serverState: serverResult.serverState,
 		serverErr:   serverResult.serverErr,
+	}
+}
+
+func requireOpenSSL(t *testing.T) string {
+	t.Helper()
+	path, err := exec.LookPath("openssl")
+	if err != nil {
+		t.Skip("openssl not found in PATH")
+	}
+	return path
+}
+
+func runOpenSSLSClient(t *testing.T, openssl string, selector *TLSConfigSelector, argsForAddr func(string) []string) (string, error, error) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			serverCh <- err
+			return
+		}
+		defer conn.Close()
+		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			serverCh <- err
+			return
+		}
+		server := tls.Server(conn, &tls.Config{
+			GetConfigForClient: selector.GetConfigForClient,
+		})
+		err = server.Handshake()
+		if err == nil {
+			_ = server.Close()
+		}
+		serverCh <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, openssl, argsForAddr(ln.Addr().String())...)
+	output, clientErr := cmd.CombinedOutput()
+	_ = ln.Close()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("openssl s_client timed out\n%s", string(output))
+	}
+
+	var serverErr error
+	select {
+	case serverErr = <-serverCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server handshake timed out")
+	}
+	return string(output), clientErr, serverErr
+}
+
+func firstCertificateFromOpenSSL(t *testing.T, output string) *x509.Certificate {
+	t.Helper()
+	rest := []byte(output)
+	for {
+		block, next := pem.Decode(rest)
+		if block == nil {
+			t.Fatalf("OpenSSL output did not contain a certificate PEM\n%s", output)
+		}
+		if block.Type == "CERTIFICATE" {
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				t.Fatalf("parse OpenSSL peer certificate: %v", err)
+			}
+			return cert
+		}
+		rest = next
+	}
+}
+
+func tlsSelectorWithLibraryFailure(t *testing.T, now time.Time, failureType string, params map[string]any, entries []certlibrary.Entry) *TLSConfigSelector {
+	t.Helper()
+	registry := control.NewRegistry()
+	registry.Set(control.FailureSpec{
+		Type:     failureType,
+		Host:     "target.bench.example.com",
+		Duration: time.Hour,
+		Params:   params,
+	}, 1)
+	fallback, err := SelfSignedCertificate([]string{"target.bench.example.com"}, now)
+	if err != nil {
+		t.Fatalf("SelfSignedCertificate: %v", err)
+	}
+	certSelector := &CertificateSelector{
+		Registry: registry,
+		Fallback: fallback,
+		Now:      func() time.Time { return now },
+	}
+	certSelector.SetLibrary(&certlibrary.Library{
+		Version: certlibrary.ManifestVersion,
+		Entries: entries,
+	})
+	return &TLSConfigSelector{
+		Registry:     registry,
+		Certificates: certSelector,
+		Base: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			MaxVersion: tls.VersionTLS13,
+		},
 	}
 }
 

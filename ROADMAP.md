@@ -117,7 +117,7 @@ Remaining follow-up: broaden live API smoke coverage for each vendor's keyword b
 
 **Status:** Schema-defined, partially implemented. Active priority.
 
-The target binary now exposes an HTTPS listener with a generated self-signed fallback certificate. With `-cert-library-manifest`, healthy requests use the longest-valid matching library certificate, while active `tls_expired` and `tls_expiring` failures select the closest matching expired/expiring certificate for the request SNI. `tls_invalid` can force the generated self-signed cert or a generated hostname-mismatch cert, `tls_deprecated` can clamp the HTTPS listener to TLS 1.0 or TLS 1.1, and `tls_handshake` aborts the handshake before certificate selection. Remaining TLS work: end-to-end OpenSSL/probe acceptance tests against a real cert library.
+The target binary now exposes an HTTPS listener with a generated self-signed fallback certificate. With `-cert-library-manifest`, healthy requests use the longest-valid matching library certificate, while active `tls_expired` and `tls_expiring` failures select the closest matching expired/expiring certificate for the request SNI. `tls_invalid` can force the generated self-signed cert or a generated hostname-mismatch cert, `tls_deprecated` can clamp the HTTPS listener to TLS 1.0 or TLS 1.1, and `tls_handshake` aborts the handshake before certificate selection. Remaining TLS work: deployed-fleet probe acceptance against a real certmint-produced library.
 
 ### Phase 1 — HTTPS listener with self-signed default
 
@@ -132,13 +132,13 @@ The target binary now exposes an HTTPS listener with a generated self-signed fal
 - Producer/consumer split inside the repo: `cmd/certmint` owns real Let's Encrypt/certbot issuance and writes an immutable library plus `manifest.json` (`internal/certmint/`); the target's TLS listener consumes the manifest via `internal/certlibrary/` for SNI-aware selection, with deterministic fleet-CA/self-signed fallbacks when no public cert applies. The `uptime-bench-dns` member exposes `PUT/DELETE /acme/txt` control endpoints so certmint's certbot manual hooks ([deploy/acme-hooks/](deploy/acme-hooks/)) can install DNS-01 challenge records on the same nameservers that resolve the benchmark hostnames — no Cloudflare delegation needed for the runtime domains.
 - New control API params for `tls_expired` / `tls_expiring` select a library member at activation time. `tls_invalid` supports self-signed and hostname-mismatch variants.
 - Library structure: `manifest.json` is the contract. Filenames may encode age/profile for operator readability, but the target must select by manifest metadata rather than reparsing certificates at request time.
-- Local acceptance: real in-process TLS handshakes confirm `tls_expired days_expired=30` and `tls_expiring days_remaining=5` serve the matching library certificate. Remaining external acceptance should repeat this with OpenSSL/probe tooling against a real cert library.
+- Local acceptance: real in-process TLS handshakes and OpenSSL `s_client` checks confirm `tls_expired days_expired=30` and `tls_expiring days_remaining=5` serve the matching library certificate. Remaining fleet acceptance should repeat this against a certmint-produced library on deployed targets.
 
 ### Phase 3 — TLS protocol-level injection
 
 - `tls_handshake`: implemented for target-side config selection by returning a deterministic handshake error before certificate selection. Probe receives a TLS alert; no HTTP response.
 - `tls_deprecated`: implemented for target-side config selection by clamping `tls.Config.MaxVersion` to TLS 1.1 or TLS 1.0. In-process TLS handshake tests cover the target behavior.
-- Acceptance still needed: external `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; external `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active.
+- OpenSSL acceptance: `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active. Remaining fleet acceptance is a deployed target/probe smoke, not target-side behavior.
 
 **Measurement note for `tls_deprecated`**: because the request actually returns 200 OK, monitor outcomes split three ways — missed advisory, correct "TLS advisory" classification, false outage report. The measurement engine needs a third category here, distinct from true-positive and false-negative.
 
