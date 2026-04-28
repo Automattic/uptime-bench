@@ -83,7 +83,7 @@ func (d *DB) InsertRun(ctx context.Context, r RunRecord) error {
 // CampaignRunRecord is a campaign_runs row. The audit-trail fields
 // (ConfigTOML, MasterSeed, AdapterVersions, TargetFleetVersion) let a
 // reader of a published comparison post regenerate the campaign
-// deterministically. See ROADMAP.md "Automated randomized testing
+// deterministically. See docs/roadmap.md "Automated randomized testing
 // campaigns" → "Methodology audit trail".
 type CampaignRunRecord struct {
 	ID                 string
@@ -208,7 +208,7 @@ type MonitorReportRow struct {
 	ServiceID                string
 	RetrieveStatus           string // "known" or "unknown"
 	RetrieveUnknownReason    string // free-form detail, populated when unknown
-	ReasonCode               string // structured code, e.g. "capability_mismatch"; see EVENTS.md
+	ReasonCode               string // structured code, e.g. "capability_mismatch"; see docs/events.md
 	EventType                string // may be empty when unknown
 	RawClassification        string
 	NormalizedClassification string

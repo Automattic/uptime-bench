@@ -17,7 +17,7 @@
 --   - reason_code = future codes (api_unreachable, rate_limited, ...)
 --       Reserved for adapter-side failures. Not populated yet.
 --
--- See EVENTS.md "Missed detection vs. Unknown vs. capability mismatch"
+-- See docs/events.md "Missed detection vs. Unknown vs. capability mismatch"
 -- for the reporting rules. retrieve_unknown_reason still carries the
 -- free-form human-readable detail; reason_code is the queryable
 -- categorisation.

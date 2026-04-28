@@ -253,7 +253,7 @@ func TestWriteRejectsUnknownFormat(t *testing.T) {
 // data rows with a `#` comment disclosing how the report was scoped
 // (which interpretation the input matched, how many campaign runs the
 // data spans, the time window). This is the methodology disclosure
-// from ROADMAP.md surfaced in CLI output, so a published table can
+// from docs/roadmap.md surfaced in CLI output, so a published table can
 // stand alone without separately documenting the aggregation depth.
 func TestWriteTable_EmitsMetaCommentLine(t *testing.T) {
 	started := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)

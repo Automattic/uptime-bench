@@ -205,7 +205,7 @@ type RetrieveResult struct {
 // monitor_reports.reason_code column. Empty means "not categorised"
 // (typically a Known result, or an Unknown without a code attached).
 //
-// See EVENTS.md for the reporting rules and
+// See docs/events.md for the reporting rules and
 // docs/inter-run-state-design.md for the maintenance/cooldown codes.
 const (
 	// ReasonCapabilityMismatch: the harness skipped Provision because

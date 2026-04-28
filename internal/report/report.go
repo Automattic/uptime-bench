@@ -28,7 +28,7 @@ const failureTypeUnrecorded = "<no_failure>"
 // aggregation metadata downstream readers need to interpret the
 // numbers (how many campaign_runs were folded together, the time
 // span). Required for the methodology disclosure called out in
-// ROADMAP.md.
+// docs/roadmap.md.
 type Report struct {
 	Meta       Meta        `json:"meta"`
 	BiasChecks []BiasCheck `json:"bias_checks,omitempty"`

@@ -8,7 +8,7 @@ import (
 )
 
 // TestNoServiceSpecificBranches enforces the methodology rule from
-// ROADMAP.md "Automated randomized testing campaigns":
+// docs/roadmap.md "Automated randomized testing campaigns":
 //
 //	The campaign generator and reporter contain **no service-specific
 //	branches**. No `if serviceID == "jetmon-v1"` anywhere in the

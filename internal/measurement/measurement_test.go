@@ -368,7 +368,7 @@ func TestComputeMetrics_UnknownStops(t *testing.T) {
 }
 
 // TestComputeMetrics_CapabilityMismatchTreatedLikeUnknown pins the
-// EVENTS.md invariant that capability_mismatch and Unknown both keep
+// docs/events.md invariant that capability_mismatch and Unknown both keep
 // the row out of the false-negative count. The runner writes a
 // capability_mismatch row with retrieve_status="unknown" and a
 // reason_code; Derive folds both API-error Unknown and capability

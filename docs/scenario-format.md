@@ -26,7 +26,7 @@ All duration fields use Go's `time.ParseDuration` format: a number followed by a
 
 ### Optional `[maintenance]` block
 
-Declares a vendor-side alert-suppression window the harness asks the monitor to honour during this run. Tests whether the monitor correctly silences alerts during the declared window. Adapters that lack this capability are skipped at provision time with `reason_code = "capability_mismatch"`. See [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md) for the full design.
+Declares a vendor-side alert-suppression window the harness asks the monitor to honour during this run. Tests whether the monitor correctly silences alerts during the declared window. Adapters that lack this capability are skipped at provision time with `reason_code = "capability_mismatch"`. See [inter-run-state-design.md](inter-run-state-design.md) for the full design.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -399,7 +399,7 @@ type    = "tls_deprecated"
 variant = "TLS11"
 ```
 
-**Note:** The target HTTPS listener implements this by selecting a per-handshake TLS configuration. End-to-end monitor acceptance coverage is tracked in [ROADMAP.md](ROADMAP.md).
+**Note:** The target HTTPS listener implements this by selecting a per-handshake TLS configuration. End-to-end monitor acceptance coverage is tracked in [roadmap.md](roadmap.md).
 
 ---
 

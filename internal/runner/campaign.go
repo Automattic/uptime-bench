@@ -26,7 +26,7 @@ type campaignRecorder interface {
 // campaign_runs row at start time. None of these fields affect
 // runtime behaviour; they exist for the methodology audit trail
 // (a reader of a published comparison post must be able to recover
-// the exact code state that produced the data — see ROADMAP.md
+// the exact code state that produced the data — see docs/roadmap.md
 // "Methodology audit trail").
 type RunCampaignOptions struct {
 	// ConfigTOML is the verbatim campaign config; usually the bytes
@@ -52,7 +52,7 @@ type RunCampaignOptions struct {
 // for downstream queries.
 //
 // First-iteration scope (serial): replays run one at a time. Concurrent
-// execution is the explicit deferred design question in ROADMAP.md.
+// execution is the explicit deferred design question in docs/roadmap.md.
 //
 // Failure isolation: per-replay errors are logged but do NOT abort the
 // campaign. A run that records adapter_error or aborted is data; the

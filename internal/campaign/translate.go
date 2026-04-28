@@ -223,7 +223,7 @@ func failureFrom(failureType string, params map[string]any, offset, duration tim
 // Per-stage Keyword/KeywordCheck would require moving the fields onto
 // scenario.Failure and reworking adapters — most adapters configure
 // once at Provision and can't switch keyword mid-run. Tracked under
-// "Per-stage keyword config" in ROADMAP.md; instrument prevalence in
+// "Per-stage keyword config" in docs/roadmap.md; instrument prevalence in
 // real campaign runs first to decide whether a schema change is
 // warranted.
 func applyHTTPBodyDefaults(sc *scenario.Scenario, translated []translatedFailure) error {

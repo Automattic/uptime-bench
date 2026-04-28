@@ -5,7 +5,7 @@
 -- a nullable campaign_id (NULL for direct single-scenario runs;
 -- non-NULL for runs orchestrated by a campaign).
 --
--- See ROADMAP.md "Automated randomized testing campaigns" for the
+-- See docs/roadmap.md "Automated randomized testing campaigns" for the
 -- methodology. The audit-trail columns (config_toml, master_seed,
 -- adapter_versions, target_fleet_version) capture everything a reader
 -- of a published comparison post needs to regenerate the campaign:

@@ -2,7 +2,7 @@
 
 This document catalogs the failure modes that uptime-bench models as benchmark scenarios, organized by the layer at which the failure is observed by the monitor under test.
 
-The taxonomy follows the same five-layer structure developed for the Jetmon project. See [`jetmon/TAXONOMY.md`](../jetmon/TAXONOMY.md) for the full Jetmon-specific design context, including the data model, state vocabulary, and signal-processing decisions.
+The taxonomy follows the same five-layer structure developed for the Jetmon project. See [Jetmon's taxonomy](https://github.com/Automattic/jetmon/blob/master/TAXONOMY.md) for the full Jetmon-specific design context, including the data model, state vocabulary, and signal-processing decisions.
 
 ## Complexity tags
 

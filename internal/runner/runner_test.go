@@ -877,7 +877,7 @@ func TestMaintenanceWindowFor_AbsoluteTimestamps(t *testing.T) {
 // RetrieveResult.ReasonCode reaches the database row. Capability gating
 // depends on this — without it, support-matrix queries can't tell
 // "the adapter wasn't asked" apart from "the adapter couldn't reach
-// its API." See EVENTS.md for the reporting rules.
+// its API." See docs/events.md for the reporting rules.
 func TestLogMonitorReport_PropagatesReasonCode(t *testing.T) {
 	rec := &fakeRecorder{}
 	a := &recordingAdapter{id: "svc"}

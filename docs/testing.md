@@ -151,7 +151,7 @@ for scripts. JSON output wraps the same data as `meta`, `bias_checks`, and
 > Note: content scenarios require the monitoring service to support keyword monitoring
 > (`Capabilities.SupportsKeyword`). Services that don't are skipped at provision time
 > and recorded as `reason_code = "capability_mismatch"` in `monitor_reports` —
-> never counted as false negatives. See `EVENTS.md` for the reporting rules.
+> never counted as false negatives. See [events.md](events.md) for the reporting rules.
 
 ## 7. Stopping
 

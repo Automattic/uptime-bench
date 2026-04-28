@@ -8,7 +8,7 @@ import (
 )
 
 // TestNoServiceSpecificBranches enforces the campaign-reporting rule
-// from ROADMAP.md: report aggregation must not contain service-specific
+// from docs/roadmap.md: report aggregation must not contain service-specific
 // branches. Per-service differences belong in adapter data, not in the
 // reporter.
 func TestNoServiceSpecificBranches(t *testing.T) {

@@ -2,7 +2,7 @@
 
 uptime-bench evaluates uptime monitoring services by running controlled failure scenarios against target endpoints and measuring how each service under test detects, classifies, and reports each failure.
 
-This document covers uptime-bench's own system architecture. For a fleet-focused overview of each deployed component and the traffic between them, see [`docs/fleet-overview.md`](docs/fleet-overview.md). For the library of failure scenarios the benchmark covers, see [`SCENARIOS.md`](SCENARIOS.md). For the scenario file format and field reference, see [`SCHEMA.md`](SCHEMA.md). For the monitor adapter interface, see [`ADAPTER.md`](ADAPTER.md). For the event log and output schema, see [`EVENTS.md`](EVENTS.md). For known future work, see [`ROADMAP.md`](ROADMAP.md).
+This document covers uptime-bench's own system architecture. For a fleet-focused overview of each deployed component and the traffic between them, see [fleet-overview.md](fleet-overview.md). For the library of failure scenarios the benchmark covers, see [scenarios.md](scenarios.md). For the scenario file format and field reference, see [scenario-format.md](scenario-format.md). For the monitor adapter interface, see [adapters.md](adapters.md). For the event log and output schema, see [events.md](events.md). For known future work, see [roadmap.md](roadmap.md).
 
 ---
 
@@ -83,7 +83,7 @@ All metrics are computed from the event log, not stored as raw values alongside 
 
 ### Output schema
 
-Each scenario run produces a structured output record. See [`EVENTS.md`](EVENTS.md) for the full schema. At a high level, each run produces:
+Each scenario run produces a structured output record. See [events.md](events.md) for the full schema. At a high level, each run produces:
 
 - One scenario run record (parameters, timing, resolution reason)
 - Ground-truth events (target state changes)
@@ -108,7 +108,7 @@ Preserve each monitoring service's raw incident classification alongside any nor
 
 If an adapter cannot reach a monitoring service's API during a run (service outage, rate limit, authentication failure), that is Unknown — not a missed detection or false negative. uptime-bench must distinguish "monitor did not detect the failure" from "we could not retrieve the monitor's detection state." Conflating these corrupts accuracy measurements and is unfair to the service under test.
 
-The same separation applies to capability mismatches: when a scenario requires a feature the adapter does not support (e.g., keyword body inspection on a service that only does HTTP status checks), the harness skips `Provision` for that adapter rather than running an inevitable false negative. The result is recorded with `reason_code = "capability_mismatch"`. These rows are the **support matrix** — a first-class deliverable showing which services support which features. Accuracy metrics must also exclude intentional or ambiguous suppression outcomes such as `maintenance_suppressed`, `cooldown_suppressed`, and `cooldown_uncertain`. Conflating any of those with false-negative is the same data-integrity hazard as conflating Unknown with false-negative, and the harness treats them with the same care. See EVENTS.md for the full reporting rules.
+The same separation applies to capability mismatches: when a scenario requires a feature the adapter does not support (e.g., keyword body inspection on a service that only does HTTP status checks), the harness skips `Provision` for that adapter rather than running an inevitable false negative. The result is recorded with `reason_code = "capability_mismatch"`. These rows are the **support matrix** — a first-class deliverable showing which services support which features. Accuracy metrics must also exclude intentional or ambiguous suppression outcomes such as `maintenance_suppressed`, `cooldown_suppressed`, and `cooldown_uncertain`. Conflating any of those with false-negative is the same data-integrity hazard as conflating Unknown with false-negative, and the harness treats them with the same care. See [events.md](events.md) for the full reporting rules.
 
 ### Idempotent identifiers
 

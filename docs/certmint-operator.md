@@ -30,7 +30,7 @@ until DNS-01 automation has been verified end-to-end.
   cover the inbound side on the dns members; outbound from certmint is
   unrestricted by default.
 - A registered domain delegated to the uptime-bench DNS members (see
-  [`OPERATIONS.md`](../OPERATIONS.md)).
+  [operations.md](operations.md)).
 
 The example config drives certbot's `--manual` plugin via the hook scripts
 in `deploy/acme-hooks/`. To swap in a managed-DNS plugin (e.g.

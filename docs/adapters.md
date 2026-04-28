@@ -333,4 +333,4 @@ This data enables layer-level attribution verification: a `dns_latency` scenario
 
 ### Maintenance window provisioning
 
-If the service supports scheduled maintenance windows, expose this via a `ProvisionConfig` extension (a service-specific option passed through `MonitorHandle.Fields`). Do not build maintenance window support into the core `ProvisionConfig` struct — it is a service capability, not a universal one. See ROADMAP.md for the planned maintenance window scenario type.
+If the service supports scheduled maintenance windows, expose this via a `ProvisionConfig` extension (a service-specific option passed through `MonitorHandle.Fields`). Do not build maintenance window support into the core `ProvisionConfig` struct — it is a service capability, not a universal one. See [roadmap.md](roadmap.md) for the planned maintenance window scenario type.

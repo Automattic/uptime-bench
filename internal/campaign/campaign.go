@@ -4,7 +4,7 @@
 // self-generates randomized scenarios and aggregates the results into
 // per-(failure_type, service) statistics. This package only handles
 // parsing + validation; the design+schedule generator is in a separate
-// step. See ROADMAP.md "Automated randomized testing campaigns" for the
+// step. See docs/roadmap.md "Automated randomized testing campaigns" for the
 // methodology.
 package campaign
 
@@ -72,7 +72,7 @@ type DurationBucket struct {
 // default applies to every cell unless that cell's failure type is
 // listed in a HighDiscrimination tier.
 //
-// See ROADMAP.md for the rationale: failure types where service-to-
+// See docs/roadmap.md for the rationale: failure types where service-to-
 // service differences are expected to be small (e.g. HTTP 5xx, TLS
 // expiration) need more samples to produce defensible percentiles.
 type Sampling struct {

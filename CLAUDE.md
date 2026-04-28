@@ -7,12 +7,12 @@ uptime-bench is a benchmark suite for evaluating uptime monitoring services. It 
 It is **not** a monitoring service. It does not monitor real sites or run probes in production. It exists to answer: "How well does service X actually detect failure type Y?"
 
 Key documents:
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — system components and design principles
-- [`SCENARIOS.md`](SCENARIOS.md) — the library of failure modes the benchmark covers
-- [`SCHEMA.md`](SCHEMA.md) — scenario file format and field reference (TOML)
-- [`ADAPTER.md`](ADAPTER.md) — monitor adapter interface, types, and harness responsibilities
-- [`EVENTS.md`](EVENTS.md) — ground-truth event log and output schema
-- [`ROADMAP.md`](ROADMAP.md) — deferred features and future work
+- [`docs/architecture.md`](docs/architecture.md) — system components and design principles
+- [`docs/scenarios.md`](docs/scenarios.md) — the library of failure modes the benchmark covers
+- [`docs/scenario-format.md`](docs/scenario-format.md) — scenario file format and field reference (TOML)
+- [`docs/adapters.md`](docs/adapters.md) — monitor adapter interface, types, and harness responsibilities
+- [`docs/events.md`](docs/events.md) — ground-truth event log and output schema
+- [`docs/roadmap.md`](docs/roadmap.md) — deferred features and future work
 
 ## Coding conventions
 
