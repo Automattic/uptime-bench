@@ -97,6 +97,7 @@ dev-fleet-reset:
 # and have at least one service enabled that matches the scenario's monitors list.
 # Usage: make run-scenario SCENARIO=scenarios/http-503.toml
 SCENARIO ?= scenarios/http-503.toml
+CAMPAIGN_CONFIG ?= configs/campaign/example.toml
 
 .PHONY: run-scenario
 run-scenario:
@@ -105,6 +106,14 @@ run-scenario:
 	    -fleet=/etc/uptime-bench/fleet.toml \
 	    -services=/etc/uptime-bench/services.toml \
 	    -scenario=/scenarios/$(notdir $(SCENARIO))
+
+.PHONY: run-campaign
+run-campaign:
+	docker compose run --rm harness \
+	  uptime-bench-harness \
+	    -fleet=/etc/uptime-bench/fleet.toml \
+	    -services=/etc/uptime-bench/services.toml \
+	    -campaign=/campaigns/$(notdir $(CAMPAIGN_CONFIG))
 
 CAMPAIGN ?= $(error set CAMPAIGN)
 REPORT_FORMAT ?= table

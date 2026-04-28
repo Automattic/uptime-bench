@@ -1,0 +1,81 @@
+# Example campaign config for the current serial, single-target campaign runner.
+# Keep patterns = ["single"] until multi-host scenario translation lands.
+
+id              = "example-single-target"
+description     = "Starter campaign covering HTTP, content, TCP, and TLS failures on one target."
+duration        = "24h"
+seed            = 20260428
+check_frequency = "60s"
+grace_period    = "180s"
+
+[targets]
+pool     = ["bench-a"]
+patterns = ["single"]
+
+[duration_buckets]
+brief  = { min = "2m", max = "5m" }
+medium = { min = "5m", max = "15m" }
+
+[sampling]
+samples_per_cell_default = 2
+
+[[sampling.high_discrimination]]
+failure_types    = ["http_status", "tls_expired", "tls_expiring"]
+samples_per_cell = 4
+
+[[failure_types]]
+type                = "http_status"
+status_code_choices = [503, 502, 504]
+
+[[failure_types]]
+type = "tcp_refused"
+
+[[failure_types]]
+type          = "http_timeout"
+phase_choices = ["ttfb", "body"]
+delay_range   = { min = "5s", max = "45s" }
+
+[[failure_types]]
+type            = "http_redirect"
+variant_choices = ["loop", "chain"]
+
+[[failure_types]]
+type            = "http_body"
+content_choices = ["empty", "error_page", "keyword_missing", "keyword_injected", "ransomware", "defacement", "malicious_script", "spam_links"]
+keyword_choices = ["HACKED"]
+
+[[failure_types]]
+type                 = "tls_expired"
+days_expired_choices = [1, 7, 30]
+
+[[failure_types]]
+type                   = "tls_expiring"
+days_remaining_choices = [6, 13, 29]
+
+[[failure_types]]
+type            = "tls_invalid"
+variant_choices = ["self_signed", "hostname_mismatch"]
+
+[[failure_types]]
+type           = "tls_handshake"
+reason_choices = ["version_mismatch", "no_common_cipher"]
+
+[[failure_types]]
+type            = "tls_deprecated"
+variant_choices = ["TLS10", "TLS11"]
+
+[escalation]
+probability       = 0.15
+stages_range      = { min = 2, max = 3 }
+inter_stage_range = { min = "30s", max = "90s" }
+patterns          = ["layered", "replacement", "recovery"]
+
+[budget]
+pingdom            = { max_runs_per_hour = 10 }
+uptimerobot        = { max_runs_per_hour = 1 }
+datadog-synthetics = { max_runs_per_hour = 30 }
+better-uptime      = { max_runs_per_hour = 5 }
+jetmon-v2          = {}
+
+[cooldown]
+per_target_minimum = "10m"

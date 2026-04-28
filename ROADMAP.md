@@ -61,7 +61,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## Campaigns and statistical comparison
 
 - **Campaign methodology** — stratified sampling, two-tier sample depth, reproducible seeds, audit trail, and anti-favoritism constraints are documented.
-- **Campaign implementation** — config parsing, pure design/schedule generation, `campaign_runs` schema, scenario translation, serial campaign runner, campaign CLI, campaign replay metadata, mixed-content escalation audit flags, and campaign metric derivation are implemented.
+- **Campaign implementation** — config parsing, pure design/schedule generation, `campaign_runs` schema, scenario translation, serial campaign runner, campaign CLI, checked-in starter campaign config, campaign replay metadata, mixed-content escalation audit flags, and campaign metric derivation are implemented.
 - **Bias-aware reporting** — reports flag service/sample imbalance, missing failure/service cells, capability mismatches, uncategorized Unknown rows, and include confidence intervals before readers compare latency numbers.
 
 ## Inter-run state and suppression
@@ -163,7 +163,7 @@ Required by Phase 1 once we have multiple virtual hosts, but ordering with the p
 
 ## Automated randomized testing campaigns
 
-**Status:** Partially implemented. Methodology locked 2026-04-27. Config parsing, deterministic generation, cooldown-aware scheduling, serial execution, mixed-content escalation instrumentation, metric derivation, and reporting are in place; remaining work is escalation sampling policy, concurrent execution, and live-campaign hardening.
+**Status:** Partially implemented. Methodology locked 2026-04-27. Config parsing, deterministic generation, cooldown-aware scheduling, serial execution, a checked-in starter config, mixed-content escalation instrumentation, metric derivation, and reporting are in place; remaining work is final published-campaign sampling policy, concurrent execution, and live-campaign hardening.
 
 The harness today runs one scripted scenario at a time. That model is fine for *targeted* tests ("does Pingdom detect a 503?") but it can't produce the data the project actually exists to publish: **min, max, and average detection times of specific kinds of failures across the different services**, computed from enough samples that the numbers are defensible.
 
@@ -376,7 +376,7 @@ Per (failure_type, service) statistics:
 4. ✅ **Runner outer loop (serial)** — `runner.RunCampaign` walks `Plan.Schedule`, calls existing `Run()` per replay via `WithCampaignRunID`. Per-replay errors don't abort the campaign. Tests in `internal/runner/campaign_test.go`. `cmd/harness` accepts `-campaign=<config.toml>` as a mutually exclusive alternative to `-scenario`; campaign mode runs every enabled service from `services.toml`. Metrics are derived in one batch at campaign end via `measurement.DeriveCampaign`, keyed by `scenario_runs.campaign_id`.
 5. ✅ **Initial `cmd/uptime-bench-report`** — campaign metrics can be summarized from `derived_metrics` into table / TSV / JSON output. Current scope: per-(failure_type, service) samples, detection rate, TP/FN/FP/Unknown/maintenance/cooldown/TLS advisory counts, and latency min/avg/p50/p95/max.
 6. ✅ **Full report statistics** — table/JSON reports now include bias self-checks, Wilson 95% detection-rate intervals, deterministic nearest-rank percentile intervals for p50/p95, and explicit `capability_mismatch` counts from `monitor_reports.reason_code`. TSV stays row-only for scripts but includes the additional columns.
-7. **Escalation support** — per-failure `duration` overrides and generator pattern sampling now cover layered, replacement, and recovery representations. Reports use campaign replay metadata to label multi-stage shapes by pattern and stage order. Remaining work: settle the exact pattern mix for published benchmark configs.
+7. **Escalation support** — per-failure `duration` overrides and generator pattern sampling now cover layered, replacement, and recovery representations. Reports use campaign replay metadata to label multi-stage shapes by pattern and stage order. [`configs/campaign/example.toml`](configs/campaign/example.toml) carries a runner-safe starter mix for single-target campaigns; remaining work is settling the exact pattern mix and sample depth for published benchmark configs after live data confirms the noise floor.
 
 Each phase is independently mergeable. Phases 1–5 deliver the "campaigns work, no escalation" milestone — that alone produces useful comparison data.
 
