@@ -1,0 +1,21 @@
+[Unit]
+Description=uptime-bench certificate minting daemon
+Documentation=https://github.com/Automattic/uptime-bench-certmint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/uptime-bench-certmint daemon -config /etc/uptime-bench-certmint/config.json
+Restart=always
+RestartSec=30s
+UMask=0077
+
+# Certbot plugins often need access to root-owned DNS credentials and ACME
+# state. If you run this as a dedicated user, grant that user access to the
+# configured certbot and library directories.
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,260 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"sort"
+	"syscall"
+	"time"
+
+	"github.com/Automattic/uptime-bench-certmint/internal/certbot"
+	"github.com/Automattic/uptime-bench-certmint/internal/config"
+	"github.com/Automattic/uptime-bench-certmint/internal/library"
+	"github.com/Automattic/uptime-bench-certmint/internal/lockfile"
+	"github.com/Automattic/uptime-bench-certmint/internal/manifest"
+	"github.com/Automattic/uptime-bench-certmint/internal/planner"
+)
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
+	if err := run(context.Background(), os.Args[1:]); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return usage()
+	}
+	switch args[0] {
+	case "plan":
+		return runPlan(args[1:])
+	case "once":
+		return runOnceCommand(ctx, args[1:])
+	case "daemon":
+		return runDaemon(ctx, args[1:])
+	case "inspect":
+		return runInspect(args[1:])
+	default:
+		return usage()
+	}
+}
+
+func usage() error {
+	return fmt.Errorf("usage: uptime-bench-certmint <plan|once|daemon|inspect> -config PATH")
+}
+
+func runPlan(args []string) error {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
+	configPath := fs.String("config", "", "config file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	current, err := manifest.Load(library.ManifestPathForConfig(cfg))
+	if err != nil {
+		return err
+	}
+	orders := planner.Due(cfg, current, time.Now())
+	type planned struct {
+		planner.Order
+		Command string `json:"command"`
+	}
+	out := make([]planned, 0, len(orders))
+	for _, order := range orders {
+		out = append(out, planned{Order: order, Command: certbot.CommandLine(cfg.Certbot, order)})
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
+func runOnceCommand(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("once", flag.ContinueOnError)
+	configPath := fs.String("config", "", "config file path")
+	dryRun := fs.Bool("dry-run", false, "print due certbot commands without issuing certs")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	lock, err := acquireLock(cfg)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	current, err := manifest.Load(library.ManifestPathForConfig(cfg))
+	if err != nil {
+		return err
+	}
+	return runOnce(ctx, cfg, &current, *dryRun)
+}
+
+func runDaemon(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	configPath := fs.String("config", "", "config file path")
+	dryRun := fs.Bool("dry-run", false, "log due certbot commands without issuing certs")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	lock, err := acquireLock(cfg)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	current, err := manifest.Load(library.ManifestPathForConfig(cfg))
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	for {
+		if err := runOnce(ctx, cfg, &current, *dryRun); err != nil {
+			log.Printf("certmint: run failed: %v", err)
+		}
+
+		timer := time.NewTimer(cfg.PollInterval.Duration)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+	}
+}
+
+func runInspect(args []string) error {
+	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
+	libraryDir := fs.String("library", "/var/lib/uptime-bench/certs", "certificate library directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	current, err := manifest.Load(library.ManifestPath(*libraryDir))
+	if err != nil {
+		return err
+	}
+	sort.Slice(current.Entries, func(i, j int) bool {
+		return current.Entries[i].NotAfter.Before(current.Entries[j].NotAfter)
+	})
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(current)
+}
+
+func runOnce(ctx context.Context, cfg config.Config, current *manifest.Manifest, dryRun bool) error {
+	orders := planner.Due(cfg, *current, time.Now())
+	if len(orders) == 0 {
+		return nil
+	}
+	var errs []error
+	// Track when the last order for each domain finished so we can
+	// honor cfg.InterOrderQuiet between same-domain orders. Wildcard
+	// identifiers in two consecutive orders share a single
+	// _acme-challenge.<domain> TXT name; without a quiet period
+	// Let's Encrypt's recursive resolver can answer the new order
+	// from cached old TXT values, validation fails, and the order
+	// rolls back the just-deleted TXT. The quiet period is bounded
+	// to same-domain orders so cross-domain throughput is unaffected.
+	lastDone := make(map[string]time.Time, len(cfg.Domains))
+	for _, order := range orders {
+		if dryRun {
+			fmt.Println(certbot.CommandLine(cfg.Certbot, order))
+			continue
+		}
+		if err := waitForQuietPeriod(ctx, cfg.InterOrderQuiet.Duration, lastDone[order.DomainName], order); err != nil {
+			return err
+		}
+		if err := issueAndArchive(ctx, cfg, current, order); err != nil {
+			log.Printf("certmint: order %s failed: %v", order.CertName, err)
+			errs = append(errs, fmt.Errorf("%s: %w", order.CertName, err))
+			lastDone[order.DomainName] = time.Now()
+			continue
+		}
+		lastDone[order.DomainName] = time.Now()
+	}
+	return errors.Join(errs...)
+}
+
+// waitForQuietPeriod sleeps until quiet has elapsed since lastDone for
+// the given order's domain, or returns immediately if no prior order
+// for the domain has been recorded. Honors ctx cancellation.
+func waitForQuietPeriod(ctx context.Context, quiet time.Duration, lastDone time.Time, order planner.Order) error {
+	if quiet <= 0 || lastDone.IsZero() {
+		return nil
+	}
+	wakeAt := lastDone.Add(quiet)
+	delay := time.Until(wakeAt)
+	if delay <= 0 {
+		return nil
+	}
+	log.Printf("certmint: waiting %v before %s (inter-order quiet for %s)", delay.Round(time.Second), order.CertName, order.DomainName)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func issueAndArchive(ctx context.Context, cfg config.Config, current *manifest.Manifest, order planner.Order) error {
+	if !library.LiveCertExists(cfg.Certbot, order.CertName) {
+		log.Printf("certmint: issuing %s profile=%s identifiers=%v", order.DomainName, order.ProfileName, order.Identifiers)
+		issueCtx, cancel := context.WithTimeout(ctx, cfg.Certbot.IssuanceTimeout.Duration)
+		out, err := certbot.Run(issueCtx, cfg.Certbot, order)
+		cancel()
+		if out != "" {
+			log.Print(out)
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		log.Printf("certmint: archiving existing certbot lineage %s", order.CertName)
+	}
+
+	entry, err := library.Archive(cfg, order, time.Now())
+	if err != nil {
+		return fmt.Errorf("archive: %w", err)
+	}
+	current.Append(entry)
+	if err := manifest.Save(library.ManifestPathForConfig(cfg), *current); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+	log.Printf("certmint: archived %s not_after=%s fingerprint=%s", entry.ID, entry.NotAfter.Format(time.RFC3339), entry.FingerprintSHA256)
+	return nil
+}
+
+func acquireLock(cfg config.Config) (*lockfile.Lock, error) {
+	lock, err := lockfile.Acquire(cfg.LockPath)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("certmint: acquired lock %s", lock.Path)
+	return lock, nil
+}
+
+func loadConfig(configPath string) (config.Config, error) {
+	if configPath == "" {
+		return config.Config{}, fmt.Errorf("-config is required")
+	}
+	return config.Load(configPath)
+}

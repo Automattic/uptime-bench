@@ -1,0 +1,10 @@
+# Example credentials file for certbot-dns-rfc2136.
+#
+# Install as /etc/uptime-bench-certmint/rfc2136.ini and keep mode 0600.
+# Replace every value below with values from the authoritative DNS server.
+
+dns_rfc2136_server = 192.0.2.53
+dns_rfc2136_port = 53
+dns_rfc2136_name = update-key.
+dns_rfc2136_secret = replace-with-base64-tsig-secret
+dns_rfc2136_algorithm = HMAC-SHA256
