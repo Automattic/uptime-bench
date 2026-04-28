@@ -20,6 +20,7 @@ import (
 )
 
 const (
+	failureHTTPMethodStatus   = "http_method_status"
 	failureTLSDeprecated      = "tls_deprecated"
 	classificationTLSAdvisory = "tls_advisory"
 )
@@ -27,6 +28,12 @@ const (
 type failureWindow struct {
 	kind       string
 	start, end time.Time
+	details    map[string]any
+}
+
+type failureStart struct {
+	at      time.Time
+	details map[string]any
 }
 
 type serviceData struct {
@@ -75,15 +82,15 @@ func Derive(ctx context.Context, database runStore, runID string) error {
 	// emitted by the runner when scenario.Maintenance is set.
 	var failureWindows []failureWindow
 	var maintenance *failureWindow
-	startsByType := make(map[string]time.Time)
+	startsByType := make(map[string]failureStart)
 	var maintenanceStart time.Time
 	for _, e := range events {
 		switch e.EventType {
 		case "failure_start":
-			startsByType[e.FailureType] = e.OccurredAt
+			startsByType[e.FailureType] = failureStart{at: e.OccurredAt, details: asStringMap(e.Details)}
 		case "failure_end":
 			if s, ok := startsByType[e.FailureType]; ok {
-				failureWindows = append(failureWindows, failureWindow{kind: e.FailureType, start: s, end: e.OccurredAt})
+				failureWindows = append(failureWindows, failureWindow{kind: e.FailureType, start: s.at, end: e.OccurredAt, details: s.details})
 				delete(startsByType, e.FailureType)
 			}
 		case "maintenance_start":
@@ -277,9 +284,20 @@ func splitWindows(windows []failureWindow) (normal []failureWindow, tlsAdvisory 
 			tlsAdvisory = append(tlsAdvisory, w)
 			continue
 		}
+		if isHealthyGETMethodTrap(w) {
+			continue
+		}
 		normal = append(normal, w)
 	}
 	return normal, tlsAdvisory
+}
+
+func isHealthyGETMethodTrap(w failureWindow) bool {
+	if w.kind != failureHTTPMethodStatus {
+		return false
+	}
+	method := rawString(w.details["method"])
+	return method != "" && !strings.EqualFold(method, "GET")
 }
 
 func containsTime(w failureWindow, t time.Time) bool {
@@ -319,20 +337,32 @@ func cooldownState(r db.MonitorReportRow) (state string, explanation string) {
 
 func firstRawString(metadata map[string]any, keys ...string) string {
 	for _, key := range keys {
-		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
+		if value := rawString(metadata[key]); value != "" {
+			return value
 		}
 	}
 	return ""
 }
 
-func normalizeMetadataString(value any) string {
-	switch v := value.(type) {
-	case string:
-		return strings.ToLower(strings.TrimSpace(v))
-	default:
-		return ""
+func asStringMap(value any) map[string]any {
+	if value == nil {
+		return nil
 	}
+	if m, ok := value.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+func rawString(value any) string {
+	if s, ok := value.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func normalizeMetadataString(value any) string {
+	return strings.ToLower(rawString(value))
 }
 
 func truthy(value any) bool {

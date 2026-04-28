@@ -76,9 +76,9 @@ One row per monitor service per metric per run.
 | Metric | Definition |
 |--------|-----------|
 | `detection_latency_s` | `alert_fired.reported_at` − `failure_start.timestamp`. Null if no alert fired. |
-| `true_positive` | Alert fired while a ground-truth failure was active. |
-| `false_positive` | Alert fired when no ground-truth failure was active. |
-| `false_negative` | No alert fired during a ground-truth failure window. |
+| `true_positive` | Alert fired while a visitor-visible ground-truth failure was active. |
+| `false_positive` | Alert fired when no visitor-visible ground-truth failure was active. |
+| `false_negative` | No alert fired during a visitor-visible ground-truth failure window. |
 | `unknown` | Adapter could not retrieve the service's state for this period. |
 | `maintenance_suppressed` | No alert fired because the scenario's maintenance window covered the failure period. Correct behaviour, excluded from false negatives. |
 | `cooldown_suppressed` | No alert fired and adapter metadata says a prior alert cooldown suppressed it. Excluded from false negatives. |
@@ -116,6 +116,15 @@ Both Unknown and capability mismatch are recorded with `retrieve_status = unknow
 - Capability-mismatch rates are computed over rows where `reason_code = "capability_mismatch"` and form the **support matrix** — for any given scenario, which services have the feature needed to detect the failure. This is a first-class deliverable of the project, not a noise filter.
 - Maintenance, cooldown, and TLS advisory outcomes are computed as derived metrics (`maintenance_suppressed`, `cooldown_suppressed`, `cooldown_uncertain`, `tls_advisory_detected`, `tls_advisory_missed`, `tls_advisory_false_outage`) and stay out of the false-negative denominator.
 
+### Method-sensitive HTTP scoring
+
+For `http_method_status`, uptime-bench scores against the user-visible `GET` path:
+
+- `method = "GET"` is a visitor-visible outage. A missing alert is a false negative, and an in-window alert is a true positive.
+- `method = "HEAD"` with healthy `GET` is a false-down trap for HEAD-only monitors. A missing alert is correct and is not a false negative. An alert during that window is a false positive.
+
+This is why the HEAD/GET mismatch scenarios can test both failure directions without treating "no alert" as a miss when the page a visitor loads remains healthy.
+
 Never count Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, cooldown_uncertain, or TLS advisory outcomes as a false negative in accuracy calculations. Reports that aggregate without filtering these categories will conflate "the service missed the failure" with "the service was never asked, was intentionally/possibly suppressed, or saw a successful request with an advisory-level TLS concern," which is the central data-integrity hazard the harness is built to avoid.
 
 `cmd/uptime-bench-report` loads `monitor_reports.reason_code` alongside
@@ -141,6 +150,6 @@ If the same event is written twice, the second write updates the existing row ra
 
 1. Every scenario run has a `resolution_reason` on close — no run ends without one.
 2. Replaying the same scenario with the same seed produces the same ground-truth event sequence.
-3. Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, cooldown_uncertain, and TLS advisory outcomes do not appear as false negatives in derived metric rows. Capability_mismatch rows are separately queryable so the support matrix can be reported without re-deriving it from logs.
+3. Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, cooldown_uncertain, TLS advisory outcomes, and healthy-GET method traps do not appear as false negatives in derived metric rows. Capability_mismatch rows are separately queryable so the support matrix can be reported without re-deriving it from logs.
 4. `detection_latency_s` is null when no `alert_fired` event exists for that run × service pair — never zero or negative.
 5. Adapter deprovision runs and is recorded even when a scenario aborts midway.

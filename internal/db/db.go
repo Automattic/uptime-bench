@@ -479,7 +479,7 @@ func (d *DB) CampaignReasonRows(ctx context.Context, campaignRunIDs []string) ([
 // GroundTruthEventsForRun returns all ground_truth_events for a run, ordered by occurred_at.
 func (d *DB) GroundTruthEventsForRun(ctx context.Context, runID string) ([]GroundTruthEvent, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT run_id, event_type, target_id, COALESCE(failure_type,''), occurred_at
+		`SELECT run_id, event_type, target_id, COALESCE(failure_type,''), occurred_at, details
 		 FROM ground_truth_events WHERE run_id = ? ORDER BY occurred_at`,
 		runID,
 	)
@@ -491,8 +491,16 @@ func (d *DB) GroundTruthEventsForRun(ctx context.Context, runID string) ([]Groun
 	var out []GroundTruthEvent
 	for rows.Next() {
 		var e GroundTruthEvent
-		if err := rows.Scan(&e.RunID, &e.EventType, &e.TargetID, &e.FailureType, &e.OccurredAt); err != nil {
+		var details sql.NullString
+		if err := rows.Scan(&e.RunID, &e.EventType, &e.TargetID, &e.FailureType, &e.OccurredAt, &details); err != nil {
 			return nil, fmt.Errorf("db: GroundTruthEventsForRun: scan: %w", err)
+		}
+		if details.Valid && details.String != "" {
+			var decoded any
+			if err := json.Unmarshal([]byte(details.String), &decoded); err != nil {
+				return nil, fmt.Errorf("db: GroundTruthEventsForRun: details: %w", err)
+			}
+			e.Details = decoded
 		}
 		out = append(out, e)
 	}

@@ -24,6 +24,15 @@ func typedWindow(kind string, start, end time.Time) failureWindow {
 	return failureWindow{kind: kind, start: start, end: end}
 }
 
+func methodWindow(method string, start, end time.Time) failureWindow {
+	return failureWindow{
+		kind:    failureHTTPMethodStatus,
+		start:   start,
+		end:     end,
+		details: map[string]any{"method": method},
+	}
+}
+
 // TestComputeMetrics_TruePositive — alert inside the failure window.
 func TestComputeMetrics_TruePositive(t *testing.T) {
 	start := time.Now()
@@ -79,6 +88,54 @@ func TestComputeMetrics_FalsePositive(t *testing.T) {
 	}
 	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
 		t.Fatalf("true_positive = %v, want 0", v)
+	}
+}
+
+func TestComputeMetrics_HEADFailureWithHealthyGETIsNotFalseNegative(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	sr := &serviceData{}
+
+	out := computeMetrics(sr, []failureWindow{methodWindow("HEAD", start, end)}, nil)
+
+	if v := out["false_negative"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_negative = %v, want 0 (GET-visible page is healthy)", v)
+	}
+	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("true_positive = %v, want 0", v)
+	}
+	if v := out["false_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_positive = %v, want 0", v)
+	}
+}
+
+func TestComputeMetrics_HEADFailureAlertIsFalsePositive(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	sr := &serviceData{alerts: []db.MonitorReportRow{alertAt(start.Add(15 * time.Second))}}
+
+	out := computeMetrics(sr, []failureWindow{methodWindow("HEAD", start, end)}, nil)
+
+	if v := out["false_positive"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("false_positive = %v, want 1 (HEAD-only failure is false-down for visitor-visible GET)", v)
+	}
+	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("true_positive = %v, want 0", v)
+	}
+	if v := out["false_negative"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_negative = %v, want 0", v)
+	}
+}
+
+func TestComputeMetrics_GETFailureRemainsVisitorVisibleOutage(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	sr := &serviceData{}
+
+	out := computeMetrics(sr, []failureWindow{methodWindow("GET", start, end)}, nil)
+
+	if v := out["false_negative"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("false_negative = %v, want 1 (GET failure is visitor-visible)", v)
 	}
 }
 

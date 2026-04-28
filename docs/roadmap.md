@@ -37,7 +37,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## End-to-end run pipeline
 
 - **Single-scenario execution** — the harness can provision monitors, activate controlled failures, record ground truth, retrieve monitor events, deprovision, and close the run.
-- **Measurement engine** — raw events are converted into true positive, false negative, false positive, unknown, maintenance-suppressed, cooldown-suppressed/uncertain, TLS advisory, and latency metrics.
+- **Measurement engine** — raw events are converted into true positive, false negative, false positive, unknown, maintenance-suppressed, cooldown-suppressed/uncertain, TLS advisory, method-sensitive, and latency metrics.
 - **Reporting tool** — `cmd/uptime-bench-report` produces table, TSV, and JSON campaign summaries with aggregation metadata, bias checks, confidence intervals, capability-mismatch counts, suppression counts, and TLS advisory counts.
 
 ## Monitoring adapters
@@ -90,12 +90,14 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 ## Jetmon v2 deployed scenario smoke
 
-**Status:** Blocked on the deployed harness path. Direct deployed target/DNS smoke passed on 2026-04-28, and local Jetmon v2 API contract smoke now passes with a current token. The full harness path against Jetmon v2 is still the next proof point, but the runner host cannot currently reach the dev API and its service config is not enabled for Jetmon v2.
+**Status:** Partially validated; blocked on the deployed harness path. Direct deployed target/DNS smoke passed on 2026-04-28, local Jetmon v2 API contract smoke passes with a current token, and workstation-run harness smoke against the deployed fleet now passes the two highest-priority HEAD/GET mismatch scenarios. The full deployed-harness path against Jetmon v2 is still blocked because the runner host cannot currently reach the dev API and its service config is not enabled for Jetmon v2.
 
 Rechecked on 2026-04-28:
 
 - The Jetmon v2 API health endpoint at the current dev address is reachable from the workstation.
 - A replacement API token returns `200 OK` from `/api/v1/me` and the build-tagged Jetmon v2 live adapter tests pass locally, including provision, retrieve, API contract, and deprovision.
+- Workstation-run harness smoke using a temporary Jetmon v2 services config passed `http-head-200-get-503` against the deployed target fleet: run `81d439ab1fb15ba53df06dc5adaad71b` closed with `planned_completion`, retrieved `alert_fired` / `alert_resolved`, derived `true_positive=1`, `false_negative=0`, `false_positive=0`, and left the target control registry clean.
+- Workstation-run harness smoke passed `http-head-405-get-200` after fixing method-sensitive metric semantics: run `d00ad54bf28dcb9577e78f02f2b0d17c` closed with `planned_completion`, retrieved `status=known reports=0`, derived `false_negative=0`, `false_positive=0`, and left the target control registry clean.
 - The harness server times out when calling the same API health endpoint, so runner-to-API reachability is still blocked.
 - The deployed harness `/etc/uptime-bench/services.toml` still has `jetmon-v2` disabled with no API URL or token configured.
 
@@ -108,11 +110,11 @@ Attempted on 2026-04-28:
 
 Resume this item when the runner host has a reachable Jetmon v2 API URL and the deployed harness service config is enabled with a current write-scope token. The harness now supports `-monitors=jetmon-v2`, so the checked-in scenario corpus can be reused for Jetmon v2 smoke without creating temporary scenario copies.
 
-Run a small monitor-facing scenario set through the real deployed fleet and the Jetmon v2 adapter before broadening to cross-vendor campaigns. This should validate the complete loop: harness provisioning, Jetmon v2 API calls, monitor behavior against injected target failures, retrieval, metric derivation, cleanup, and no remaining active fleet failures.
+Run the remaining small monitor-facing scenario set through the real deployed fleet and the Jetmon v2 adapter before broadening to cross-vendor campaigns. This should validate the complete loop: harness provisioning, Jetmon v2 API calls, monitor behavior against injected target failures, retrieval, metric derivation, cleanup, and no remaining active fleet failures.
 
 Initial scenario set:
 
-- HEAD/GET mismatch cases: `http-head-405-get-200.toml` and `http-head-200-get-503.toml`.
+- HEAD/GET mismatch cases: `http-head-405-get-200.toml` and `http-head-200-get-503.toml` are passing from the workstation-run harness path; repeat from the deployed harness once reachability/config are fixed.
 - Basic outage and timing cases: `http-503.toml`, `http-timeout-ttfb.toml`, and `http-partial.toml`.
 - Content/keyword cases: `content-keyword-missing.toml`, `content-keyword-injected.toml`, and one high-signal compromise page such as `content-defacement.toml`.
 
@@ -571,7 +573,7 @@ The `offset` field is honored by the runner: failures activate at `scenario_star
 
 ## Method-sensitive HTTP behavior beyond status
 
-**Status:** Partially implemented. `http_method_status` covers the two high-priority HEAD/GET status mismatches: HEAD failure with healthy GET, and healthy HEAD with GET failure. The target also honors optional `method = "GET"` / `"HEAD"` predicates for `http_redirect`, `http_timeout`, `http_partial`, and `http_body`, with shipped scenarios for GET-only redirect loops, GET-only truncated bodies, GET-only TTFB stalls, and HEAD-only TTFB stalls. Header-sensitive behaviors remain deferred until the method cases produce real benchmark data.
+**Status:** Partially implemented. `http_method_status` covers the two high-priority HEAD/GET status mismatches: HEAD failure with healthy GET, and healthy HEAD with GET failure. Measurement now scores `http_method_status method="HEAD"` as a healthy-GET false-down trap rather than as a missed outage when no alert fires, while `method="GET"` remains a visitor-visible outage. The target also honors optional `method = "GET"` / `"HEAD"` predicates for `http_redirect`, `http_timeout`, `http_partial`, and `http_body`, with shipped scenarios for GET-only redirect loops, GET-only truncated bodies, GET-only TTFB stalls, and HEAD-only TTFB stalls. Header-sensitive behaviors remain deferred until the method cases produce real benchmark data.
 
 These are expected Jetmon-v1 pitfalls if it relies on shallow HEAD/status checks, and they should become Jetmon-v2 regression cases if v2 probes the user-visible GET path:
 
