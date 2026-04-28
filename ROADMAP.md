@@ -456,28 +456,29 @@ This and "Maintenance window suppression" should be designed together — they'r
 
 ## Probe IP CIDR refresh tool
 
-**Status:** Not implemented. Manual chore today; without automation it goes stale and `http-geo-503` produces noise.
+**Status:** MVP implemented. `cmd/probe-ips-refresh` fetches public vendor probe lists, normalizes IPs/CIDRs, and emits a reviewable TOML fragment. Manual review is still required for vendor feeds that lack stable regional metadata.
 
 `services.toml`'s `[services.probe_ranges]` blocks list per-region CIDRs for each vendor's published probe pool. Vendors update these lists periodically. Each vendor publishes (or doesn't) in machine-readable form:
 
 | Service | Source | Format | Region tags |
 |---|---|---|---|
-| Pingdom | `https://my.pingdom.com/probes/ipv4` | JSON | Yes |
+| Pingdom | `https://my.pingdom.com/probes/ipv4` | Plain text currently; parser also tolerates JSON | No in current feed |
 | UptimeRobot | `https://uptimerobot.com/inc/files/ips/IPv4andIPv6.txt` | Plain text | No |
 | Datadog Synthetics | `https://ip-ranges.datadoghq.com/` | JSON, `synthetics` key | Yes |
-| Better Uptime | `https://betterstack.com/docs/uptime/ip-addresses/` | HTML | Partially (in prose) |
+| Better Uptime | `https://betterstack.com/docs/uptime/frequently-asked-questions/` | HTML | Partially (in prose) |
 
-**Build:** `cmd/probe-ips-refresh` Go tool that fetches each list, normalizes regions, and emits a TOML fragment to stdout. Operator pipes it to a file, diffs against the current `services.toml`, and applies changes by hand.
+**Build:** `cmd/probe-ips-refresh` Go tool fetches each list, normalizes regions where possible, and emits a TOML fragment to stdout. Operator pipes it to a file, diffs against the current `services.toml`, and applies changes by hand.
 
 **Why not auto-write `services.toml`:** vendor changes can include unexpected region renames, IPv6-only additions, or removals that should be noticed, not silently merged. Manual review is the safety check.
 
 **Region mapping:**
 
-- Pingdom and Datadog tag each IP/CIDR with a region; pass through.
-- UptimeRobot doesn't. Maintain a hand-edited `internal/probeips/uptimerobot_regions.json` that maps IP prefixes to regions; the tool warns when a new IP doesn't fall in any known prefix. Keep this file in the repo so updates are visible in PRs.
-- Better Uptime publishes IPs in HTML prose with region annotations; first attempt is a polite request to BetterStack for a structured feed. Until then, hand-curated list with a comment noting last refresh.
+- Datadog tags each IP/CIDR with a provider location; the tool folds those into coarse uptime-bench regions such as `us-east`, `eu-west`, and `ap-sea`.
+- Pingdom's current public IPv4 feed is untagged plain text. The tool emits it under `global` with a warning, so operators can keep the all-probe pool fresh without pretending it is region-specific.
+- UptimeRobot doesn't tag regions. Maintain a hand-edited `internal/probeips/uptimerobot_regions.json` that maps IP prefixes to regions; the tool warns when a new IP doesn't fall in any known prefix. Keep this file in the repo so updates are visible in PRs.
+- Better Uptime publishes IPs in HTML prose with broad region annotations; the tool parses the current FAQ page best-effort and warns that mappings need review.
 
-**Run cadence:** weekly via a GitHub Action that opens a PR with the diff. Operator merges (or rejects) within a day.
+**Remaining:** seed the UptimeRobot region map with verified prefixes, decide whether Pingdom should stay `global` or use a separate curated map, and add the weekly GitHub Action that opens a PR with the diff.
 
 ---
 

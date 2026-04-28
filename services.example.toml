@@ -62,7 +62,7 @@ auth    = { token = "replace-with-your-token", bucket_no = "0" }
 # Pingdom
 # Default URL: https://api.pingdom.com/api/3.1
 # Auth keys: token
-# Probe IP list: https://my.pingdom.com/probes/ipv4 (JSON)
+# Probe IP list: https://my.pingdom.com/probes/ipv4 (plain text)
 # -----------------------------------------------------------------------------
 [[services]]
 id      = "pingdom"
@@ -121,7 +121,7 @@ ap-sea   = ["13.228.142.0/24"]
 # Better Uptime
 # Default URL: https://uptime.betterstack.com/api/v2
 # Auth keys: token
-# Probe IP list: https://betterstack.com/docs/uptime/ip-addresses/
+# Probe IP list: https://betterstack.com/docs/uptime/frequently-asked-questions/
 # -----------------------------------------------------------------------------
 [[services]]
 id      = "better-uptime"
