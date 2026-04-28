@@ -50,9 +50,20 @@ type Config struct {
 	// hook can race Let's Encrypt's recursive resolver caching the
 	// old TXT value (TTL 30s on uptime-bench-dns). Default is 60s
 	// (2× the canonical TTL); set to 0 to disable.
-	InterOrderQuiet Duration       `json:"inter_order_quiet,omitempty"`
-	Certbot         CertbotConfig  `json:"certbot"`
-	Domains         []DomainConfig `json:"domains"`
+	InterOrderQuiet Duration `json:"inter_order_quiet,omitempty"`
+
+	// ExpiredRetention is how long to keep an expired cert in the
+	// library before garbage-collecting it. The trim rule is per
+	// (domain, profile): expired certs younger than this are kept;
+	// older ones are dropped, EXCEPT for the oldest in each group,
+	// which is preserved so SelectExpired always has at least one
+	// "very old" cert per domain/profile to match against scenarios
+	// asking for large days_expired values. Default 720h (30 days).
+	// Set to 0 to disable trimming and let the library grow forever.
+	ExpiredRetention Duration `json:"expired_retention,omitempty"`
+
+	Certbot CertbotConfig  `json:"certbot"`
+	Domains []DomainConfig `json:"domains"`
 }
 
 // CertbotConfig contains certbot executable, state, and authenticator settings.
@@ -129,6 +140,9 @@ func (c *Config) ApplyDefaults() {
 	if c.InterOrderQuiet.Duration == 0 {
 		c.InterOrderQuiet.Duration = 60 * time.Second
 	}
+	if c.ExpiredRetention.Duration == 0 {
+		c.ExpiredRetention.Duration = 30 * 24 * time.Hour
+	}
 	if c.Certbot.Binary == "" {
 		c.Certbot.Binary = "certbot"
 	}
@@ -165,6 +179,9 @@ func (c Config) Validate() error {
 	}
 	if c.InterOrderQuiet.Duration < 0 {
 		errs = append(errs, errors.New("config: inter_order_quiet must be non-negative"))
+	}
+	if c.ExpiredRetention.Duration < 0 {
+		errs = append(errs, errors.New("config: expired_retention must be non-negative"))
 	}
 	if c.Certbot.Binary == "" {
 		errs = append(errs, errors.New("config: certbot.binary is required"))

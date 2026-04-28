@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -100,4 +101,51 @@ func (m *Manifest) Append(entry Entry) {
 		}
 	}
 	m.Entries = append(m.Entries, entry)
+}
+
+// Trim returns a new Manifest with old expired entries dropped, plus
+// the slice of dropped entries so the caller can clean their disk
+// files. The retention rule is per (domain, profile):
+//
+//   - Entries with NotAfter ≥ (now - retention) are always kept. This
+//     keeps every non-expired cert and every recently-expired cert,
+//     where "recently" is the retention window.
+//   - Among entries expired by more than retention, the OLDEST (the
+//     longest-expired one) is kept. This guarantees that for any
+//     (domain, profile) where any expired cert exists, at least one
+//     "very old" cert stays available for tls_expired scenarios that
+//     ask for large days_expired values.
+//   - Everything else in the very-old bucket is dropped.
+//
+// Pass retention <= 0 to skip trimming entirely.
+func Trim(m Manifest, now time.Time, retention time.Duration) (Manifest, []Entry) {
+	if retention <= 0 || len(m.Entries) == 0 {
+		return m, nil
+	}
+	cutoff := now.Add(-retention)
+	type groupKey struct{ domain, profile string }
+	veryOld := map[groupKey][]Entry{}
+	keep := make([]Entry, 0, len(m.Entries))
+	for _, e := range m.Entries {
+		if !e.NotAfter.Before(cutoff) {
+			keep = append(keep, e)
+			continue
+		}
+		k := groupKey{e.Domain, e.Profile}
+		veryOld[k] = append(veryOld[k], e)
+	}
+
+	var removed []Entry
+	for _, group := range veryOld {
+		// Sort oldest-first so group[0] is the longest-expired.
+		sort.Slice(group, func(i, j int) bool {
+			return group[i].NotAfter.Before(group[j].NotAfter)
+		})
+		keep = append(keep, group[0])
+		removed = append(removed, group[1:]...)
+	}
+
+	out := m
+	out.Entries = keep
+	return out, removed
 }

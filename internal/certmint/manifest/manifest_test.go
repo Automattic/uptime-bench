@@ -105,3 +105,79 @@ func TestHasSlotAndAppend(t *testing.T) {
 		t.Fatalf("CertName = %q, want replacement", m.Entries[0].CertName)
 	}
 }
+
+func TestTrim_KeepsNonExpiredAndRecentlyExpired(t *testing.T) {
+	now := time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC)
+	m := Manifest{Entries: []Entry{
+		// fresh cert, not expired
+		{ID: "fresh", Domain: "ex.com", Profile: "classic", NotAfter: now.Add(60 * 24 * time.Hour)},
+		// expired 5 days ago — within retention
+		{ID: "recent-expired", Domain: "ex.com", Profile: "classic", NotAfter: now.Add(-5 * 24 * time.Hour)},
+		// expired 25 days ago — within retention (just barely)
+		{ID: "edge", Domain: "ex.com", Profile: "classic", NotAfter: now.Add(-25 * 24 * time.Hour)},
+	}}
+
+	out, removed := Trim(m, now, 30*24*time.Hour)
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want empty (nothing past retention)", removed)
+	}
+	if len(out.Entries) != 3 {
+		t.Fatalf("Entries = %d, want 3", len(out.Entries))
+	}
+}
+
+func TestTrim_DropsVeryOldExceptOldestPerGroup(t *testing.T) {
+	now := time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC)
+	m := Manifest{Entries: []Entry{
+		// classic for ex.com — three very-old entries; oldest must survive.
+		{ID: "ex-classic-200d", Domain: "ex.com", Profile: "classic", NotAfter: now.Add(-200 * 24 * time.Hour)}, // oldest
+		{ID: "ex-classic-100d", Domain: "ex.com", Profile: "classic", NotAfter: now.Add(-100 * 24 * time.Hour)},
+		{ID: "ex-classic-50d", Domain: "ex.com", Profile: "classic", NotAfter: now.Add(-50 * 24 * time.Hour)},
+		// shortlived for ex.com — one very-old; survives by virtue of being the only one.
+		{ID: "ex-short-90d", Domain: "ex.com", Profile: "shortlived", NotAfter: now.Add(-90 * 24 * time.Hour)},
+		// classic for other.com — separate group, also keeps its oldest.
+		{ID: "other-classic-365d", Domain: "other.com", Profile: "classic", NotAfter: now.Add(-365 * 24 * time.Hour)},
+		{ID: "other-classic-40d", Domain: "other.com", Profile: "classic", NotAfter: now.Add(-40 * 24 * time.Hour)},
+		// recently expired classic for ex.com — within retention, kept.
+		{ID: "ex-classic-10d", Domain: "ex.com", Profile: "classic", NotAfter: now.Add(-10 * 24 * time.Hour)},
+	}}
+
+	out, removed := Trim(m, now, 30*24*time.Hour)
+
+	keptIDs := map[string]bool{}
+	for _, e := range out.Entries {
+		keptIDs[e.ID] = true
+	}
+	for _, want := range []string{"ex-classic-200d", "ex-short-90d", "other-classic-365d", "ex-classic-10d"} {
+		if !keptIDs[want] {
+			t.Errorf("expected to keep %q, kept %v", want, keptIDs)
+		}
+	}
+	removedIDs := map[string]bool{}
+	for _, e := range removed {
+		removedIDs[e.ID] = true
+	}
+	for _, want := range []string{"ex-classic-100d", "ex-classic-50d", "other-classic-40d"} {
+		if !removedIDs[want] {
+			t.Errorf("expected to remove %q, removed %v", want, removedIDs)
+		}
+	}
+}
+
+func TestTrim_RetentionZeroIsNoOp(t *testing.T) {
+	now := time.Now()
+	m := Manifest{Entries: []Entry{
+		{ID: "x", Domain: "ex.com", Profile: "classic", NotAfter: now.Add(-5 * 24 * time.Hour)},
+	}}
+	out, removed := Trim(m, now, 0)
+	if len(out.Entries) != 1 || len(removed) != 0 {
+		t.Fatalf("retention=0 should be no-op; out=%v removed=%v", out.Entries, removed)
+	}
+}
+
+func TestTrim_EmptyManifestIsNoOp(t *testing.T) {
+	out, removed := Trim(Manifest{}, time.Now(), 30*24*time.Hour)
+	if len(out.Entries) != 0 || len(removed) != 0 {
+		t.Fatalf("empty input should produce empty output; out=%v removed=%v", out.Entries, removed)
+	}
+}

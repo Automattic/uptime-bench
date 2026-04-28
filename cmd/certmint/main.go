@@ -288,6 +288,39 @@ func runOnce(ctx context.Context, cfg config.Config, current *manifest.Manifest,
 		}
 		lastDone[order.DomainName] = time.Now()
 	}
+
+	if err := trimLibrary(cfg, current); err != nil {
+		// Don't escalate to a run failure — the library is still
+		// usable, just larger than its retention policy says it
+		// should be. Log so operators see it.
+		log.Printf("certmint: library trim: %v", err)
+	}
+
+	return errors.Join(errs...)
+}
+
+// trimLibrary applies the cfg.ExpiredRetention policy to the in-memory
+// manifest, deletes the disk files of any removed entries, and writes
+// the updated manifest. No-op when retention is 0 or when nothing
+// passes the rule. Called after each issuance pass so a daemon
+// running with default 15min poll never lets the library grow more
+// than one cycle past retention.
+func trimLibrary(cfg config.Config, current *manifest.Manifest) error {
+	trimmed, removed := manifest.Trim(*current, time.Now(), cfg.ExpiredRetention.Duration)
+	if len(removed) == 0 {
+		return nil
+	}
+	*current = trimmed
+	if err := manifest.Save(library.ManifestPathForConfig(cfg), *current); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+	var errs []error
+	for _, e := range removed {
+		if err := library.RemoveArchivedFiles(e); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", e.ID, err))
+		}
+		log.Printf("certmint: trimmed expired entry %s not_after=%s", e.ID, e.NotAfter.Format(time.RFC3339))
+	}
 	return errors.Join(errs...)
 }
 
