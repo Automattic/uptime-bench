@@ -8,20 +8,24 @@
 #   ./deploy/provision.sh --type <type> --host <host> [options]
 #
 # Required:
-#   --type TYPE       Server role: harness | target | dns
-#   --host HOST       SSH-reachable hostname or IP
+#   --type TYPE        Server role: harness | target | dns | certmint
+#   --host HOST        SSH-reachable hostname or IP
 #
 # Optional:
-#   --user USER       SSH login user with sudo access (default: ubuntu)
-#   --harness-ip IP   Restrict control port to this source IP (recommended for
-#                     target and dns servers; omit to allow from any IP)
-#   --ssh-port PORT   SSH port on the remote host (default: 22)
-#   --skip-swap       Do not create a swap file (if the host already has swap)
+#   --user USER        SSH login user with sudo access (default: ubuntu)
+#   --harness-ip IP    Restrict control port to this source IP (recommended for
+#                      target and dns servers; omit to allow from any IP)
+#   --target-ips LIST  Comma-separated list of target IPs allowed to pull the
+#                      cert library from a certmint host (certmint role only;
+#                      omit to allow from any IP)
+#   --ssh-port PORT    SSH port on the remote host (default: 22)
+#   --skip-swap        Do not create a swap file (if the host already has swap)
 #
 # Examples:
-#   ./deploy/provision.sh --type target --host 203.0.113.20 --harness-ip 203.0.113.5
-#   ./deploy/provision.sh --type dns    --host 203.0.113.10 --harness-ip 203.0.113.5
-#   ./deploy/provision.sh --type harness --host 203.0.113.5
+#   ./deploy/provision.sh --type target   --host 203.0.113.20 --harness-ip 203.0.113.5
+#   ./deploy/provision.sh --type dns      --host 203.0.113.10 --harness-ip 203.0.113.5
+#   ./deploy/provision.sh --type harness  --host 203.0.113.5
+#   ./deploy/provision.sh --type certmint --host 203.0.113.30 --target-ips 203.0.113.20
 
 set -euo pipefail
 
@@ -53,6 +57,7 @@ TYPE=""
 HOST=""
 SSH_USER="ubuntu"
 HARNESS_IP=""
+TARGET_IPS=""
 SSH_PORT="22"
 EXTRA_ARGS=""
 
@@ -62,11 +67,12 @@ while [[ $# -gt 0 ]]; do
         --host)        HOST="$2";        shift 2 ;;
         --user)        SSH_USER="$2";    shift 2 ;;
         --harness-ip)  HARNESS_IP="$2";  shift 2 ;;
+        --target-ips)  TARGET_IPS="$2";  shift 2 ;;
         --ssh-port)    SSH_PORT="$2";    shift 2 ;;
         --skip-swap)   EXTRA_ARGS="$EXTRA_ARGS --skip-swap"; shift ;;
         *)
             err "Unknown argument: $1"
-            err "Usage: $0 --type <harness|target|dns> --host <host> [--user USER] [--harness-ip IP] [--ssh-port PORT] [--skip-swap]"
+            err "Usage: $0 --type <harness|target|dns|certmint> --host <host> [--user USER] [--harness-ip IP] [--target-ips LIST] [--ssh-port PORT] [--skip-swap]"
             exit 1
             ;;
     esac
@@ -78,9 +84,9 @@ if [[ -z "$TYPE" || -z "$HOST" ]]; then
 fi
 
 case "$TYPE" in
-    harness|target|dns) ;;
+    harness|target|dns|certmint) ;;
     *)
-        err "--type must be one of: harness, target, dns"
+        err "--type must be one of: harness, target, dns, certmint"
         exit 1
         ;;
 esac
@@ -105,6 +111,7 @@ scp $SCP_OPTS \
 
 # Upload example config files for the roles that consume them.
 # Harness reads both; DNS reads fleet.toml for zone records; target needs neither.
+# Certmint has its own JSON config example.
 if [[ "$TYPE" == "harness" || "$TYPE" == "dns" ]]; then
     section "Uploading fleet.example.toml"
     scp $SCP_OPTS \
@@ -116,6 +123,15 @@ if [[ "$TYPE" == "harness" ]]; then
     scp $SCP_OPTS \
         "${REPO_ROOT}/services.example.toml" \
         "${SSH_USER}@${HOST}:/tmp/services.example.toml"
+fi
+if [[ "$TYPE" == "certmint" ]]; then
+    section "Uploading certmint example configs"
+    scp $SCP_OPTS \
+        "${REPO_ROOT}/configs/certmint/example.json" \
+        "${SSH_USER}@${HOST}:/tmp/certmint.example.json"
+    scp $SCP_OPTS \
+        "${REPO_ROOT}/configs/certmint/rfc2136.ini.example" \
+        "${SSH_USER}@${HOST}:/tmp/rfc2136.ini.example"
 fi
 
 section "Running provisioning on ${HOST} (type: ${TYPE})"
@@ -129,6 +145,7 @@ SUDO_ENV=""
 
 PROVISION_CMD="sudo ${SUDO_ENV}bash /tmp/provision-server.sh --type ${TYPE} --deploy-user ${SSH_USER} --ssh-port ${SSH_PORT}"
 [[ -n "$HARNESS_IP" ]]  && PROVISION_CMD="$PROVISION_CMD --harness-ip $HARNESS_IP"
+[[ -n "$TARGET_IPS" ]]  && PROVISION_CMD="$PROVISION_CMD --target-ips $TARGET_IPS"
 [[ -n "$EXTRA_ARGS" ]]  && PROVISION_CMD="$PROVISION_CMD $EXTRA_ARGS"
 
 # shellcheck disable=SC2029

@@ -1,8 +1,9 @@
-BIN_DIR        = bin
-BINARY_HARNESS = $(BIN_DIR)/uptime-bench-harness
-BINARY_TARGET  = $(BIN_DIR)/uptime-bench-target
-BINARY_DNS     = $(BIN_DIR)/uptime-bench-dns
-BINARY_REPORT  = $(BIN_DIR)/uptime-bench-report
+BIN_DIR         = bin
+BINARY_HARNESS  = $(BIN_DIR)/uptime-bench-harness
+BINARY_TARGET   = $(BIN_DIR)/uptime-bench-target
+BINARY_DNS      = $(BIN_DIR)/uptime-bench-dns
+BINARY_CERTMINT = $(BIN_DIR)/uptime-bench-certmint
+BINARY_REPORT   = $(BIN_DIR)/uptime-bench-report
 
 .DEFAULT_GOAL := build
 
@@ -11,7 +12,7 @@ BINARY_REPORT  = $(BIN_DIR)/uptime-bench-report
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_REPORT)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -24,6 +25,10 @@ $(BINARY_TARGET): $(shell find cmd/target internal -name '*.go' 2>/dev/null)
 $(BINARY_DNS): $(shell find cmd/dns internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/dns
+
+$(BINARY_CERTMINT): $(shell find cmd/certmint internal -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/certmint
 
 $(BINARY_REPORT): $(shell find cmd/uptime-bench-report internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -121,13 +126,15 @@ logs:
 # Optional: set HARNESS_IP to restrict the control port to the harness IP.
 #   make provision-target TARGET_HOST=203.0.113.20 HARNESS_IP=203.0.113.5
 
-HARNESS_HOST ?= $(error set HARNESS_HOST)
-TARGET_HOST  ?= $(error set TARGET_HOST)
-DNS_HOST     ?= $(error set DNS_HOST)
-HARNESS_IP   ?=
-DEPLOY_USER  ?= ubuntu
+HARNESS_HOST  ?= $(error set HARNESS_HOST)
+TARGET_HOST   ?= $(error set TARGET_HOST)
+DNS_HOST      ?= $(error set DNS_HOST)
+CERTMINT_HOST ?= $(error set CERTMINT_HOST)
+HARNESS_IP    ?=
+TARGET_IPS    ?=
+DEPLOY_USER   ?= ubuntu
 
-PROVISION_ARGS = $(if $(HARNESS_IP),--harness-ip $(HARNESS_IP))
+PROVISION_ARGS = $(if $(HARNESS_IP),--harness-ip $(HARNESS_IP)) $(if $(TARGET_IPS),--target-ips $(TARGET_IPS))
 
 .PHONY: provision-harness
 provision-harness:
@@ -140,6 +147,10 @@ provision-target:
 .PHONY: provision-dns
 provision-dns:
 	./deploy/provision.sh --type dns --host $(DNS_HOST) --user $(DEPLOY_USER) $(PROVISION_ARGS)
+
+.PHONY: provision-certmint
+provision-certmint:
+	./deploy/provision.sh --type certmint --host $(CERTMINT_HOST) --user $(DEPLOY_USER) $(PROVISION_ARGS)
 
 # ---------------------------------------------------------------------------
 # Deploy (requires SSH access and pre-provisioned hosts)
@@ -156,6 +167,10 @@ deploy-target:
 .PHONY: deploy-dns
 deploy-dns:
 	./deploy/deploy.sh dns $(DNS_HOST) $(DEPLOY_USER)
+
+.PHONY: deploy-certmint
+deploy-certmint:
+	./deploy/deploy.sh certmint $(CERTMINT_HOST) $(DEPLOY_USER)
 
 # ---------------------------------------------------------------------------
 # Help
@@ -190,11 +205,13 @@ help:
 	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_FORMAT=table|tsv|json]"
 	@echo ""
 	@echo "Provision (first-time host setup — run before deploy):"
-	@echo "  make provision-harness HARNESS_HOST=host [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
-	@echo "  make provision-target  TARGET_HOST=host  [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
-	@echo "  make provision-dns     DNS_HOST=host     [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
+	@echo "  make provision-harness  HARNESS_HOST=host  [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
+	@echo "  make provision-target   TARGET_HOST=host   [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
+	@echo "  make provision-dns      DNS_HOST=host      [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
+	@echo "  make provision-certmint CERTMINT_HOST=host [TARGET_IPS=ip,ip] [DEPLOY_USER=ubuntu]"
 	@echo ""
 	@echo "Deploy (push updated binary and restart service):"
-	@echo "  make deploy-harness HARNESS_HOST=host [DEPLOY_USER=ubuntu]"
-	@echo "  make deploy-target  TARGET_HOST=host  [DEPLOY_USER=ubuntu]"
-	@echo "  make deploy-dns     DNS_HOST=host     [DEPLOY_USER=ubuntu]"
+	@echo "  make deploy-harness  HARNESS_HOST=host  [DEPLOY_USER=ubuntu]"
+	@echo "  make deploy-target   TARGET_HOST=host   [DEPLOY_USER=ubuntu]"
+	@echo "  make deploy-dns      DNS_HOST=host      [DEPLOY_USER=ubuntu]"
+	@echo "  make deploy-certmint CERTMINT_HOST=host [DEPLOY_USER=ubuntu]"

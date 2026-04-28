@@ -1,19 +1,29 @@
 [Unit]
 Description=uptime-bench certificate minting daemon
-Documentation=https://github.com/Automattic/uptime-bench-certmint
+Documentation=https://github.com/Automattic/uptime-bench
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/uptime-bench-certmint daemon -config /etc/uptime-bench-certmint/config.json
+
+# Config file lives next to the rest of the fleet's config files; env file
+# carries CONTROL_TOKEN (shared with the rest of the fleet) plus
+# UPTIME_BENCH_DNS_CONTROL_URLS for the certbot manual hooks.
+ExecStart=/usr/local/bin/uptime-bench-certmint daemon -config /etc/uptime-bench/certmint.json
+EnvironmentFile=/etc/uptime-bench/certmint.env
+
 Restart=always
 RestartSec=30s
 UMask=0077
 
-# Certbot plugins often need access to root-owned DNS credentials and ACME
-# state. If you run this as a dedicated user, grant that user access to the
-# configured certbot and library directories.
+# Certbot's manual-hook scripts read DNS credentials and write into a
+# state dir that needs to be readable across certbot's Python process and
+# the certmint daemon. Running as root is the simplest path; the
+# state dir under /var/lib/uptime-bench-certmint is created with mode 0700
+# uptime-bench:uptime-bench by provision-server.sh, but the daemon
+# itself runs as root so certbot's plugin invocation has the access it
+# expects.
 User=root
 Group=root
 

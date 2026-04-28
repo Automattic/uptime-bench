@@ -4,7 +4,7 @@
 # Usage:
 #   ./deploy/deploy.sh <component> <host> [user]
 #
-# Components:  harness | target | dns
+# Components:  harness | target | dns | certmint
 # host:        SSH-reachable hostname or IP
 # user:        SSH/admin user with sudo access (default: ubuntu)
 #              This is NOT the uptime-bench service account (which has no shell).
@@ -51,11 +51,12 @@ if [[ -z "$COMPONENT" || -z "$HOST" ]]; then
 fi
 
 case "$COMPONENT" in
-    harness) CMD_PATH="./cmd/harness" ;;
-    target)  CMD_PATH="./cmd/target"  ;;
-    dns)     CMD_PATH="./cmd/dns"     ;;
+    harness)  CMD_PATH="./cmd/harness"  ;;
+    target)   CMD_PATH="./cmd/target"   ;;
+    dns)      CMD_PATH="./cmd/dns"      ;;
+    certmint) CMD_PATH="./cmd/certmint" ;;
     *)
-        err "Unknown component: $COMPONENT. Must be one of: harness, target, dns"
+        err "Unknown component: $COMPONENT. Must be one of: harness, target, dns, certmint"
         exit 1
         ;;
 esac
@@ -87,6 +88,11 @@ ssh "${REMOTE_USER}@${HOST}" "
     # ports 80/443 and 53 without running as root).
     if [[ '${COMPONENT}' == 'target' || '${COMPONENT}' == 'dns' ]]; then
         sudo setcap 'cap_net_bind_service=+ep' ${REMOTE_BIN}
+        sudo systemctl restart ${SERVICE}
+        sudo systemctl status ${SERVICE} --no-pager -l
+    elif [[ '${COMPONENT}' == 'certmint' ]]; then
+        # certmint binds the cert-library HTTP API on a high port (9200)
+        # so it doesn't need cap_net_bind_service. Restart and report.
         sudo systemctl restart ${SERVICE}
         sudo systemctl status ${SERVICE} --no-pager -l
     else

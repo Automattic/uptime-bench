@@ -5,13 +5,16 @@
 # updates and re-configuration. Targets Ubuntu Server 24.04 LTS.
 #
 # Usage (direct on the server):
-#   sudo bash provision-server.sh --type <harness|target|dns> [options]
+#   sudo bash provision-server.sh --type <harness|target|dns|certmint> [options]
 #
 # Options:
-#   --type TYPE         Server role: harness | target | dns  (required)
+#   --type TYPE         Server role: harness | target | dns | certmint  (required)
 #   --harness-ip IP     Restrict the control API port to requests from this IP.
 #                       Recommended for target and dns servers. If omitted, the
 #                       control port is accessible from any source.
+#   --target-ips LIST   Comma-separated target IPs allowed to pull the cert
+#                       library from a certmint host. If omitted, the library
+#                       port is accessible from any source.
 #   --deploy-user USER  The SSH/admin user to preserve in firewall and SSH config.
 #                       (default: ubuntu)
 #   --ssh-port PORT     SSH port to allow through the firewall (default: 22)
@@ -36,6 +39,7 @@ set -euo pipefail
 
 TYPE=""
 HARNESS_IP=""
+TARGET_IPS=""
 DEPLOY_USER="ubuntu"
 SSH_PORT="22"
 SKIP_SWAP=false
@@ -44,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --type)         TYPE="$2";         shift 2 ;;
         --harness-ip)   HARNESS_IP="$2";   shift 2 ;;
+        --target-ips)   TARGET_IPS="$2";   shift 2 ;;
         --deploy-user)  DEPLOY_USER="$2";  shift 2 ;;
         --ssh-port)     SSH_PORT="$2";     shift 2 ;;
         --skip-swap)    SKIP_SWAP=true;    shift ;;
@@ -60,9 +65,9 @@ if [[ -z "$TYPE" ]]; then
 fi
 
 case "$TYPE" in
-    harness|target|dns) ;;
+    harness|target|dns|certmint) ;;
     *)
-        echo "Error: --type must be one of: harness, target, dns" >&2
+        echo "Error: --type must be one of: harness, target, dns, certmint" >&2
         exit 1
         ;;
 esac
@@ -126,6 +131,14 @@ apt-get install -y -qq \
     logrotate \
     chrony
 ok "Packages installed"
+
+# Certmint role needs certbot for ACME issuance. Installed only when the
+# role calls for it so other fleet members don't carry an unused
+# Python/letsencrypt-client footprint.
+if [[ "$TYPE" == "certmint" ]]; then
+    apt-get install -y -qq certbot
+    ok "Installed certbot for certmint role"
+fi
 
 # ---------------------------------------------------------------------------
 # Phase 3: Time synchronisation (critical for benchmark accuracy)
@@ -249,6 +262,31 @@ CONTROL_TOKEN=CHANGE_ME
 MEMBER_ID=ns-XX
 EOF
         ;;
+    certmint)
+        cat > /etc/uptime-bench/certmint.env.example <<'EOF'
+# uptime-bench certmint environment file.
+#
+# To use:
+#   sudo cp certmint.env.example certmint.env
+#   sudo chown root:uptime-bench certmint.env
+#   sudo chmod 640 certmint.env
+#   sudoedit certmint.env
+#
+# CONTROL_TOKEN: shared bearer token for control-plane requests. The
+#   certbot manual hooks use this to PUT/DELETE TXT records on every
+#   uptime-bench-dns member, and (Phase B) the cert-library HTTP server
+#   uses it to authenticate target polls.
+#   Must match the value in /etc/uptime-bench/harness.env on the harness VM.
+#
+# UPTIME_BENCH_DNS_CONTROL_URLS: space-separated control base URLs of every
+#   uptime-bench-dns member. The certbot manual-auth and manual-cleanup hooks
+#   read this to fan out TXT challenge records.
+#   Example: "http://203.0.113.10:9100 http://203.0.113.11:9100"
+CONTROL_TOKEN=CHANGE_ME
+UPTIME_BENCH_CONTROL_TOKEN=CHANGE_ME
+UPTIME_BENCH_DNS_CONTROL_URLS="http://CHANGE_ME:9100"
+EOF
+        ;;
 esac
 chmod 640 "/etc/uptime-bench/${TYPE}.env.example"
 chown root:uptime-bench "/etc/uptime-bench/${TYPE}.env.example"
@@ -276,6 +314,30 @@ for ex in fleet.example.toml services.example.toml; do
         ok "Installed /etc/uptime-bench/$ex"
     fi
 done
+
+# Certmint role: install its own example config files + writable state
+# dirs. The library and certbot account material live under
+# /var/lib/uptime-bench-certmint so they survive package upgrades and
+# accidental /etc edits; they're owned by the uptime-bench service
+# account so the daemon can write without elevated privileges.
+if [[ "$TYPE" == "certmint" ]]; then
+    install -d -m 700 -o uptime-bench -g uptime-bench /var/lib/uptime-bench-certmint
+    install -d -m 700 -o uptime-bench -g uptime-bench /var/lib/uptime-bench/certs
+    ok "Created /var/lib/uptime-bench-certmint and /var/lib/uptime-bench/certs"
+
+    if [[ -f /tmp/certmint.example.json ]]; then
+        install -m 640 -o root -g uptime-bench /tmp/certmint.example.json \
+            /etc/uptime-bench/certmint.example.json
+        rm -f /tmp/certmint.example.json
+        ok "Installed /etc/uptime-bench/certmint.example.json"
+    fi
+    if [[ -f /tmp/rfc2136.ini.example ]]; then
+        install -m 640 -o root -g uptime-bench /tmp/rfc2136.ini.example \
+            /etc/uptime-bench/rfc2136.ini.example
+        rm -f /tmp/rfc2136.ini.example
+        ok "Installed /etc/uptime-bench/rfc2136.ini.example"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Phase 4c: Create operator config files from skeletons (non-destructive)
@@ -317,6 +379,9 @@ case "$TYPE" in
         ;;
     dns)
         ensure_config_file "/etc/uptime-bench/fleet.example.toml"    "/etc/uptime-bench/fleet.toml"
+        ;;
+    certmint)
+        ensure_config_file "/etc/uptime-bench/certmint.example.json" "/etc/uptime-bench/certmint.json"
         ;;
 esac
 
@@ -449,6 +514,26 @@ case "$TYPE" in
                 comment "Control API (harness only)"
         else
             ufw allow 9100/tcp comment "Control API (any source — set --harness-ip to restrict)"
+        fi
+        ;;
+
+    certmint)
+        # The cert-library HTTP API is read-only by design; targets poll
+        # it for the manifest + cert files. Restrict inbound to the
+        # specific target IPs the operator passes in via --target-ips
+        # so a stolen control token can't be used from the open
+        # Internet to enumerate public-cert lineages. Falls open if no
+        # IPs are passed, with a warning the operator will see.
+        if [[ -n "$TARGET_IPS" ]]; then
+            IFS=',' read -ra _TARGET_IP_LIST <<< "$TARGET_IPS"
+            for ip in "${_TARGET_IP_LIST[@]}"; do
+                ip="${ip// /}"
+                [[ -z "$ip" ]] && continue
+                ufw allow from "$ip" to any port 9200 proto tcp \
+                    comment "Cert-library HTTP API (target $ip)"
+            done
+        else
+            ufw allow 9200/tcp comment "Cert-library HTTP API (any source — set --target-ips to restrict)"
         fi
         ;;
 
