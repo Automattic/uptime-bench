@@ -522,6 +522,28 @@ inter_stage_range = { min = "30s", max = "1m" }
 	}
 }
 
+func TestDesignReportLabel(t *testing.T) {
+	plain := Design{FailureType: "http_status"}
+	if got := plain.ReportLabel(); got != "http_status" {
+		t.Fatalf("plain ReportLabel = %q, want http_status", got)
+	}
+
+	escalating := Design{
+		FailureType: "http_status",
+		Escalation: &EscalationDesign{
+			Pattern: EscalationPatternLayered,
+			Stages: []EscalationStage{
+				{FailureType: "http_status"},
+				{FailureType: "tcp_refused"},
+				{FailureType: "http_status"},
+			},
+		},
+	}
+	if got := escalating.ReportLabel(); got != "layered:http_status>tcp_refused>http_status" {
+		t.Fatalf("escalating ReportLabel = %q", got)
+	}
+}
+
 func TestGenerate_ReplacementEscalationPattern(t *testing.T) {
 	c, err := Parse([]byte(`
 id              = "replacement-test"

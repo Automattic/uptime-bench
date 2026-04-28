@@ -158,7 +158,11 @@ func RunCampaign(
 			continue
 		}
 
-		if _, err := Run(ctx, sc, fl, database, adapters, svcCfg, WithCampaignRunID(campaignRunID), withRequireCooldownReset()); err != nil {
+		if _, err := Run(ctx, sc, fl, database, adapters, svcCfg,
+			WithCampaignRunID(campaignRunID),
+			withRequireCooldownReset(),
+			withRunParameters(campaignRunParameters(d, slot)),
+		); err != nil {
 			// Per-replay failure isolation: log and continue. The
 			// scenario_runs row carries its own resolution_reason for
 			// downstream querying.
@@ -167,4 +171,25 @@ func RunCampaign(
 	}
 
 	return campaignRunID, nil
+}
+
+func campaignRunParameters(d *campaign.Design, slot campaign.ReplaySlot) map[string]any {
+	params := map[string]any{
+		"campaign_design_id":         d.ID,
+		"campaign_replay_index":      slot.Index,
+		"campaign_cell_failure_type": d.Cell.FailureType,
+		"campaign_duration_bucket":   d.Cell.DurationBucket,
+		"campaign_host_pattern":      d.Cell.HostPattern,
+		"campaign_failure_label":     d.ReportLabel(),
+	}
+	if d.Escalation != nil {
+		stageTypes := make([]string, 0, len(d.Escalation.Stages))
+		for _, stage := range d.Escalation.Stages {
+			stageTypes = append(stageTypes, stage.FailureType)
+		}
+		params["campaign_escalation_pattern"] = d.Escalation.Pattern
+		params["campaign_escalation_stages"] = len(d.Escalation.Stages)
+		params["campaign_escalation_stage_types"] = stageTypes
+	}
+	return params
 }

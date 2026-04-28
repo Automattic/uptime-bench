@@ -60,7 +60,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## Campaigns and statistical comparison
 
 - **Campaign methodology** — stratified sampling, two-tier sample depth, reproducible seeds, audit trail, and anti-favoritism constraints are documented.
-- **Campaign implementation** — config parsing, pure design/schedule generation, `campaign_runs` schema, scenario translation, serial campaign runner, campaign CLI, and campaign metric derivation are implemented.
+- **Campaign implementation** — config parsing, pure design/schedule generation, `campaign_runs` schema, scenario translation, serial campaign runner, campaign CLI, campaign replay metadata, and campaign metric derivation are implemented.
 - **Bias-aware reporting** — reports flag service/sample imbalance, missing failure/service cells, capability mismatches, uncategorized Unknown rows, and include confidence intervals before readers compare latency numbers.
 
 ## Inter-run state and suppression
@@ -373,7 +373,7 @@ Per (failure_type, service) statistics:
 4. ✅ **Runner outer loop (serial)** — `runner.RunCampaign` walks `Plan.Schedule`, calls existing `Run()` per replay via `WithCampaignRunID`. Per-replay errors don't abort the campaign. Tests in `internal/runner/campaign_test.go`. `cmd/harness` accepts `-campaign=<config.toml>` as a mutually exclusive alternative to `-scenario`; campaign mode runs every enabled service from `services.toml`. Metrics are derived in one batch at campaign end via `measurement.DeriveCampaign`, keyed by `scenario_runs.campaign_id`.
 5. ✅ **Initial `cmd/uptime-bench-report`** — campaign metrics can be summarized from `derived_metrics` into table / TSV / JSON output. Current scope: per-(failure_type, service) samples, detection rate, TP/FN/FP/Unknown/maintenance/cooldown counts, and latency min/avg/p50/p95/max.
 6. ✅ **Full report statistics** — table/JSON reports now include bias self-checks, Wilson 95% detection-rate intervals, deterministic nearest-rank percentile intervals for p50/p95, and explicit `capability_mismatch` counts from `monitor_reports.reason_code`. TSV stays row-only for scripts but includes the additional columns.
-7. **Escalation support** — per-failure `duration` overrides and generator pattern sampling now cover layered, replacement, and recovery representations. Remaining work: harden reporting labels for multi-stage runs and settle the exact pattern mix for published benchmark configs.
+7. **Escalation support** — per-failure `duration` overrides and generator pattern sampling now cover layered, replacement, and recovery representations. Reports use campaign replay metadata to label multi-stage shapes by pattern and stage order. Remaining work: settle the exact pattern mix for published benchmark configs.
 
 Each phase is independently mergeable. Phases 1–5 deliver the "campaigns work, no escalation" milestone — that alone produces useful comparison data.
 

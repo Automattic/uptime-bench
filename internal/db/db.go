@@ -381,7 +381,7 @@ func (d *DB) CampaignMetricRows(ctx context.Context, campaignRunIDs []string) ([
 		args[i] = id
 	}
 	query := `SELECT sr.id,
-	        COALESCE(ft.failure_types, ''),
+	        COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, ''),
 	        dm.service_id,
 	        dm.metric_name,
 	        dm.metric_value,
@@ -397,7 +397,7 @@ func (d *DB) CampaignMetricRows(ctx context.Context, campaignRunIDs []string) ([
 	      GROUP BY run_id
 	   ) ft ON ft.run_id = sr.id
 	  WHERE sr.campaign_id IN (` + placeholders + `)
-	  ORDER BY COALESCE(ft.failure_types, ''), dm.service_id, sr.started_at, sr.id, dm.metric_name`
+	  ORDER BY COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, ''), dm.service_id, sr.started_at, sr.id, dm.metric_name`
 	rows, err := d.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: CampaignMetricRows: %w", err)
@@ -442,7 +442,7 @@ func (d *DB) CampaignReasonRows(ctx context.Context, campaignRunIDs []string) ([
 		args[i] = id
 	}
 	query := `SELECT sr.id,
-	        COALESCE(ft.failure_types, ''),
+	        COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, ''),
 	        mr.service_id,
 	        COALESCE(mr.reason_code, '')
 	   FROM scenario_runs sr
@@ -458,7 +458,7 @@ func (d *DB) CampaignReasonRows(ctx context.Context, campaignRunIDs []string) ([
 	  WHERE sr.campaign_id IN (` + placeholders + `)
 	    AND mr.reason_code IS NOT NULL
 	    AND mr.reason_code <> ''
-	  ORDER BY COALESCE(ft.failure_types, ''), mr.service_id, sr.started_at, sr.id, mr.reason_code`
+	  ORDER BY COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, ''), mr.service_id, sr.started_at, sr.id, mr.reason_code`
 	rows, err := d.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: CampaignReasonRows: %w", err)

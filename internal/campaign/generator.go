@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -53,6 +54,26 @@ type Design struct {
 	// runner passes it through so any per-replay randomness (e.g. rate
 	// sampling inside a failure) stays reproducible.
 	Seed int64
+}
+
+// ReportLabel returns the failure bucket label reports should use for
+// this design. Non-escalating designs keep the plain failure type; a
+// multi-stage escalation includes the pattern and stage order so report
+// rows do not collapse distinct campaign shapes into an ambiguous
+// sorted failure-type set.
+func (d Design) ReportLabel() string {
+	if d.Escalation == nil || len(d.Escalation.Stages) == 0 {
+		return d.FailureType
+	}
+	types := make([]string, 0, len(d.Escalation.Stages))
+	for _, stage := range d.Escalation.Stages {
+		types = append(types, stage.FailureType)
+	}
+	pattern := d.Escalation.Pattern
+	if pattern == "" {
+		pattern = "escalation"
+	}
+	return pattern + ":" + strings.Join(types, ">")
 }
 
 // Cell uniquely identifies the stratification position a Design samples.

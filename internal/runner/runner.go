@@ -41,6 +41,7 @@ type RunOption func(*runOpts)
 type runOpts struct {
 	campaignRunID        string
 	requireCooldownReset bool
+	parameters           map[string]any
 }
 
 // WithCampaignRunID stamps the given campaign_run_id on the run row so
@@ -54,6 +55,10 @@ func WithCampaignRunID(id string) RunOption {
 // repeated same-target replays make cooldown carry-over a real bias.
 func withRequireCooldownReset() RunOption {
 	return func(o *runOpts) { o.requireCooldownReset = true }
+}
+
+func withRunParameters(params map[string]any) RunOption {
+	return func(o *runOpts) { o.parameters = params }
 }
 
 // Run executes a scenario end-to-end and returns the run ID.
@@ -101,6 +106,9 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		"grace_period":    sc.GracePeriod.String(),
 		"duration":        sc.Duration.String(),
 		"failures":        len(sc.Failures),
+	}
+	for k, v := range o.parameters {
+		params[k] = v
 	}
 	if err := database.InsertRun(ctx, db.RunRecord{
 		ID:              runID,

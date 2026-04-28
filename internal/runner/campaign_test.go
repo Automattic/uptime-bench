@@ -104,6 +104,19 @@ func TestRunCampaign_HappyPath(t *testing.T) {
 		t.Errorf("Runs[0].CampaignID = %q, want %q (campaign_id must be stamped on every scenario_runs row)",
 			f.Recorder.Runs[0].CampaignID, campaignRunID)
 	}
+	params, ok := f.Recorder.Runs[0].Parameters.(map[string]any)
+	if !ok {
+		t.Fatalf("Runs[0].Parameters = %T, want map[string]any", f.Recorder.Runs[0].Parameters)
+	}
+	if params["campaign_design_id"] != "d-0000" || params["campaign_replay_index"] != 0 {
+		t.Fatalf("campaign replay params = %#v, want design d-0000 replay 0", params)
+	}
+	if params["campaign_duration_bucket"] != "brief" || params["campaign_host_pattern"] != "single" {
+		t.Fatalf("campaign cell params = %#v, want brief/single", params)
+	}
+	if params["campaign_failure_label"] != "http_status" {
+		t.Fatalf("campaign_failure_label = %#v, want http_status", params["campaign_failure_label"])
+	}
 	if len(f.Recorder.MonitorReports) != 1 {
 		t.Fatalf("MonitorReports = %+v, want one known/no-event audit row", f.Recorder.MonitorReports)
 	}
