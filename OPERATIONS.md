@@ -1,6 +1,6 @@
 # uptime-bench — Operations Guide
 
-This guide covers everything needed to stand up a working uptime-bench fleet: VPS requirements, domain configuration, provisioning, credential setup, and starting the service.
+This guide covers everything needed to stand up a working uptime-bench fleet: server requirements, domain configuration, provisioning, credential setup, and starting the service.
 
 > **Implementation status:** The target binary, DNS binary, harness, and six adapters — Jetmon 1 (`jetmon-v1`), Jetmon 2 (`jetmon-v2`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), and Datadog Synthetics (`datadog-synthetics`) — are implemented. Jetmon 2 and all four probe-based adapters have been exercised against their APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`.
 
@@ -12,55 +12,55 @@ uptime-bench runs across four server roles:
 
 ```
 ┌──────────────────────┐      control plane (port 9000/9100)
-│     Harness VM       │ ─────────────────────────────────────────┐
+│    Harness server    │ ─────────────────────────────────────────┐
 │  cmd/harness         │                                           │
 │  MySQL               │      ┌────────────────────────────────────┼──────────┐
 └──────────────────────┘      │                                    │          │
          │                    ▼                                    ▼          ▼
-         │            ┌───────────────┐                  ┌───────────────┐
-         │            │  Target VM(s) │                  │   DNS VM(s)   │
-         │            │  cmd/target   │                  │   cmd/dns     │
-         │            │  :80  :443    │                  │   :53 UDP/TCP │
-         │            │  :9000 ctrl   │                  │   :9100 ctrl  │
-         │            └───────────────┘                  └───────────────┘
+         │            ┌──────────────────────┐          ┌──────────────────────┐
+         │            │   Target server(s)   │          │    DNS server(s)     │
+         │            │   cmd/target         │          │    cmd/dns           │
+         │            │   :80  :443          │          │    :53 UDP/TCP       │
+         │            │   :9000 ctrl         │          │    :9100 ctrl        │
+         │            └──────────────────────┘          └──────────────────────┘
          │                    │                                    │
          └────────────────────┴────────────────────────────────────┘
-               monitors under test probe target VMs via DNS VMs
+               monitors under test probe target servers via DNS servers
 ```
 
-The harness orchestrates everything: it tells target VMs to inject failures, collects results from monitoring service adapters, and writes all data to MySQL.
+The harness orchestrates everything: it tells target servers to inject failures, collects results from monitoring service adapters, and writes all data to MySQL.
 
 ---
 
-## VPS requirements
+## Server requirements
 
 ### Minimum fleet (MVP)
 
 | Role | Count | Recommended spec | Purpose |
 |---|---|---|---|
-| Harness | 1 | 2 vCPU, 4 GB RAM, 40 GB disk | Runs the harness binary and MySQL |
-| Target | 1 | 2 vCPU, 2 GB RAM, 20 GB disk | Hosts test websites monitored by external services |
-| DNS | 2 | 1 vCPU, 1 GB RAM, 10 GB disk | Authoritative nameservers for test domains |
+| Harness | 1 | 2 CPU/vCPU, 4 GB RAM, 40 GB disk | Runs the harness binary and MySQL |
+| Target | 1 | 2 CPU/vCPU, 2 GB RAM, 20 GB disk | Hosts test websites monitored by external services |
+| DNS | 2 | 1 CPU/vCPU, 1 GB RAM, 10 GB disk | Authoritative nameservers for test domains |
 
-**Total minimum: 4 VPSs.**
+**Total minimum: 4 servers.**
 
-Two DNS VMs are the minimum — `dns_ns_unavailable` scenarios require at least two so one can fail while the other remains up. A single-DNS setup is also valid if you only run HTTP/TCP/TLS scenarios.
+Two DNS servers are the minimum — `dns_ns_unavailable` scenarios require at least two so one can fail while the other remains up. A single-DNS setup is also valid if you only run HTTP/TCP/TLS scenarios.
 
 ### Expanded fleet (recommended)
 
-Add more target VMs as your scenario library grows. Each target VM hosts multiple virtual sites, but separating them across VMs lets you run unrelated scenarios simultaneously without state interference.
+Add more target servers as your scenario library grows. Each target server hosts multiple virtual sites, but separating them across servers lets you run unrelated scenarios simultaneously without state interference.
 
-Add a **certmint VM** (1 vCPU, 1 GB RAM, 25 GB disk) to mint publicly-trusted Let's Encrypt certificates for `tls_expired` / `tls_expiring` scenarios. Optional — fleets without certmint fall back to fleet-CA / generated certs and skip real-CA TLS scenarios. The certmint daemon mints on a low cadence (~16 issuances/day default) and exposes a read-only HTTP cert-library API targets poll for new manifest entries.
+Add a **certmint server** (1 CPU/vCPU, 1 GB RAM, 25 GB disk) to mint publicly-trusted Let's Encrypt certificates for `tls_expired` / `tls_expiring` scenarios. Optional — fleets without certmint fall back to fleet-CA / generated certs and skip real-CA TLS scenarios. The certmint daemon mints on a low cadence (~16 issuances/day default) and exposes a read-only HTTP cert-library API targets poll for new manifest entries.
 
 ### OS
 
-All VPSs must run **Ubuntu Server 24.04 LTS**. The provisioning scripts target this OS specifically.
+All servers must run **Ubuntu Server 24.04 LTS**. The provisioning scripts target this OS specifically.
 
 ---
 
 ## Step 1 — Acquire and note IP addresses
 
-Before anything else, provision your VPSs and record their public IP addresses. You will need them for domain setup, fleet configuration, and provisioning.
+Before anything else, provision your servers and record their public IP addresses. You will need them for domain setup, fleet configuration, and provisioning.
 
 Example (replace with your actual IPs):
 
@@ -88,7 +88,7 @@ Example domains used throughout this guide:
 
 ### 2b. Set up glue records at the registrar
 
-Because the uptime-bench DNS VMs will be the authoritative nameservers for your test domains, and those nameservers live on subdomains of those same domains, you need **glue records** — IP addresses registered directly at the registrar alongside the NS records.
+Because the uptime-bench DNS servers will be the authoritative nameservers for your test domains, and those nameservers live on subdomains of those same domains, you need **glue records** — IP addresses registered directly at the registrar alongside the NS records.
 
 At your registrar, for each test domain:
 
@@ -119,19 +119,19 @@ dig NS bench-example.com @8.8.8.8
 
 Each test site is a subdomain of one of your test domains. Plan these before writing your fleet config:
 
-| Site ID | Hostname | Target VM |
+| Site ID | Hostname | Target server |
 |---|---|---|
 | bench-a | `bench-a.bench-example.com` | target-01 |
 | bench-b | `bench-b.bench-example.com` | target-01 |
 | probe-a | `probe-a.probe-example.net` | target-01 |
 
-The DNS VMs will serve A records for these hostnames, pointing to the target VM's IP. You do not need to configure these at the registrar — the DNS VMs handle all records for their authoritative domains.
+The DNS servers will serve A records for these hostnames, pointing to the target server's IP. You do not need to configure these at the registrar — the DNS servers handle all records for their authoritative domains.
 
 ---
 
-## Step 3 — Set up MySQL on the harness VM
+## Step 3 — Set up MySQL on the harness server
 
-SSH into the harness VM and install MySQL:
+SSH into the harness server and install MySQL:
 
 ```sh
 sudo apt-get update
@@ -173,28 +173,28 @@ The harness authenticates to all fleet members using a single shared bearer toke
 openssl rand -hex 32
 ```
 
-Save the output — you will distribute it to every VM in the next step. Treat it like a password: do not commit it, do not log it, do not reuse it across environments.
+Save the output — you will distribute it to every server in the next step. Treat it like a password: do not commit it, do not log it, do not reuse it across environments.
 
 ---
 
-## Step 5 — Provision all VPSs
+## Step 5 — Provision all servers
 
-From your local machine (with the repo checked out), run the provisioning script for each VM. The `HARNESS_IP` variable restricts the control port to accept connections only from the harness VM — always set this in production.
+From your local machine (with the repo checked out), run the provisioning script for each server. The `HARNESS_IP` variable restricts the control port to accept connections only from the harness server — always set this in production.
 
-If the SSH user on a VM is not `ubuntu`, pass `DEPLOY_USER=<name>`. The provisioning script writes `AllowUsers ${DEPLOY_USER}` into the SSH hardening drop-in, so this must match the user you actually log in as.
+If the SSH user on a server is not `ubuntu`, pass `DEPLOY_USER=<name>`. The provisioning script writes `AllowUsers ${DEPLOY_USER}` into the SSH hardening drop-in, so this must match the user you actually log in as.
 
 ```sh
-# Harness VM
+# Harness server
 make provision-harness HARNESS_HOST=203.0.113.5
 
-# Target VM
+# Target server
 make provision-target TARGET_HOST=203.0.113.20 HARNESS_IP=203.0.113.5
 
-# DNS VMs
+# DNS servers
 make provision-dns DNS_HOST=203.0.113.10 HARNESS_IP=203.0.113.5
 make provision-dns DNS_HOST=203.0.113.11 HARNESS_IP=203.0.113.5
 
-# Certmint VM (optional — only if running real-CA TLS scenarios)
+# Certmint server (optional — only if running real-CA TLS scenarios)
 make provision-certmint CERTMINT_HOST=203.0.113.30
 ```
 
@@ -214,17 +214,17 @@ The script's "Next steps" output at the end of each run lists the exact commands
 
 ---
 
-## Step 6 — Place credential files on each VM
+## Step 6 — Place credential files on each server
 
-Provisioning has already dropped skeletons into `/etc/uptime-bench/` on each VM:
+Provisioning has already dropped skeletons into `/etc/uptime-bench/` on each server:
 
 - `<type>.env.example` — the env file the systemd unit (or harness CLI) reads. Each header comment names every variable.
 - `control-token.example` — the bare-token file that `fleet.toml`'s `auth_token_file` setting points at.
 
-Copy each skeleton to its real name and fill in the values. The pattern is the same on every VM:
+Copy each skeleton to its real name and fill in the values. The pattern is the same on every server:
 
 ```sh
-ssh <user>@<vm-ip>
+ssh <user>@<server-ip>
 
 # Replace TYPE with harness, target, dns, or certmint to match the role.
 sudo cp /etc/uptime-bench/TYPE.env.example /etc/uptime-bench/TYPE.env
@@ -245,34 +245,34 @@ Per-role values to fill in:
 | `harness.env` | `DB_DSN` | `"uptime_bench:<password>@tcp(127.0.0.1:3306)/uptime_bench?parseTime=true"` (keep the double quotes — the `tcp(...)` parens are a shell syntax error if you ever source this file via `. harness.env`) |
 | `harness.env` | `CONTROL_TOKEN` | The token from Step 4 |
 | `target.env` | `CONTROL_TOKEN` | Same token |
-| `target.env` | `MEMBER_ID` | This VM's `id` from its `[[targets]]` entry in `fleet.toml` (e.g. `target-01`) — the target binary reports it in control responses so the harness can correlate results across multiple targets |
+| `target.env` | `MEMBER_ID` | This server's `id` from its `[[targets]]` entry in `fleet.toml` (e.g. `target-01`) — the target binary reports it in control responses so the harness can correlate results across multiple targets |
 | `dns.env`    | `CONTROL_TOKEN` | Same token |
-| `dns.env`    | `MEMBER_ID` | This VM's `id` from its `[[nameservers]]` entry in `fleet.toml` (e.g. `ns-01`, `ns-02`) — the DNS binary uses it to find its own zone records |
-| `control-token` (every VM) | (file body) | Same token, on a single line, no other content |
+| `dns.env`    | `MEMBER_ID` | This server's `id` from its `[[nameservers]]` entry in `fleet.toml` (e.g. `ns-01`, `ns-02`) — the DNS binary uses it to find its own zone records |
+| `control-token` (every server) | (file body) | Same token, on a single line, no other content |
 
-The `CONTROL_TOKEN` value must be identical on every VM.
+The `CONTROL_TOKEN` value must be identical on every server.
 
 ---
 
 ## Step 7 — Deploy fleet.toml
 
-`fleet.toml` is never committed — it contains your real IPs and hostnames. The harness reads it to orchestrate runs; each DNS VM also reads it at startup to derive the A records it serves. It must be present on the harness and on every DNS VM, with the same content. Target VMs do not need it.
+`fleet.toml` is never committed — it contains your real IPs and hostnames. The harness reads it to orchestrate runs; each DNS server also reads it at startup to derive the A records it serves. It must be present on the harness and on every DNS server, with the same content. Target servers do not need it.
 
-Provisioning has already uploaded `fleet.example.toml` to `/etc/uptime-bench/` on the harness and on each DNS VM. To use it, copy and edit on each of those VMs:
+Provisioning has already uploaded `fleet.example.toml` to `/etc/uptime-bench/` on the harness and on each DNS server. To use it, copy and edit on each of those servers:
 
 ```sh
-ssh <user>@<vm-ip>
+ssh <user>@<server-ip>
 sudo cp /etc/uptime-bench/fleet.example.toml /etc/uptime-bench/fleet.toml
 sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml
 sudo chmod 640 /etc/uptime-bench/fleet.toml
 sudoedit /etc/uptime-bench/fleet.toml
 ```
 
-Keep the content identical across all three (or more) VMs. A common workflow: write the canonical version on the harness, then scp it to each DNS VM:
+Keep the content identical across all three (or more) servers. A common workflow: write the canonical version on the harness, then scp it to each DNS server:
 
 ```sh
 ssh <user>@harness 'sudo cat /etc/uptime-bench/fleet.toml' \
-  | ssh <user>@dns-vm 'sudo tee /etc/uptime-bench/fleet.toml >/dev/null \
+  | ssh <user>@dns-server 'sudo tee /etc/uptime-bench/fleet.toml >/dev/null \
       && sudo chown root:uptime-bench /etc/uptime-bench/fleet.toml \
       && sudo chmod 640 /etc/uptime-bench/fleet.toml'
 ```
@@ -336,7 +336,7 @@ ttl         = 30
 
 ---
 
-## Step 7b — Create services.toml on the harness VM
+## Step 7b — Create services.toml on the harness server
 
 `services.toml` declares which monitoring services to evaluate and their credentials. It lives only on the harness and is never committed.
 
@@ -389,7 +389,7 @@ make deploy-dns      DNS_HOST=203.0.113.10
 make deploy-dns      DNS_HOST=203.0.113.11
 make deploy-target   TARGET_HOST=203.0.113.20
 make deploy-harness  HARNESS_HOST=203.0.113.5
-make deploy-certmint CERTMINT_HOST=203.0.113.30   # only if certmint VM is provisioned
+make deploy-certmint CERTMINT_HOST=203.0.113.30   # only if certmint server is provisioned
 ```
 
 Each deploy:
@@ -422,20 +422,20 @@ The harness has no long-running mode — its binary requires `-scenario` per inv
 
 ## Step 10 — Verify DNS resolution
 
-Once the DNS VMs are running and the registrar NS change has propagated, verify that your test domains resolve:
+Once the DNS servers are running and the registrar NS change has propagated, verify that your test domains resolve:
 
 ```sh
 # Should return the NS-01 and NS-02 IPs
 dig NS bench-example.com
 
-# Should return the target VM IP (203.0.113.20)
+# Should return the target server IP (203.0.113.20)
 dig A bench-a.bench-example.com
 
 # Verify low TTL is in effect
 dig A bench-a.bench-example.com | grep -i ttl
 ```
 
-The DNS binary loads A records from `fleet.toml` at startup — it serves every site hostname from its configured domains, pointing to the corresponding target VM IP, using the TTL from the `[[domains]]` block.
+The DNS binary loads A records from `fleet.toml` at startup — it serves every site hostname from its configured domains, pointing to the corresponding target server IP, using the TTL from the `[[domains]]` block.
 
 ---
 
@@ -460,7 +460,7 @@ The harness will:
 1. Parse and validate the scenario
 2. Check adapter capabilities against the scenario requirements
 3. Provision a monitor on each in-scope service (e.g. Jetmon)
-4. Send an `ActivateRequest` to the target VM's control API to begin injecting 503s
+4. Send an `ActivateRequest` to the target server's control API to begin injecting 503s
 5. Wait for the scenario duration
 6. Send `DeactivateRequest`, record `failure_end`
 7. Wait for the grace period
@@ -476,10 +476,10 @@ The harness will:
 ### Deploy a new binary version
 
 ```sh
-# Target VM
+# Target server
 make deploy-target TARGET_HOST=203.0.113.20
 
-# DNS VMs
+# DNS servers
 make deploy-dns DNS_HOST=203.0.113.10
 make deploy-dns DNS_HOST=203.0.113.11
 
@@ -497,20 +497,20 @@ ssh ubuntu@203.0.113.5 \
 
 ### Update fleet.toml
 
-Edit `/etc/uptime-bench/fleet.toml` in place on the harness and on every DNS VM (use `sudoedit`). Each DNS binary re-reads the file at startup, so restart any DNS unit whose zones changed:
+Edit `/etc/uptime-bench/fleet.toml` in place on the harness and on every DNS server (use `sudoedit`). Each DNS binary re-reads the file at startup, so restart any DNS unit whose zones changed:
 
 ```sh
-ssh <user>@dns-vm 'sudo systemctl restart uptime-bench-dns'
+ssh <user>@dns-server 'sudo systemctl restart uptime-bench-dns'
 ```
 
 The harness reads `fleet.toml` fresh on each scenario invocation (Step 11), so it does not need a restart.
 
-### Add a new target VM to the fleet
+### Add a new target server to the fleet
 
 1. Provision: `make provision-target TARGET_HOST=NEW_IP HARNESS_IP=203.0.113.5`
 2. Place credentials (Step 6)
 3. Deploy binary: `make deploy-target TARGET_HOST=NEW_IP` (the deploy script restarts the systemd unit for you)
-4. Add the new `[[targets]]` block to `fleet.toml` on the harness and on each DNS VM, then restart the DNS units (see "Update fleet.toml" above)
+4. Add the new `[[targets]]` block to `fleet.toml` on the harness and on each DNS server, then restart the DNS units (see "Update fleet.toml" above)
 
 ---
 
@@ -538,9 +538,9 @@ Common causes:
 ### DNS not resolving
 
 - Confirm NS propagation: `dig NS bench-example.com @8.8.8.8`
-- Confirm the DNS VM service is running and port 53 is open:
+- Confirm the DNS service is running and port 53 is open:
   `sudo ufw status | grep 53`
-- Confirm glue records at the registrar match the DNS VM IPs
+- Confirm glue records at the registrar match the DNS server IPs
 
 ### MySQL connection refused
 

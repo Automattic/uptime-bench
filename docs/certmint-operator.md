@@ -24,7 +24,7 @@ until DNS-01 automation has been verified end-to-end.
 
 ## Prerequisites
 
-- A provisioned certmint VM (see "Provisioning" below).
+- A provisioned certmint server (see "Provisioning" below).
 - DNS-01 reachability: the certmint host must be able to PUT/DELETE on every
   uptime-bench-dns member's `:9100` control port. Provisioning's UFW rules
   cover the inbound side on the dns members; outbound from certmint is
@@ -39,7 +39,7 @@ and skip the hooks.
 
 ## Provisioning
 
-From your local checkout of `uptime-bench`, with the certmint VM standing
+From your local checkout of `uptime-bench`, with the certmint server standing
 up at e.g. `203.0.113.30`:
 
 ```sh

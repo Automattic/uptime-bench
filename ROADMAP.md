@@ -571,7 +571,7 @@ Heartbeat monitoring (dead-man's switch) and agent-based checks (wp-cron, schedu
 
 uptime-bench's target fleet is currently passive — it responds to probes. Simulating heartbeat failure requires:
 
-- A heartbeat sender process on the target VM that pings a monitor's ingest endpoint on a schedule.
+- A heartbeat sender process on the target server that pings a monitor's ingest endpoint on a schedule.
 - A control command (`heartbeat_stopped`) that pauses the sender for the failure window.
 - Adapter support to provision a heartbeat monitor (endpoint URL, expected interval).
 

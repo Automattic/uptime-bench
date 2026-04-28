@@ -77,13 +77,13 @@ domains      = ["bench.example.com", "probe.example.net"]
 hosts        = ["ns2.bench.example.com", "ns2.probe.example.net"]
 
 # ---------------------------------------------------------------------------
-# Target VMs
+# Target servers
 # ---------------------------------------------------------------------------
-# Each [[targets]] entry is one VM running the uptime-bench target binary.
-# A single VM hosts multiple virtual hosts (sites). Sites are distinguished
+# Each [[targets]] entry is one server running the uptime-bench target binary.
+# A single server hosts multiple virtual hosts (sites). Sites are distinguished
 # by Host header (HTTP) and SNI (TLS). Failure state is tracked per
 # (host, path) pair — multiple failures can be active simultaneously
-# across sites and paths on the same VM.
+# across sites and paths on the same server.
 #
 # The target binary listens on ports 80 and 443 for monitor traffic and on
 # control_port for harness control commands.

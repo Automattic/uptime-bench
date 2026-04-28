@@ -289,7 +289,7 @@ added_latency = "2000ms"
 
 Takes one or more of the fleet's authoritative nameservers offline. Unlike other DNS failure types — which control what the nameserver *responds with* — this type controls whether the nameserver responds at all. Resolvers attempting to reach an affected nameserver receive no reply and must time out before trying the next NS record.
 
-This failure type requires the fleet to run at least two authoritative nameservers. It is controlled via the DNS control plane, not the target VM control plane.
+This failure type requires the fleet to run at least two authoritative nameservers. It is controlled via the DNS control plane, not the target server control plane.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
