@@ -58,6 +58,32 @@ func TestPeekHTTPHost_DoesNotConsume(t *testing.T) {
 	}
 }
 
+func TestPeekHTTPHost_DoesNotWaitForFullBuffer(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	br := bufio.NewReaderSize(server, 4096)
+	done := make(chan string, 1)
+	go func() {
+		done <- peekHTTPHost(br)
+	}()
+
+	_, err := client.Write([]byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	select {
+	case got := <-done:
+		if got != "example.com" {
+			t.Fatalf("peekHTTPHost = %q, want example.com", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("peekHTTPHost blocked waiting for the full buffer")
+	}
+}
+
 // ─── parseRemoteIP ───────────────────────────────────────────────────────────
 
 type fakeAddr string
@@ -518,6 +544,44 @@ func TestHandleTCP_RefusedClosesImmediately(t *testing.T) {
 		t.Fatal("HandleTCP did not return after tcp_refused")
 	}
 	client.Close()
+}
+
+func TestHandleTCP_ForwardsHealthyRequest(t *testing.T) {
+	h, _ := newHandler()
+	upstream := httptest.NewServer(h)
+	defer upstream.Close()
+
+	upstreamAddr := strings.TrimPrefix(upstream.URL, "http://")
+	server, client := net.Pipe()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		HandleTCP(server, control.NewRegistry(), upstreamAddr)
+		close(done)
+	}()
+
+	_, err := client.Write([]byte("GET / HTTP/1.1\r\nHost: site.local\r\nConnection: close\r\n\r\n"))
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	client.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("HandleTCP did not return after client close")
+	}
 }
 
 // ─── benchmarks (for the canary regression check) ───────────────────────────

@@ -103,7 +103,10 @@ func HandleTCP(client net.Conn, registry *control.FailureRegistry, internalAddr 
 // without consuming them. Returns empty string if the Host header isn't
 // present in the first 4096 bytes.
 func peekHTTPHost(br *bufio.Reader) string {
-	data, _ := br.Peek(4096)
+	if _, err := br.Peek(1); err != nil {
+		return ""
+	}
+	data, _ := br.Peek(br.Buffered())
 	// Skip the request line.
 	idx := bytes.Index(data, []byte("\r\n"))
 	if idx < 0 {
