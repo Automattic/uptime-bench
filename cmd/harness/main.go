@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -44,8 +45,25 @@ var registry = map[string]adapterFactory{
 		return jetmonv1.New(id, apiURL, auth["token"], writeMode), nil
 	},
 	"jetmon-v2": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
-		// Stub: Jetmon 2 has no public API yet. See internal/adapter/jetmonv2.
-		return nil, jetmonv2.ErrNotImplemented
+		if apiURL == "" {
+			return nil, fmt.Errorf("url is required (jetmon-v2 needs the Jetmon 2 /api/v1 endpoint)")
+		}
+		token := auth["token"]
+		if token == "" {
+			return nil, fmt.Errorf("jetmon-v2: auth.token is required")
+		}
+		var opts []jetmonv2.Option
+		if raw := auth["bucket_no"]; raw != "" {
+			bucketNo, err := strconv.Atoi(raw)
+			if err != nil {
+				return nil, fmt.Errorf("jetmon-v2: auth.bucket_no must be an integer: %w", err)
+			}
+			if bucketNo < 0 {
+				return nil, fmt.Errorf("jetmon-v2: auth.bucket_no must be non-negative")
+			}
+			opts = append(opts, jetmonv2.WithBucketNo(bucketNo))
+		}
+		return jetmonv2.New(id, apiURL, token, opts...), nil
 	},
 	"uptimerobot": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
 		key := auth["api_key"]

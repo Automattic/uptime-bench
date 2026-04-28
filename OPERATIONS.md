@@ -2,7 +2,7 @@
 
 This guide covers everything needed to stand up a working uptime-bench fleet: VPS requirements, domain configuration, provisioning, credential setup, and starting the service.
 
-> **Implementation status:** The target binary, DNS binary, harness, and five adapters — Jetmon 1 (`jetmon-v1`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), and Datadog Synthetics (`datadog-synthetics`) — are implemented. The `jetmon-v2` type is a stub blocked on the Jetmon 2 public REST API and will fail fast if enabled. All four probe-based adapters have been exercised against their live APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`.
+> **Implementation status:** The target binary, DNS binary, harness, and six adapters — Jetmon 1 (`jetmon-v1`), Jetmon 2 (`jetmon-v2`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), and Datadog Synthetics (`datadog-synthetics`) — are implemented. Jetmon 2 and all four probe-based adapters have been exercised against their APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`.
 
 ---
 
@@ -352,7 +352,7 @@ sudoedit /etc/uptime-bench/services.toml
 
 Edit each `[[services]]` block: set `enabled = true` for the services you want to evaluate, and fill in the `url` and `auth` fields. The `id` field in each block must match the IDs used in scenario `monitors` lists.
 
-`jetmon-v1`, `uptimerobot`, `pingdom`, `better-uptime`, and `datadog-synthetics` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate. The `jetmon-v2` entry is a stub; enabling it causes the harness to exit with "jetmon-v2: adapter not implemented — blocked on Jetmon 2 public API".
+`jetmon-v1`, `jetmon-v2`, `uptimerobot`, `pingdom`, `better-uptime`, and `datadog-synthetics` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate.
 
 ### Pre-seeding monitors for `jetmon-v1`
 
@@ -361,7 +361,22 @@ Jetmon 1 has no public API; the adapter talks to a sidecar `jetmon-bridge` that 
 - `write_mode = "false"` (default) — read-only. The adapter looks up each target URL in Jetmon's `jetpack_monitor_sites` table during Provision. If the row is missing, the run fails fast with `jetmon-v1: no monitor pre-seeded for <url> — add it to jetpack_monitor_sites`. **You must insert one row per site URL declared in `fleet.toml` before the first scenario runs.** Each row needs at minimum `blog_id`, `bucket_no`, `monitor_url`, `monitor_active = 1`, and a sensible `check_interval`. Rows are persistent — pre-seed once per fleet, not per run.
 - `write_mode = "true"` — read/write. Provision creates (or reactivates) the row automatically; Deprovision soft-deletes it at the end of the run. Use this only if your `jetmon-bridge` deployment was started with write capability enabled, and only against a Jetmon environment whose contents you fully control.
 
-The other four adapters create their monitors via API on every run and have no equivalent pre-seeding step.
+The API-backed adapters create their monitors via API on every run and have no equivalent pre-seeding step.
+
+### Jetmon v2 API-backed monitors
+
+Jetmon 2 uses the internal `/api/v1` REST API. Configure `url` as either the API server root or the versioned API root, set `auth.token` to a Jetmon API token with write scope, and optionally set `auth.bucket_no` to a bucket owned by the Jetmon v2 host under test. The adapter creates a synthetic high-range positive `blog_id` per run, sets `check_interval` from the scenario in whole minutes, configures present-mode `check_keyword` when requested, and soft-deletes the site at deprovision time.
+
+Jetmon v2 does not support `keyword_check = "absent"` through the current API, so those scenarios are gated as capability mismatches.
+
+The build-tagged live test verifies the API contract used by the adapter, including auth failures, OpenAPI discovery, `/me`, create/read/list, maintenance patching, soft-delete cleanup, and repeated delete:
+
+```sh
+JETMON_V2_API_URL=http://jetmon-host:8081/api/v1 \
+JETMON_V2_TOKEN=jm_... \
+JETMON_V2_TARGET_URL=http://example.com/ \
+go test -tags live -run Live ./internal/adapter/jetmonv2/ -v
+```
 
 ---
 

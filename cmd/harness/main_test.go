@@ -1,11 +1,9 @@
 package main
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
-	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv2"
 	"github.com/Automattic/uptime-bench/internal/serviceconfig"
 )
 
@@ -65,33 +63,64 @@ func TestRegistry_JetmonV1Builds(t *testing.T) {
 	}
 }
 
-// TestRegistry_JetmonV2AlwaysErrors locks in the stub contract: the
-// factory must return ErrNotImplemented unconditionally, with no
-// possibility of building a real adapter, until the Jetmon 2 public
-// API lands and the stub is replaced.
-func TestRegistry_JetmonV2AlwaysErrors(t *testing.T) {
+// TestRegistry_JetmonV2RequiresURLAndToken catches missing v2 API
+// configuration before any monitor-management calls are attempted.
+func TestRegistry_JetmonV2RequiresURLAndToken(t *testing.T) {
 	factory := registry["jetmon-v2"]
 	cases := []struct {
 		name string
 		url  string
 		auth map[string]string
+		want string
 	}{
-		{"empty everything", "", nil},
-		{"with url and token", "https://api.example.com", map[string]string{"token": "tok"}},
+		{"empty everything", "", nil, "url"},
+		{"missing token", "https://api.example.com/api/v1", nil, "token"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a, err := factory("jetmon-v2", tc.url, tc.auth)
 			if err == nil {
-				t.Fatal("expected error from jetmon-v2 stub factory")
+				t.Fatal("expected error from jetmon-v2 factory")
 			}
-			if !errors.Is(err, jetmonv2.ErrNotImplemented) {
-				t.Fatalf("err = %v, want ErrNotImplemented", err)
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want one mentioning %q", err, tc.want)
 			}
 			if a != nil {
-				t.Fatal("stub factory returned a non-nil adapter")
+				t.Fatal("factory returned adapter on invalid config")
 			}
 		})
+	}
+}
+
+// TestRegistry_JetmonV2Builds — happy path with API URL and token.
+func TestRegistry_JetmonV2Builds(t *testing.T) {
+	factory := registry["jetmon-v2"]
+	a, err := factory("jetmon-v2", "http://localhost:8081/api/v1", map[string]string{
+		"token":     "tok",
+		"bucket_no": "17",
+	})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if a == nil {
+		t.Fatal("factory returned nil")
+	}
+	if a.ServiceID() != "jetmon-v2" {
+		t.Fatalf("ServiceID = %q", a.ServiceID())
+	}
+}
+
+func TestRegistry_JetmonV2RejectsInvalidBucket(t *testing.T) {
+	factory := registry["jetmon-v2"]
+	_, err := factory("jetmon-v2", "http://localhost:8081/api/v1", map[string]string{
+		"token":     "tok",
+		"bucket_no": "nope",
+	})
+	if err == nil {
+		t.Fatal("expected invalid bucket_no error")
+	}
+	if !strings.Contains(err.Error(), "bucket_no") {
+		t.Fatalf("err = %v, want bucket_no", err)
 	}
 }
 

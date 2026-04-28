@@ -25,7 +25,7 @@ A handful of the eleven shipped scenarios involve serving a fully-rendered ranso
 | Service | Type | Adapter |
 |---|---|---|
 | [Jetmon 1](https://github.com/Automattic/jetmon) | Agent-based (WordPress/Jetpack) | Implemented (`jetmon-v1`, via [jetmon-bridge](https://github.com/Automattic/jetmon-bridge)) |
-| [Jetmon 2](https://github.com/Automattic/jetmon) | Agent-based (WordPress/Jetpack) | Stub — blocked on Jetmon 2's public REST API |
+| [Jetmon 2](https://github.com/Automattic/jetmon) | Agent-based (WordPress/Jetpack) | Implemented (`jetmon-v2`, via Jetmon 2's internal REST API) — live-tested against the internal API |
 | [UptimeRobot](https://uptimerobot.com) | Probe-based | Implemented (`uptimerobot`) — live-tested against the public API |
 | [Pingdom](https://www.pingdom.com) | Probe-based | Implemented (`pingdom`) — live-tested against the public API |
 | [Datadog Synthetics](https://www.datadoghq.com/product/synthetic-monitoring/) | Probe-based | Implemented (`datadog-synthetics`) — live-tested against the public API |
@@ -35,7 +35,7 @@ Adding a new adapter is a small, well-defined exercise — implement the [`adapt
 
 ## Status
 
-The end-to-end pipeline runs: target server, DNS server, control plane, harness, runner, MySQL event log, metric derivation, and reporting. Five service adapters are implemented and live-tested against their public APIs where applicable: Jetmon 1, UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. Jetmon 2 is present as a stub until a public API is available.
+The end-to-end pipeline runs: target server, DNS server, control plane, harness, runner, MySQL event log, metric derivation, and reporting. Six service adapters are implemented: Jetmon 1, Jetmon 2, UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. Jetmon 2 and the public probe-based adapters have been live-tested against their APIs.
 
 Eleven shipped scenarios across HTTP, TCP, DNS, and content failures are defined and runnable. TLS scenarios are schema-defined and target-backed: the target has an HTTPS listener, SNI-aware certificate selection, certmint manifest loading for `tls_expired` / `tls_expiring`, self-signed and hostname-mismatch variants for `tls_invalid`, TLS 1.0 / 1.1 clamping for `tls_deprecated`, and deterministic handshake aborts for `tls_handshake`. The `cmd/certmint` daemon mints publicly-trusted Let's Encrypt certificates that feed the cert library, using DNS-01 challenges fanned out to the in-fleet `cmd/dns` members. Remaining TLS work is mostly external probe acceptance coverage and dynamic library reload on the target; see [`ROADMAP.md`](ROADMAP.md).
 
