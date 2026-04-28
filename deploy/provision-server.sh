@@ -363,12 +363,17 @@ if [[ "$TYPE" == "certmint" ]]; then
 fi
 
 # Target role: /var/cache/uptime-bench-target/ holds the cert-library
-# mirror the polling client populates from certmint. The daemon runs as
-# uptime-bench, so the cache dir must be writable by that user. 0700
-# matches the cert-library on certmint — private keys live here.
+# mirror the polling client populates from certmint, and
+# /var/lib/uptime-bench-target/ holds the persisted cert-library
+# config so a restart resumes polling without waiting for the harness
+# to re-push. The daemon runs as uptime-bench so both must be
+# writable by that user. 0700 matches the cert-library on certmint —
+# private keys live in the cache, and the state file references the
+# certmint URL the harness configured.
 if [[ "$TYPE" == "target" ]]; then
     install -d -m 700 -o uptime-bench -g uptime-bench /var/cache/uptime-bench-target/cert-library
-    ok "Created /var/cache/uptime-bench-target/cert-library"
+    install -d -m 700 -o uptime-bench -g uptime-bench /var/lib/uptime-bench-target
+    ok "Created /var/cache/uptime-bench-target/cert-library and /var/lib/uptime-bench-target"
 fi
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -193,6 +195,110 @@ func TestCertLibraryHandler_ValidPUTReturns204(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body = %s", rec.Code, rec.Body.String())
 	}
+}
+
+// TestCertLibraryController_PersistAndRestoreRoundTrip — Apply
+// writes the config to StatePath; a fresh controller pointed at the
+// same path picks it up via RestoreState and starts polling without
+// needing the harness to re-push. This is the safeguard against the
+// "target restart between harness runs serves fallback cert" failure
+// mode.
+func TestCertLibraryController_PersistAndRestoreRoundTrip(t *testing.T) {
+	srv, count := fakeManifestServer()
+	t.Cleanup(srv.Close)
+
+	statePath := filepath.Join(t.TempDir(), "cert-library-config.json")
+
+	// Original controller (simulates the running target). Apply
+	// writes the state file as a side effect.
+	c1 := &CertLibraryController{
+		Selector:            &CertificateSelector{},
+		CacheDir:            t.TempDir(),
+		DefaultPollInterval: 50 * time.Millisecond,
+		StatePath:           statePath,
+	}
+	if err := c1.Apply(CertLibraryConfigRequest{URL: srv.URL, PollInterval: "100ms"}); err != nil {
+		t.Fatalf("c1 Apply: %v", err)
+	}
+	waitForCount(count, 1)
+	c1.Stop()
+	beforeRestart := count.Load()
+
+	// State file should exist with the URL we applied.
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("state file not written: %v", err)
+	}
+	var got CertLibraryConfigRequest
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("state file not JSON: %v", err)
+	}
+	if got.URL != srv.URL || got.PollInterval != "100ms" {
+		t.Fatalf("state = %+v, want URL=%s interval=100ms", got, srv.URL)
+	}
+
+	// New controller (simulates target restart). Should restore
+	// from disk and resume polling without needing a harness push.
+	c2 := &CertLibraryController{
+		Selector:            &CertificateSelector{},
+		CacheDir:            t.TempDir(),
+		DefaultPollInterval: 50 * time.Millisecond,
+		StatePath:           statePath,
+	}
+	t.Cleanup(c2.Stop)
+	if err := c2.RestoreState(); err != nil {
+		t.Fatalf("RestoreState: %v", err)
+	}
+	if got := waitForCount(count, beforeRestart+1); got <= beforeRestart {
+		t.Fatalf("restored controller didn't poll; count=%d, want > %d", got, beforeRestart)
+	}
+}
+
+func TestCertLibraryController_RestoreStateMissingFileIsNoOp(t *testing.T) {
+	c := &CertLibraryController{
+		Selector:  &CertificateSelector{},
+		CacheDir:  t.TempDir(),
+		StatePath: filepath.Join(t.TempDir(), "does-not-exist.json"),
+	}
+	if err := c.RestoreState(); err != nil {
+		t.Fatalf("RestoreState on missing file should be a no-op: %v", err)
+	}
+}
+
+func TestCertLibraryController_RestoreStateRejectsCorruptFile(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "broken.json")
+	if err := os.WriteFile(statePath, []byte("{ not valid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &CertLibraryController{
+		Selector:  &CertificateSelector{},
+		CacheDir:  t.TempDir(),
+		StatePath: statePath,
+	}
+	if err := c.RestoreState(); err == nil {
+		t.Fatal("RestoreState on corrupt file should error so the operator notices")
+	}
+}
+
+// TestCertLibraryController_NoStatePathSkipsPersistence — controllers
+// constructed without StatePath (tests, dev runs) must not write
+// anywhere. Guards against accidental pollution of working dirs.
+func TestCertLibraryController_NoStatePathSkipsPersistence(t *testing.T) {
+	srv, count := fakeManifestServer()
+	t.Cleanup(srv.Close)
+
+	c := &CertLibraryController{
+		Selector:            &CertificateSelector{},
+		CacheDir:            t.TempDir(),
+		DefaultPollInterval: 50 * time.Millisecond,
+		// StatePath intentionally empty
+	}
+	t.Cleanup(c.Stop)
+	if err := c.Apply(CertLibraryConfigRequest{URL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	waitForCount(count, 1)
+	// Just confirming no crash; persistence is silently skipped.
 }
 
 func TestCertLibraryHandler_RejectsMissingURLAndBadJSON(t *testing.T) {

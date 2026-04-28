@@ -38,6 +38,7 @@ func main() {
 	certLibrarySource := flag.String("cert-library-source", "", "base URL of certmint's cert-library HTTP API, e.g. http://certmint-01.bench:9200; when set, the target polls it on -cert-library-poll-interval and atomically swaps the in-memory library on each successful fetch")
 	certLibraryPollInterval := flag.Duration("cert-library-poll-interval", 30*time.Minute, "how often to re-fetch the cert library from -cert-library-source")
 	certLibraryCacheDir := flag.String("cert-library-cache-dir", "/var/cache/uptime-bench-target/cert-library", "local directory the polled library mirrors into")
+	certLibraryStateFile := flag.String("cert-library-state-file", "/var/lib/uptime-bench-target/cert-library-config.json", "where to persist the most-recently-applied cert-library config so a target restart can resume polling without waiting for the harness to re-push")
 	tokenFile := flag.String("token-file", "", "path to control token file (default: CONTROL_TOKEN env)")
 	flag.Parse()
 
@@ -91,6 +92,15 @@ func main() {
 			Token:               token,
 			CacheDir:            *certLibraryCacheDir,
 			DefaultPollInterval: *certLibraryPollInterval,
+			StatePath:           *certLibraryStateFile,
+		}
+		// Restore prior cert-library config (if any) BEFORE the
+		// data-plane listener starts. Without this, a target
+		// restart that happens between harness invocations would
+		// briefly serve the self-signed fallback cert until the
+		// next harness push reactivates the polling loop.
+		if err := certLibController.RestoreState(); err != nil {
+			log.Printf("target: cert-library state restore: %v", err)
 		}
 		if *certLibrarySource != "" {
 			// -cert-library-source is the dev path (operator

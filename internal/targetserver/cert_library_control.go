@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -36,6 +37,15 @@ type CertLibraryController struct {
 	// DefaultPollInterval is used when the request leaves
 	// PollInterval empty. Defaults to 30 minutes when zero.
 	DefaultPollInterval time.Duration
+
+	// StatePath, when non-empty, is the file the controller
+	// writes the most-recently-applied config to so that a target
+	// restart can resume polling without needing the harness to
+	// re-push first. The state file holds only the URL + parsed
+	// interval — the bearer token is sourced from the target's
+	// own CONTROL_TOKEN at runtime, never persisted to disk.
+	// Empty StatePath disables persistence (used by tests).
+	StatePath string
 
 	mu             sync.Mutex
 	current        CertLibraryConfigRequest
@@ -109,7 +119,62 @@ func (c *CertLibraryController) Apply(req CertLibraryConfigRequest) error {
 	c.cancel = cancel
 	go c.runPoller(ctx, poller, interval)
 	log.Printf("target: cert-library config applied source=%s interval=%s", req.URL, interval)
+
+	if c.StatePath != "" {
+		if err := writeStateFile(c.StatePath, req); err != nil {
+			// Persistence is a safety net, not a hard requirement
+			// — the running poll loop is healthy regardless. Log
+			// loudly so an operator notices the failure mode (next
+			// target restart will fall back to the no-config
+			// state until the harness re-pushes).
+			log.Printf("target: cert-library state persist: %v", err)
+		}
+	}
 	return nil
+}
+
+// RestoreState reads the persisted cert-library config (if any) and
+// applies it. Called at target startup, before the data-plane
+// listener accepts traffic, so a restart resumes serving certs from
+// the library without a "wait for the next harness push" window
+// where the fallback self-signed cert is served.
+//
+// Missing state file is not an error — the target simply boots in
+// the no-config state and waits for a harness push. Corrupt state is
+// also non-fatal, just logged: the broken file is left in place for
+// debugging and the controller proceeds as if no state existed.
+func (c *CertLibraryController) RestoreState() error {
+	if c.StatePath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(c.StatePath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read state: %w", err)
+	}
+	var req CertLibraryConfigRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("parse state: %w", err)
+	}
+	if req.URL == "" {
+		return fmt.Errorf("state missing url")
+	}
+	log.Printf("target: cert-library restoring config from %s (source=%s)", c.StatePath, req.URL)
+	return c.Apply(req)
+}
+
+func writeStateFile(path string, req CertLibraryConfigRequest) error {
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Stop cancels any running poller. Used by the binary's shutdown path
