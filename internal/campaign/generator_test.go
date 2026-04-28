@@ -544,6 +544,55 @@ func TestDesignReportLabel(t *testing.T) {
 	}
 }
 
+func TestDesignHasMixedContentEscalation(t *testing.T) {
+	cases := []struct {
+		name string
+		d    Design
+		want bool
+	}{
+		{
+			name: "mixed injected and canary-missing body content",
+			d: Design{Escalation: &EscalationDesign{Stages: []EscalationStage{
+				{FailureType: "http_body", Params: map[string]any{"content": "keyword_injected"}},
+				{FailureType: "http_body", Params: map[string]any{"content": "ransomware"}},
+			}}},
+			want: true,
+		},
+		{
+			name: "only injected content",
+			d: Design{Escalation: &EscalationDesign{Stages: []EscalationStage{
+				{FailureType: "http_body", Params: map[string]any{"content": "keyword_injected"}},
+				{FailureType: "http_body", Params: map[string]any{"content": "keyword_injected"}},
+			}}},
+			want: false,
+		},
+		{
+			name: "mixed with non-body stage only",
+			d: Design{Escalation: &EscalationDesign{Stages: []EscalationStage{
+				{FailureType: "http_body", Params: map[string]any{"content": "keyword_injected"}},
+				{FailureType: "tcp_refused", Params: map[string]any{}},
+			}}},
+			want: false,
+		},
+		{
+			name: "non-escalating design",
+			d: Design{
+				FailureType: "http_body",
+				Params:      map[string]any{"content": "keyword_injected"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.d.HasMixedContentEscalation(); got != tc.want {
+				t.Fatalf("HasMixedContentEscalation = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGenerate_ReplacementEscalationPattern(t *testing.T) {
 	c, err := Parse([]byte(`
 id              = "replacement-test"

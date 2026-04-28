@@ -110,6 +110,10 @@ func RunCampaign(
 
 	log.Printf("runner: campaign %s started: %d designs, %d replays scheduled over %v",
 		campaignRunID, len(plan.Designs), len(plan.Schedule), c.Duration)
+	if mixed := mixedContentEscalationCount(plan.Designs); mixed > 0 {
+		log.Printf("runner: campaign %s: %d/%d design(s) mix keyword_injected http_body stages with other http_body content; scenario-level keyword config may under-measure canary-missing stages",
+			campaignRunID, mixed, len(plan.Designs))
+	}
 
 	// Index designs by ID for the schedule walk.
 	designByID := make(map[string]*campaign.Design, len(plan.Designs))
@@ -175,12 +179,13 @@ func RunCampaign(
 
 func campaignRunParameters(d *campaign.Design, slot campaign.ReplaySlot) map[string]any {
 	params := map[string]any{
-		"campaign_design_id":         d.ID,
-		"campaign_replay_index":      slot.Index,
-		"campaign_cell_failure_type": d.Cell.FailureType,
-		"campaign_duration_bucket":   d.Cell.DurationBucket,
-		"campaign_host_pattern":      d.Cell.HostPattern,
-		"campaign_failure_label":     d.ReportLabel(),
+		"campaign_design_id":                d.ID,
+		"campaign_replay_index":             slot.Index,
+		"campaign_cell_failure_type":        d.Cell.FailureType,
+		"campaign_duration_bucket":          d.Cell.DurationBucket,
+		"campaign_host_pattern":             d.Cell.HostPattern,
+		"campaign_failure_label":            d.ReportLabel(),
+		"campaign_mixed_content_escalation": d.HasMixedContentEscalation(),
 	}
 	if d.Escalation != nil {
 		stageTypes := make([]string, 0, len(d.Escalation.Stages))
@@ -192,4 +197,14 @@ func campaignRunParameters(d *campaign.Design, slot campaign.ReplaySlot) map[str
 		params["campaign_escalation_stage_types"] = stageTypes
 	}
 	return params
+}
+
+func mixedContentEscalationCount(designs []campaign.Design) int {
+	count := 0
+	for _, d := range designs {
+		if d.HasMixedContentEscalation() {
+			count++
+		}
+	}
+	return count
 }

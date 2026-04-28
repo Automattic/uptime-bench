@@ -76,6 +76,33 @@ func (d Design) ReportLabel() string {
 	return pattern + ":" + strings.Join(types, ">")
 }
 
+// HasMixedContentEscalation reports whether a design mixes keyword_injected
+// http_body stages with other http_body content stages. The scenario format has
+// one scenario-level keyword configuration, so these designs can under-measure
+// the non-injected content stage until per-stage keyword config exists.
+func (d Design) HasMixedContentEscalation() bool {
+	if d.Escalation == nil {
+		return false
+	}
+	hasInjected := false
+	hasOtherBodyContent := false
+	for _, stage := range d.Escalation.Stages {
+		if stage.FailureType != "http_body" {
+			continue
+		}
+		content, _ := stage.Params["content"].(string)
+		switch content {
+		case "keyword_injected":
+			hasInjected = true
+		case "":
+			// Empty content is malformed for http_body and will fail later.
+		default:
+			hasOtherBodyContent = true
+		}
+	}
+	return hasInjected && hasOtherBodyContent
+}
+
 // Cell uniquely identifies the stratification position a Design samples.
 // Two Designs with the same Cell tuple represent oversampling of the
 // same statistical bucket — the generator never produces this.
