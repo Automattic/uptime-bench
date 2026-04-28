@@ -56,6 +56,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 - **ACME DNS-01 path** — DNS members support ACME TXT records and certbot manual hooks, so certmint can issue public certificates through the benchmark nameservers.
 - **Target TLS support** — the target has HTTPS/SNI handling, library certificate selection, healthy certificate fallback, expired/expiring selection, invalid-certificate variants, deprecated TLS modes, and handshake-abort behavior.
 - **Dynamic cert-library distribution** — the harness forwards cert-library URLs to targets; targets poll, cache, swap, prune, and persist certificate-library config across restarts.
+- **TLS acceptance tooling** — local OpenSSL tests cover target TLS behavior, and `deploy/tls-smoke.sh` exercises deployed target HTTPS, handshake-abort, and deprecated-TLS paths through the real control API.
 
 ## Campaigns and statistical comparison
 
@@ -139,7 +140,7 @@ The target binary now exposes an HTTPS listener with a generated self-signed fal
 
 - `tls_handshake`: implemented for target-side config selection by returning a deterministic handshake error before certificate selection. Probe receives a TLS alert; no HTTP response.
 - `tls_deprecated`: implemented for target-side config selection by clamping `tls.Config.MaxVersion` to TLS 1.1 or TLS 1.0. In-process TLS handshake tests cover the target behavior.
-- OpenSSL acceptance: `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active. Remaining fleet acceptance is a deployed target/probe smoke, not target-side behavior.
+- OpenSSL acceptance: `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active. `deploy/tls-smoke.sh` repeats the protocol checks against deployed targets through the control API. Remaining fleet acceptance is monitor-facing probe smoke against a real certmint-produced library.
 
 **Measurement note for `tls_deprecated`**: because the request actually returns 200 OK, monitor outcomes split three ways — missed advisory, correct "TLS advisory" classification, false outage report. The measurement engine needs a third category here, distinct from true-positive and false-negative.
 

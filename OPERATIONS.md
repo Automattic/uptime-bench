@@ -212,6 +212,20 @@ After provisioning completes, re-authentication as root is disabled. All subsequ
 
 The script's "Next steps" output at the end of each run lists the exact commands to copy and edit each `.example` file. The next three steps cover the same ground in narrative form.
 
+### 5a. Optional TLS target smoke
+
+After a target server is provisioned and deployed, run a data-plane TLS smoke before starting long campaigns:
+
+```sh
+CONTROL_URL=http://203.0.113.20:9000 \
+TARGET_HOST=bench-a.bench-example.com \
+TARGET_IP=203.0.113.20 \
+CONTROL_TOKEN_FILE=/path/to/control-token \
+deploy/tls-smoke.sh
+```
+
+The script verifies healthy HTTPS, activates `tls_handshake` through the target control API and expects the TLS handshake to fail, then activates `tls_deprecated` and expects OpenSSL to negotiate TLS 1.1. It is a target/fleet acceptance check; monitor-facing API tests still run through ordinary scenarios and adapter live tests.
+
 ---
 
 ## Step 6 — Place credential files on each server
