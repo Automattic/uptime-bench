@@ -98,7 +98,12 @@ func newHandler() (*VirtualHostHandler, *control.FailureRegistry) {
 
 func get(t *testing.T, h http.Handler, host, path string) *httptest.ResponseRecorder {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodGet, path, nil)
+	return request(t, h, http.MethodGet, host, path)
+}
+
+func request(t *testing.T, h http.Handler, method, host, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(method, path, nil)
 	r.Host = host
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -137,6 +142,43 @@ func TestVHH_HTTPStatusFallsBackTo500(t *testing.T) {
 	w := get(t, h, "site.local", "/")
 	if w.Code != 500 {
 		t.Fatalf("status = %d, want 500 (default)", w.Code)
+	}
+}
+
+func TestVHH_HTTPMethodStatus_HeadFailsGetHealthy(t *testing.T) {
+	h, reg := newHandler()
+	reg.Set(control.FailureSpec{
+		Type: "http_method_status", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{"method": "HEAD", "status_code": float64(405)},
+	}, 0)
+
+	head := request(t, h, http.MethodHead, "site.local", "/")
+	if head.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("HEAD status = %d, want 405", head.Code)
+	}
+	get := request(t, h, http.MethodGet, "site.local", "/")
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", get.Code)
+	}
+	if !strings.Contains(get.Body.String(), "uptime-bench-canary") {
+		t.Fatal("GET response should be the healthy page")
+	}
+}
+
+func TestVHH_HTTPMethodStatus_GetFailsHeadHealthy(t *testing.T) {
+	h, reg := newHandler()
+	reg.Set(control.FailureSpec{
+		Type: "http_method_status", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{"method": "GET", "status_code": float64(503)},
+	}, 0)
+
+	head := request(t, h, http.MethodHead, "site.local", "/")
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want 200", head.Code)
+	}
+	get := request(t, h, http.MethodGet, "site.local", "/")
+	if get.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET status = %d, want 503", get.Code)
 	}
 }
 

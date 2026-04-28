@@ -70,6 +70,7 @@ type Failure struct {
 
 	// HTTP failure fields
 	StatusCode         int
+	Method             string
 	Phase              string
 	Delay              time.Duration
 	TruncateAfterBytes *int
@@ -124,6 +125,7 @@ type rawFailure struct {
 	Offset string `toml:"offset"`
 
 	StatusCode         int      `toml:"status_code"`
+	Method             string   `toml:"method"`
 	Phase              string   `toml:"phase"`
 	Delay              string   `toml:"delay"`
 	TruncateAfterBytes *int     `toml:"truncate_after_bytes"`
@@ -308,6 +310,7 @@ func validateFailure(i int, rf rawFailure) (Failure, error) {
 		Rate:               rate,
 		Offset:             offset,
 		StatusCode:         rf.StatusCode,
+		Method:             rf.Method,
 		Phase:              rf.Phase,
 		TruncateAfterBytes: rf.TruncateAfterBytes,
 		Variant:            rf.Variant,
@@ -350,6 +353,18 @@ func validateFailureType(ctx string, f *Failure) error {
 	case "http_status":
 		if f.StatusCode < 100 || f.StatusCode > 599 {
 			return fmt.Errorf("%s: status_code must be a valid HTTP status code (100-599)", ctx)
+		}
+	case "http_method_status":
+		if f.StatusCode < 100 || f.StatusCode > 599 {
+			return fmt.Errorf("%s: status_code must be a valid HTTP status code (100-599)", ctx)
+		}
+		switch f.Method {
+		case "GET", "HEAD":
+		default:
+			return fmt.Errorf("%s: method must be one of: GET, HEAD", ctx)
+		}
+		if len(f.Regions) > 0 {
+			return fmt.Errorf("%s: regions are not supported for http_method_status", ctx)
 		}
 	case "http_timeout":
 		if f.Phase == "" {

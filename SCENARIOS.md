@@ -180,8 +180,8 @@ The server accepts the connection and speaks HTTP — but does it respond correc
 - **[v2]** Intermittent 5xx at elevated rate (e.g., >1% of requests)
 - **[v1]** 4xx on canonical URLs that should succeed (404 on homepage)
 - **[v1]** 401/403 on public pages
-- **[v1]** Method inconsistency: HEAD returns 200 but GET returns 4xx/5xx
-- **[v1]** Method inconsistency: GET succeeds but HEAD returns 405
+- **[v1]** Method inconsistency: HEAD returns 200 but GET returns 4xx/5xx — `http_method_status method="GET" status_code=503` — catches false-up signals from HEAD-only checks
+- **[v1]** Method inconsistency: GET succeeds but HEAD returns 405 — `http_method_status method="HEAD" status_code=405` — catches false-down signals from HEAD-only checks
 - **[v2]** OPTIONS preflight failures affecting CORS-dependent pages
 
 ### Network timing breakdown

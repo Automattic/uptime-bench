@@ -533,6 +533,9 @@ func failureParams(sc *scenario.Scenario, f scenario.Failure) map[string]any {
 	if f.StatusCode != 0 {
 		p["status_code"] = f.StatusCode
 	}
+	if f.Method != "" {
+		p["method"] = f.Method
+	}
 	if f.Phase != "" {
 		p["phase"] = f.Phase
 	}

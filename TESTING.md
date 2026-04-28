@@ -126,6 +126,8 @@ make report-campaign CAMPAIGN=<campaign-run-id-or-config-id> REPORT_FORMAT=json
 |----------|---------|---------------|
 | `http-503.toml` | HTTP 503 status | Basic downtime detection |
 | `http-geo-503.toml` | HTTP 503 from a region's probe IPs only | Geo-scoped failure detection |
+| `http-head-405-get-200.toml` | HEAD 405, GET 200 | False-down detection for HEAD-only checks |
+| `http-head-200-get-503.toml` | HEAD 200, GET 503 | False-up detection for HEAD-only checks |
 | `tcp-refused.toml` | TCP connection refused | Network-layer reachability |
 | `http-timeout-ttfb.toml` | 35s TTFB stall | Timeout detection at connection |
 | `http-partial.toml` | Response truncated at 100 bytes | Incomplete response detection |

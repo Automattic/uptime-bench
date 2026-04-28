@@ -187,6 +187,15 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := r.URL.Path
 
+	if spec, ok := h.Registry.Lookup("http_method_status", host, path); ok {
+		method, _ := spec.Params["method"].(string)
+		if strings.EqualFold(method, r.Method) {
+			code := paramInt(spec.Params["status_code"], 500)
+			http.Error(w, http.StatusText(code), code)
+			return
+		}
+	}
+
 	if spec, ok := h.Registry.Lookup("http_status", host, path); ok {
 		code := paramInt(spec.Params["status_code"], 500)
 		http.Error(w, http.StatusText(code), code)

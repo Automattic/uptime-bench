@@ -12,6 +12,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 **Deferred:**
 - [Staggered failure measurement matching](#staggered-failure-measurement-matching)
+- [Method-sensitive HTTP behavior beyond status](#method-sensitive-http-behavior-beyond-status)
 - [Probe IP discoverability (vendor-side)](#probe-ip-discoverability-vendor-side)
 - [Per-component timing retrieval from adapters](#per-component-timing-retrieval-from-adapters)
 - [Redirect baseline change detection](#redirect-baseline-change-detection)
@@ -434,6 +435,24 @@ The `offset` field is honored by the runner: failures activate at `scenario_star
 
 - *Measurement engine:* detection latency is calculated against the first failure window an alert falls inside (`internal/measurement/measurement.go`). When failures are staggered and overlapping, "which failure did the monitor respond to?" matters for accurate latency attribution. Today's "earliest active failure" rule loses signal when multiple layers fail together (e.g., DNS at t=0, HTTP at t=30, alert at t=45 — was the monitor responding to DNS or HTTP?).
 - The matching rule should probably be: the failure whose normalized classification best matches the monitor's reported classification, falling back to earliest-active when classification doesn't disambiguate. Spec it before implementing.
+
+---
+
+## Method-sensitive HTTP behavior beyond status
+
+**Status:** Partially implemented. `http_method_status` covers the two high-priority HEAD/GET status mismatches: HEAD failure with healthy GET, and healthy HEAD with GET failure. Broader method/header-sensitive behaviors are deferred until the status cases produce real benchmark data.
+
+These are expected Jetmon-v1 pitfalls if it relies on shallow HEAD/status checks, and they should become Jetmon-v2 regression cases if v2 probes the user-visible GET path:
+
+- **Method-scoped redirects:** HEAD returns 200 while GET enters a redirect loop, redirects to the wrong host, or downgrades HTTPS to HTTP. Inverse case: GET is healthy but HEAD is redirected or challenged.
+- **Method-scoped latency and truncation:** HEAD returns quickly with 200 while GET stalls before first byte, stalls during the body, or closes mid-response. Inverse case: HEAD stalls but GET is healthy.
+- **Request-header divergence:** the origin, WAF, cache, or bot protection serves different status/content for monitor-specific `User-Agent`, `Accept`, `Accept-Language`, or missing browser-like headers. This can create either false-up or false-down results depending on which request shape the monitor uses.
+
+Implementation shape:
+
+- Extend the target failure matcher beyond `(type, host, path)` to include optional request predicates (`method`, selected headers, maybe user-agent substring).
+- Add method/header-scoped variants for `http_redirect`, `http_timeout`, `http_partial`, and selected `http_body` scenarios once the matcher can express them cleanly.
+- Keep the existing content scenarios as the baseline for "GET body is bad while HEAD/status looks fine"; those already cover ransomware, defacement, malicious script, SEO spam, keyword missing, and keyword injection.
 
 ---
 
