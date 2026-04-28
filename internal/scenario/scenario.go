@@ -64,9 +64,13 @@ type Failure struct {
 	Type string
 	Rate float64
 	// Offset delays this failure's activation by the specified duration
-	// after the scenario starts. The failure runs for the scenario's
-	// `duration` from its activation moment.
+	// after the scenario starts.
 	Offset time.Duration
+
+	// Duration optionally overrides the scenario's top-level duration for
+	// this failure only. A zero value means the failure runs for the
+	// scenario duration from its activation moment.
+	Duration time.Duration
 
 	// HTTP failure fields
 	StatusCode         int
@@ -122,7 +126,8 @@ type rawFailure struct {
 	Type string  `toml:"type"`
 	Rate float64 `toml:"rate"`
 
-	Offset string `toml:"offset"`
+	Offset   string `toml:"offset"`
+	Duration string `toml:"duration"`
 
 	StatusCode         int      `toml:"status_code"`
 	Method             string   `toml:"method"`
@@ -304,11 +309,22 @@ func validateFailure(i int, rf rawFailure) (Failure, error) {
 	if offset < 0 {
 		return Failure{}, fmt.Errorf("%s: offset must be non-negative", ctx)
 	}
+	duration := time.Duration(0)
+	if rf.Duration != "" {
+		duration, err = parseDuration("duration", rf.Duration, true)
+		if err != nil {
+			return Failure{}, fmt.Errorf("%s: %w", ctx, err)
+		}
+		if duration <= 0 {
+			return Failure{}, fmt.Errorf("%s: duration must be positive", ctx)
+		}
+	}
 
 	f := Failure{
 		Type:               rf.Type,
 		Rate:               rate,
 		Offset:             offset,
+		Duration:           duration,
 		StatusCode:         rf.StatusCode,
 		Method:             rf.Method,
 		Phase:              rf.Phase,

@@ -179,7 +179,8 @@ func TestToScenario_HTTPBodyKeywordDefaults(t *testing.T) {
 
 // TestToScenario_LayeredEscalation — an escalation Design with two
 // stages produces two [[failures]] blocks, each carrying its own
-// offset. Stage 1 has offset=0; stage 2 carries the configured offset.
+// offset and duration. Stage 1 has offset=0; stage 2 carries the
+// configured offset.
 func TestToScenario_LayeredEscalation(t *testing.T) {
 	d := &Design{
 		ID:          "d-0003",
@@ -207,8 +208,14 @@ func TestToScenario_LayeredEscalation(t *testing.T) {
 	if sc.Failures[0].Type != "http_status" || sc.Failures[0].Offset != 0 {
 		t.Errorf("Failures[0] = %+v, want http_status @ 0", sc.Failures[0])
 	}
+	if sc.Failures[0].Duration != 10*time.Minute {
+		t.Errorf("Failures[0].Duration = %v, want 10m", sc.Failures[0].Duration)
+	}
 	if sc.Failures[1].Type != "tcp_refused" || sc.Failures[1].Offset != 2*time.Minute {
 		t.Errorf("Failures[1] = %+v, want tcp_refused @ 2m", sc.Failures[1])
+	}
+	if sc.Failures[1].Duration != 8*time.Minute {
+		t.Errorf("Failures[1].Duration = %v, want 8m", sc.Failures[1].Duration)
 	}
 }
 

@@ -73,9 +73,9 @@ type EscalationDesign struct {
 
 // EscalationStage is one segment of an escalating failure. The
 // generator currently models the "layered" pattern (stage 2 starts
-// while stage 1 is still active). The "replacement" pattern (stage 2
-// ends stage 1) is flagged in the spec as an open scenario-format
-// question and is not implemented yet — see ROADMAP.md.
+// while stage 1 is still active). Scenario translation preserves
+// Duration so future generator modes can express replacement and
+// recovery patterns without changing the scenario schema again.
 type EscalationStage struct {
 	FailureType string
 	Params      map[string]any
@@ -288,8 +288,8 @@ func pickFailureParams(r *rand.Rand, ft *FailureType) map[string]any {
 // pickEscalation builds a multi-stage escalation. Currently models the
 // "layered" pattern only — each stage starts at the previous stage's
 // activation + a sampled inter-stage delay, and runs for the rest of
-// the scenario. The "replacement" pattern (stage 2 ends stage 1) needs
-// scenario-format changes flagged in the spec; not implemented yet.
+// the scenario. Replacement and recovery generation are now schema-
+// representable but still need sampling policy.
 func pickEscalation(r *rand.Rand, c *Campaign, baseFailureType string, scenarioDuration time.Duration) *EscalationDesign {
 	stages := c.Escalation.StagesRange.Min
 	if c.Escalation.StagesRange.Max > c.Escalation.StagesRange.Min {

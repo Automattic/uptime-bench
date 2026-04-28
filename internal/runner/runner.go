@@ -185,10 +185,10 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	}()
 
 	// Walk the failure event timeline. Each failure produces one activate
-	// event at start+offset and one deactivate event at start+offset+duration;
-	// scheduleFailureEvents sorts them all into a single time-ordered list
-	// so staggered scenarios just fall out of the same loop as simultaneous
-	// ones (offset = 0).
+	// event at start+offset and one deactivate event after its effective
+	// duration; scheduleFailureEvents sorts them all into a single
+	// time-ordered list so staggered scenarios just fall out of the same
+	// loop as simultaneous ones (offset = 0).
 	earliestStart := time.Now()
 	events := scheduleFailureEvents(earliestStart, sc.Duration, sc.Failures)
 
@@ -196,13 +196,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	// plus a generous safety margin in case the harness's deactivate is
 	// delayed or fails. Without this, a long-offset failure could expire
 	// on the target before the harness gets to it.
-	maxOffset := time.Duration(0)
-	for _, f := range sc.Failures {
-		if f.Offset > maxOffset {
-			maxOffset = f.Offset
-		}
-	}
-	failureDuration := maxOffset + sc.Duration + sc.GracePeriod + 30*time.Second
+	targetAutoExpiry := latestFailureEndOffset(sc.Duration, sc.Failures) + sc.GracePeriod + 30*time.Second
 
 	var failureStarted, failureEnded time.Time
 	for _, e := range events {
@@ -228,7 +222,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 				Failure: control.FailureSpec{
 					Type:        f.Type,
 					Host:        targetHostForFailure(target, f),
-					Duration:    failureDuration,
+					Duration:    targetAutoExpiry,
 					Rate:        f.Rate,
 					Params:      fp,
 					SourceCIDRs: sourceCIDRs,
@@ -645,20 +639,40 @@ type failureEvent struct {
 	failure  scenario.Failure
 }
 
+// effectiveFailureDuration returns the per-failure duration override when
+// present, otherwise the scenario's top-level duration.
+func effectiveFailureDuration(scenarioDuration time.Duration, f scenario.Failure) time.Duration {
+	if f.Duration > 0 {
+		return f.Duration
+	}
+	return scenarioDuration
+}
+
+func latestFailureEndOffset(scenarioDuration time.Duration, failures []scenario.Failure) time.Duration {
+	var latest time.Duration
+	for _, f := range failures {
+		end := f.Offset + effectiveFailureDuration(scenarioDuration, f)
+		if end > latest {
+			latest = end
+		}
+	}
+	return latest
+}
+
 // scheduleFailureEvents builds a time-ordered list of activate/deactivate
 // events for a scenario's failures. Each failure contributes:
 //
 //	activate   at start + offset
-//	deactivate at start + offset + duration
+//	deactivate at start + offset + effective failure duration
 //
 // Stable sort by (time, activate-before-deactivate) so two events at the
 // same instant always activate first — keeps the registry in a sensible
 // state across simultaneous starts/ends.
-func scheduleFailureEvents(start time.Time, duration time.Duration, failures []scenario.Failure) []failureEvent {
+func scheduleFailureEvents(start time.Time, scenarioDuration time.Duration, failures []scenario.Failure) []failureEvent {
 	events := make([]failureEvent, 0, 2*len(failures))
 	for _, f := range failures {
 		activateAt := start.Add(f.Offset)
-		deactivateAt := activateAt.Add(duration)
+		deactivateAt := activateAt.Add(effectiveFailureDuration(scenarioDuration, f))
 		events = append(events,
 			failureEvent{at: activateAt, activate: true, failure: f},
 			failureEvent{at: deactivateAt, activate: false, failure: f},

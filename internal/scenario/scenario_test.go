@@ -159,6 +159,18 @@ type        = "http_method_status"
 method      = "GET"
 status_code = 999
 `, "status_code must be a valid HTTP status code"},
+		{"failure duration zero", `
+[[failures]]
+type        = "http_status"
+status_code = 503
+duration    = "0s"
+`, "duration must be positive"},
+		{"failure duration negative", `
+[[failures]]
+type        = "http_status"
+status_code = 503
+duration    = "-1s"
+`, "duration must be positive"},
 	}
 
 	for _, tc := range cases {
@@ -171,6 +183,35 @@ status_code = 999
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantSubstr)
 			}
 		})
+	}
+}
+
+func TestFailureDurationOverrideParses(t *testing.T) {
+	const body = `
+id              = "x"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "120s"
+
+[[failures]]
+type        = "http_status"
+status_code = 503
+offset      = "30s"
+duration    = "45s"
+`
+	sc, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	f := sc.Failures[0]
+	if f.Offset != 30*time.Second {
+		t.Fatalf("Offset = %v, want 30s", f.Offset)
+	}
+	if f.Duration != 45*time.Second {
+		t.Fatalf("Duration = %v, want 45s", f.Duration)
 	}
 }
 

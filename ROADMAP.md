@@ -302,7 +302,7 @@ A *single* run with multiple chained failures, not a sequence of separate runs. 
 - **Replacement**: HTTP 503 at t=0 → escalates to TCP refused at t=2m. Stage 1 ends when stage 2 begins.
 - **Recovery test**: failure at t=0..t=2m → silence until t=5m → second failure at t=5m..t=7m. Tests whether the monitor cleared the first incident before the second arrived.
 
-The current scenario format's `[[failures]]` blocks with `offset` already handle the "layered" pattern. "Recovery test" works today by setting `offset` and `duration` on each block. **"Replacement" doesn't fit cleanly** — every failure currently runs for the scenario's full duration from its activation, so stage 1 can't be terminated when stage 2 begins. This needs either a per-failure `duration` override or a new "stage" abstraction; design to be resolved before the escalation phase implements it.
+The scenario format's `[[failures]]` blocks now support both `offset` and per-failure `duration`, so layered, replacement, and recovery patterns are representable without a new stage abstraction. The remaining escalation work is generator policy: deciding which patterns to sample, how often, and which combinations to avoid because monitor-side configuration cannot change mid-run.
 
 ### Two-tier execution: designs and replays
 
@@ -372,7 +372,7 @@ Per (failure_type, service) statistics:
 4. ✅ **Runner outer loop (serial)** — `runner.RunCampaign` walks `Plan.Schedule`, calls existing `Run()` per replay via `WithCampaignRunID`. Per-replay errors don't abort the campaign. Tests in `internal/runner/campaign_test.go`. `cmd/harness` accepts `-campaign=<config.toml>` as a mutually exclusive alternative to `-scenario`; campaign mode runs every enabled service from `services.toml`. Metrics are derived in one batch at campaign end via `measurement.DeriveCampaign`, keyed by `scenario_runs.campaign_id`.
 5. ✅ **Initial `cmd/uptime-bench-report`** — campaign metrics can be summarized from `derived_metrics` into table / TSV / JSON output. Current scope: per-(failure_type, service) samples, detection rate, TP/FN/FP/Unknown/maintenance counts, and latency min/avg/p50/p95/max.
 6. ✅ **Full report statistics** — table/JSON reports now include bias self-checks, Wilson 95% detection-rate intervals, deterministic nearest-rank percentile intervals for p50/p95, and explicit `capability_mismatch` counts from `monitor_reports.reason_code`. TSV stays row-only for scripts but includes the additional columns.
-7. **Escalation support** — resolves the "replacement" pattern in the scenario format (per-failure `duration` override or new stage abstraction); generator emits multi-stage scenarios. Layered escalation already works end-to-end.
+7. **Escalation support** — per-failure `duration` overrides now unblock replacement and recovery representations in the scenario model. Remaining work: add generator sampling policy for layered/replacement/recovery patterns and harden the reporting labels for multi-stage runs. Layered escalation already works end-to-end.
 
 Each phase is independently mergeable. Phases 1–5 deliver the "campaigns work, no escalation" milestone — that alone produces useful comparison data.
 

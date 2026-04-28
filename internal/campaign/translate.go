@@ -22,11 +22,10 @@ import (
 // produces multi-host Designs; the orchestrator gates on this until
 // the scenario format gains multi-host support.
 //
-// Escalation: layered pattern only (matches the generator's current
-// output). Each EscalationStage becomes a [[failures]] block with
-// its Offset honoured. The "replacement" pattern — stage 2 ending
-// stage 1 — is flagged in the spec as an open scenario-format
-// question and is not modelled here.
+// Escalation: each EscalationStage becomes a [[failures]] block with
+// its Offset and Duration honoured. The current generator emits layered
+// stages, but the scenario representation can also express replacement
+// and recovery patterns once the generator starts producing them.
 func (d *Design) ToScenario(scenarioID string, monitors []string, checkFrequency, gracePeriod time.Duration) (*scenario.Scenario, error) {
 	if d == nil {
 		return nil, fmt.Errorf("campaign: ToScenario: nil design")
@@ -50,8 +49,8 @@ func (d *Design) ToScenario(scenarioID string, monitors []string, checkFrequency
 	}
 
 	var translated []translatedFailure
-	addFailure := func(failureType string, params map[string]any, offset time.Duration) error {
-		f, err := failureFrom(failureType, params, offset)
+	addFailure := func(failureType string, params map[string]any, offset, duration time.Duration) error {
+		f, err := failureFrom(failureType, params, offset, duration)
 		if err != nil {
 			return err
 		}
@@ -61,12 +60,12 @@ func (d *Design) ToScenario(scenarioID string, monitors []string, checkFrequency
 	}
 
 	if d.Escalation == nil {
-		if err := addFailure(d.FailureType, d.Params, 0); err != nil {
+		if err := addFailure(d.FailureType, d.Params, 0, 0); err != nil {
 			return nil, err
 		}
 	} else {
 		for i, stage := range d.Escalation.Stages {
-			if err := addFailure(stage.FailureType, stage.Params, stage.Offset); err != nil {
+			if err := addFailure(stage.FailureType, stage.Params, stage.Offset, stage.Duration); err != nil {
 				return nil, fmt.Errorf("campaign: ToScenario: design %s stage %d: %w", d.ID, i, err)
 			}
 		}
@@ -83,17 +82,21 @@ type translatedFailure struct {
 	Params  map[string]any
 }
 
-// failureFrom builds a scenario.Failure from the (failureType, params,
-// offset) triple a Design or EscalationStage carries. Each failure
-// type pulls only the params it cares about; unknown params are
-// ignored (the campaign generator only sets ones a downstream consumer
-// would use, but the validator on scenario.Scenario gives the final
-// say).
-func failureFrom(failureType string, params map[string]any, offset time.Duration) (scenario.Failure, error) {
+// failureFrom builds a scenario.Failure from the failure type, params,
+// offset, and optional per-failure duration a Design or EscalationStage
+// carries. Each failure type pulls only the params it cares about;
+// unknown params are ignored (the campaign generator only sets ones a
+// downstream consumer would use, but the validator on scenario.Scenario
+// gives the final say).
+func failureFrom(failureType string, params map[string]any, offset, duration time.Duration) (scenario.Failure, error) {
+	if duration < 0 {
+		return scenario.Failure{}, fmt.Errorf("duration must be non-negative")
+	}
 	f := scenario.Failure{
-		Type:   failureType,
-		Rate:   1.0, // campaigns always inject 100% of requests; rate-mixing happens at the campaign level via cell stratification, not within a single scenario
-		Offset: offset,
+		Type:     failureType,
+		Rate:     1.0, // campaigns always inject 100% of requests; rate-mixing happens at the campaign level via cell stratification, not within a single scenario
+		Offset:   offset,
+		Duration: duration,
 	}
 
 	switch failureType {

@@ -168,9 +168,10 @@ func TestScheduleFailureEvents_NoOffsets(t *testing.T) {
 	}
 }
 
-// TestScheduleFailureEvents_StaggeredOffsets — verifies the timeline
+// TestScheduleFailureEvents_StaggeredOffsets verifies the timeline
 // for the canonical "DNS issue at t=0, HTTP error at t=30s" pattern.
-// Each failure runs for `duration` from its individual activate.
+// Each failure runs for the scenario duration from its individual
+// activate unless it declares a per-failure duration override.
 func TestScheduleFailureEvents_StaggeredOffsets(t *testing.T) {
 	start := time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)
 	duration := 100 * time.Second
@@ -199,6 +200,43 @@ func TestScheduleFailureEvents_StaggeredOffsets(t *testing.T) {
 				i, e.at, e.activate, e.failure.Type,
 				want[i].at, want[i].activate, want[i].typ)
 		}
+	}
+}
+
+func TestScheduleFailureEvents_PerFailureDurationOverridesScenarioDuration(t *testing.T) {
+	start := time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)
+	scenarioDuration := 100 * time.Second
+	failures := []scenario.Failure{
+		{Type: "http_status", Offset: 0, Duration: 20 * time.Second},
+		{Type: "tcp_refused", Offset: 30 * time.Second, Duration: 15 * time.Second},
+		{Type: "dns_latency", Offset: 60 * time.Second},
+	}
+	events := scheduleFailureEvents(start, scenarioDuration, failures)
+
+	want := []struct {
+		at       time.Time
+		activate bool
+		typ      string
+	}{
+		{start.Add(0 * time.Second), true, "http_status"},
+		{start.Add(20 * time.Second), false, "http_status"},
+		{start.Add(30 * time.Second), true, "tcp_refused"},
+		{start.Add(45 * time.Second), false, "tcp_refused"},
+		{start.Add(60 * time.Second), true, "dns_latency"},
+		{start.Add(160 * time.Second), false, "dns_latency"},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("got %d events, want %d", len(events), len(want))
+	}
+	for i, e := range events {
+		if !e.at.Equal(want[i].at) || e.activate != want[i].activate || e.failure.Type != want[i].typ {
+			t.Fatalf("events[%d] = (%v, activate=%v, %s), want (%v, %v, %s)",
+				i, e.at, e.activate, e.failure.Type,
+				want[i].at, want[i].activate, want[i].typ)
+		}
+	}
+	if got, want := latestFailureEndOffset(scenarioDuration, failures), 160*time.Second; got != want {
+		t.Fatalf("latestFailureEndOffset = %v, want %v", got, want)
 	}
 }
 
