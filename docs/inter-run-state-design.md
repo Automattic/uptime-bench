@@ -1,6 +1,6 @@
 # Inter-run monitor state — design spec
 
-**Status:** Draft, 2026-04-26. Resolves the open design questions on ROADMAP.md active priorities #3 (maintenance window suppression) and #4 (alert cooldown interaction between runs). Once implementation lands, the live content here moves into ARCHITECTURE.md and this file is deleted.
+**Status:** Partially implemented, updated 2026-04-28. The maintenance-window half of this design has landed in scenario parsing, runner gating, adapter provisioning, and measurement. The cooldown-reset half is partly represented by `SupportsCooldownReset` flags and delete/recreate adapter behavior, but the measurement categories for cooldown suppression remain future work.
 
 ## Why these two features belong in one spec
 
@@ -23,7 +23,8 @@ This table is the load-bearing reference. Each entry below was verified against 
 | UptimeRobot | Two-step: (1) `POST /v2/newMWindow` to create the window, (2) `POST /v2/editMonitor` with `mwindows=<id>` (dash-separated for multiple) to attach the window to monitors. `newMWindow` fields: `friendly_name`, `type` (1=Once, 2=Daily, 3=Weekly, 4=Monthly), `start_time` (Unix timestamp for type=1), `duration` (minutes), `value` (only for weekly/monthly: day numbers like `2-4-5`). | Per-window, attached to N monitors | **Spec correction**: earlier draft said `value` carries monitor IDs and `start_time` is HH:mm — both wrong. Monitor association is via `editMonitor.mwindows`, not the window-creation call. Cost: provision becomes 3 API calls (`newMonitor` → `newMWindow` → `editMonitor`); free tier's 10-req/min budget is tight but workable. |
 | Datadog Synthetics | Two flavours, **only one of which we want**: <br/>• **Monitor Downtime** — `POST /api/v1/downtime` with `start`/`end` (POSIX timestamps), `monitor_id` (single int), `scope` (tag list), `message`. Mutes alerts but probes keep running. **This is what we want.** <br/>• **Synthetic Scheduled Downtime** — separate concept, no public API as of 2026-04-26; UI-only. *Stops probe execution entirely* during the window, which defeats our test. | Per-monitor | **Live-verified 2026-04-27.** `monitor_id` is a top-level int64 field on the response of `GET /api/v1/synthetics/tests/api/{public_id}` (and the no-`/api/`-infix variant — both work). The *create* response does not expose it; the adapter does an extra GET after Provision to discover it, then uses it on `POST /api/v1/downtime`. |
 | Better Uptime | **Spec correction**: maintenance API DOES exist. `PATCH /api/v2/monitors/{id}` with `maintenance_from` / `maintenance_to` (HH:MM:SS format, **not** absolute timestamps), `maintenance_days` (array like `["mon","tue",...]`), `maintenance_timezone` (e.g. `"UTC"`, `"Prague"`). Recurring-day model — there is no one-shot "from absolute T1 to absolute T2" form. | Per-monitor, recurring | Adapter has to convert the scenario's absolute window into today's HH:MM:SS plus today's day-name. Caveat: scenarios that cross midnight in the configured timezone need two adjacent days in `maintenance_days` plus careful HH:MM:SS — easier to reject mid-night-crossing scenarios for this adapter. After the run, restore the monitor with empty maintenance fields to avoid the recurrence applying tomorrow. |
-| Jetmon (self-hosted) | jetmon-bridge needs a new endpoint, e.g. `POST /maintenance` writing to a `jetpack_monitor_maintenance` table the agent reads. | Per-monitor; arbitrary granularity | Trivial since we control both ends. Implement *after* the probe-based adapters land so the bridge change isn't on the critical path. |
+| Jetmon v2 | `PATCH /api/v1/sites/{id}` with `maintenance_start` / `maintenance_end`. | Per-monitor; arbitrary granularity | Implemented in the API-backed adapter and covered by the build-tagged live API contract test. |
+| Jetmon v1 (self-hosted) | jetmon-bridge needs a new endpoint, e.g. `POST /maintenance` writing to a `jetpack_monitor_maintenance` table the agent reads. | Per-monitor; arbitrary granularity | Still deferred; v1 gates maintenance scenarios as `capability_mismatch`. |
 
 ### Cooldown reset (clean-state-on-Deprovision)
 
@@ -150,12 +151,12 @@ Three phases. Each phase compiles, tests, and ships independently.
 
 ### Phase A — capability flags + scenario format
 
-1. Add `SupportsMaintenanceWindows` and `SupportsCooldownReset` to `Capabilities`. Default `false` on all adapters.
-2. Add `[maintenance]` block parsing to `internal/scenario`. Validation: start_offset ≥ 0, duration > 0.
-3. Add `MaintenanceWindow` to `ProvisionConfig`. Runner populates it from the scenario.
-4. Add `maintenance_suppressed` and `cooldown_suppressed` reason codes (constants in `internal/adapter`).
-5. Runner gates scenarios with `[maintenance]` against adapters where `SupportsMaintenanceWindows = false`. Capability-mismatch row, no Provision.
-6. **Tests:** scenario parsing, validator, runner gating.
+1. [done] Add `SupportsMaintenanceWindows` and `SupportsCooldownReset` to `Capabilities`.
+2. [done] Add `[maintenance]` block parsing to `internal/scenario`. Validation: start_offset >= 0, duration > 0.
+3. [done] Add `MaintenanceWindow` to `ProvisionConfig`. Runner populates it from the scenario.
+4. [done] Add `maintenance_suppressed` and cooldown-related reason codes (constants in `internal/adapter`).
+5. [done] Runner gates scenarios with `[maintenance]` against adapters where `SupportsMaintenanceWindows = false`. Capability-mismatch row, no Provision.
+6. [done] **Tests:** scenario parsing, validator, runner gating.
 
 End of Phase A: scenario format works, runner gates correctly, but no adapter actually configures a maintenance window yet (because all flags default false). Mergeable, no behaviour change for existing scenarios.
 
@@ -163,10 +164,9 @@ End of Phase A: scenario format works, runner gates correctly, but no adapter ac
 
 For each adapter:
 
-1. Wire the maintenance-window API call into `Provision`.
-2. Wire the cooldown-reset API call (or document that it's a no-op) into `Deprovision`.
-3. Set `SupportsMaintenanceWindows` / `SupportsCooldownReset` to `true`.
-4. Live test: write a scenario with `[maintenance]`, run it, confirm no alerts during the window.
+1. [done] Wire the maintenance-window API call into `Provision` for Pingdom, UptimeRobot, Datadog Synthetics, Better Uptime, and Jetmon v2.
+2. [done] Set `SupportsMaintenanceWindows` / `SupportsCooldownReset` to `true` where delete/recreate or API behavior provides clean state.
+3. Pending live behavior test: write scenarios with `[maintenance]`, run them against live vendors, and confirm no alerts during the window.
 
 **Recommended order, easiest to hardest** (revised after 2026-04-26 research):
 
@@ -178,11 +178,9 @@ For each adapter:
 
 ### Phase C — measurement engine extensions
 
-After at least one adapter has Phase B complete:
-
-1. Update `internal/measurement` to compute the three new outcome categories.
-2. Add the 80%-overlap threshold logic with a test that covers the four overlap shapes (no overlap, fully covered, leading-edge partial, trailing-edge partial).
-3. Update queries in EVENTS.md / OPERATIONS.md to filter on the new reason codes.
+1. [done] Update `internal/measurement` to compute `maintenance_suppressed`.
+2. [done] Add the 80%-overlap threshold logic with tests for fully covered, below-threshold partial coverage, above-threshold partial coverage, alert-during-maintenance, and no-maintenance cases.
+3. Pending cooldown work: implement `cooldown_suppressed` / `cooldown_uncertain` classification once prior-run state tracking is designed.
 
 ## What this spec deliberately doesn't cover
 

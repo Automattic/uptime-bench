@@ -3,12 +3,14 @@
 Deferred features that are intentionally not yet implemented. Items below the active line are accommodated in the schema and data model so they can be added without breaking changes — but the implementation work is deferred. Items above the line are next-up.
 
 **Active priorities (next-up, in rough order):**
-1. [Keyword-monitoring capability is dead-wired](#keyword-monitoring-capability-is-dead-wired)
-2. [Maintenance window suppression](#maintenance-window-suppression)
-3. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
-4. [Automated randomized testing campaigns](#automated-randomized-testing-campaigns)
-5. [TLS target implementation](#tls-target-implementation)
-6. [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
+1. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
+2. [TLS target implementation](#tls-target-implementation)
+3. [Automated randomized testing campaigns](#automated-randomized-testing-campaigns)
+4. [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
+
+**Recently completed but kept here for audit context:**
+- [Keyword-monitoring capability is dead-wired](#keyword-monitoring-capability-is-dead-wired)
+- [Maintenance window suppression](#maintenance-window-suppression)
 
 **Deferred:**
 - [Staggered failure measurement matching](#staggered-failure-measurement-matching)
@@ -24,16 +26,16 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 ## Keyword-monitoring capability is dead-wired
 
-**Status:** Plumbing in place but not connected end-to-end. Design locked 2026-04-25; ready to implement.
+**Status:** Implemented. Design locked 2026-04-25; end-to-end wiring, capability gating, adapter keyword branches, and tests are now in place.
 
-Found during a review pass on 2026-04-25. The pieces exist independently but never meet:
+Found during a review pass on 2026-04-25. At the time, the pieces existed independently but never met:
 
 - `adapter.Capabilities.SupportsKeyword` is set to `true` on Pingdom, UptimeRobot, Datadog, and Better Uptime; to `false` on `jetmon-v1`. Currently nothing in `internal/runner` reads either flag, so it has no effect.
 - `adapter.ProvisionConfig.Keyword` exists on the struct (`internal/adapter/adapter.go:91`) but the runner builds the config with only `CheckFrequency` (`internal/runner/runner.go:144`) — `Keyword` is never populated.
 - Each adapter's `Provision` ignores `config.Keyword`. Pingdom always creates a status (`type=http`) check; UptimeRobot uses `monitorTypeHTTP = 1` (a keyword check would be `type=2`); Datadog only adds a `statusCode` assertion; Better Uptime always uses `monitor_type = "status"`.
 - Scenario TOMLs already carry `keyword = "uptime-bench-canary"` for the keyword scenarios, and the runner forwards that string to the target binary's control plane (`internal/runner/runner.go:403`), which uses it to know what string to remove or inject when serving tampered content. So the target side is keyword-aware — the monitor side is not.
 
-Net effect today: any scenario with `monitors = ["pingdom" | "uptimerobot" | "datadog-synthetics" | "better-uptime"]` plus a content failure produces a status-only check that sees `200 OK` and reports nothing. The benchmark would record a false negative, but the failure is in the adapter, not the service.
+Current state: scenario-level `keyword` / `keyword_check` are parsed, defaulted for content scenarios, passed through the runner into `ProvisionConfig`, and gated against `SupportsKeyword` / `SupportsInvertedKeyword`. Pingdom, UptimeRobot, Datadog Synthetics, Better Uptime, and Jetmon v2 all exercise their supported keyword paths in unit tests; unsupported combinations produce `reason_code = "capability_mismatch"` instead of false negatives.
 
 ### Locked-in design
 
@@ -43,17 +45,17 @@ Net effect today: any scenario with `monitors = ["pingdom" | "uptimerobot" | "da
 
 ### Implementation order
 
-1. **Schema migration** — add `reason_code` column to `monitor_reports` (nullable string; existing rows back-fill empty). Update `internal/db` writes and the runner's `logMonitorReport` to set it. This is the prerequisite that lets capability gating be queryable as a support matrix; ship before any of the keyword work to keep the migration small and isolated.
-2. **Scenario format** — promote `keyword` to scenario-level and add `keyword_check`; update `internal/scenario` parser, validator, and the corpus check; update existing keyword scenarios to the new format.
-3. **Runner** — populate `ProvisionConfig.Keyword` and (new) `ProvisionConfig.KeywordCheck` from the scenario; add capability-gating branch that mirrors the existing `MinCheckFrequency` branch.
-4. **Adapters** — branch on `config.Keyword != ""`:
+1. ✅ **Schema migration** — add `reason_code` column to `monitor_reports` (nullable string; existing rows back-fill empty). Update `internal/db` writes and the runner's `logMonitorReport` to set it. This is the prerequisite that lets capability gating be queryable as a support matrix; ship before any of the keyword work to keep the migration small and isolated.
+2. ✅ **Scenario format** — promote `keyword` to scenario-level and add `keyword_check`; update `internal/scenario` parser, validator, and the corpus check; update existing keyword scenarios to the new format.
+3. ✅ **Runner** — populate `ProvisionConfig.Keyword` and `ProvisionConfig.KeywordCheck` from the scenario; add capability-gating branch that mirrors the existing `MinCheckFrequency` branch.
+4. ✅ **Adapters** — branch on `config.Keyword != ""`:
    - **Pingdom**: `newCheckRequest` carries `shouldcontain` (present check) or `shouldnotcontain` (absent check). Type stays `"http"`.
    - **UptimeRobot**: switch `type` from `1` (HTTP) to `2` (Keyword); set `keyword_type=1` for "exists" (present check) or `keyword_type=2` for "not exists" (absent check); set `keyword_value`.
    - **Datadog**: append a `body` assertion to the existing `Assertions` list with operator `contains` (present) or `does not contain` (absent).
    - **Better Uptime**: switch `monitor_type` from `"status"` to `"keyword"`; set `required_keyword` (present check). If absent-mode is unsupported by the API (verify against the live API as part of this step), set the capability flag accordingly and let the runner gate it.
-5. **Tests** — unit tests for each adapter's keyword branches; integration test that asserts capability gating writes a `monitor_reports` row with the expected `reason_code` instead of a Provision call; corpus check covers the new scenario fields.
+5. ✅ **Tests** — unit tests for each adapter's keyword branches; integration test that asserts capability gating writes a `monitor_reports` row with the expected `reason_code` instead of a Provision call; corpus check covers the new scenario fields.
 
-Until all five steps land, the benchmark cannot accurately compare content-tampering detection across the four probe-based services. The `jetmon-v1` adapter (agent-based; `SupportsKeyword = false`) evaluates content scenarios via the agent's own content rules, not via the keyword path — under the new gating it would record a `capability_mismatch` for content scenarios, which is correct: Jetmon's content detection isn't comparable on the keyword axis.
+Remaining follow-up: broaden live API smoke coverage for each vendor's keyword branch, especially inverted keyword checks and Better Uptime's asymmetric support. Jetmon v1 remains `SupportsKeyword = false` for this comparable keyword axis.
 
 ---
 
@@ -289,13 +291,12 @@ uptime-bench-report -campaign=weekly-comparison-2026-q2
 
 # Bias self-checks (printed first):
 #   - sample counts per service (flagged if any deviation > 5%)
-#   - sample counts per cell (flagged if any cell short of target n)
-#   - any failure_type/service pairs with elevated capability_mismatch or
-#     adapter_error rates
+#   - sample counts per failure/service cell, with missing cells counted as 0
+#   - any capability_mismatch counts or uncategorized Unknown rows
 
-failure_type | service     | n  | tp_rate | min | avg | p50 | p95 (CI)        | max
-http_status  | pingdom     | 60 | 0.98    | 41s | 72s | 68s | 120s (±15s)     | 180s
-http_status  | uptimerobot | 60 | 0.96    | 62s | 98s | 95s | 145s (±19s)     | 220s
+failure_type | service     | n  | tp_rate | tp_rate_ci95 | cap_mismatch | min_s | avg_s | p50_s | p50_ci95_s | p95_s | p95_ci95_s | max_s
+http_status  | pingdom     | 60 | 0.98    | 0.91-0.99    | 0            | 41.0  | 72.0  | 68.0  | 55.0-80.0   | 120.0 | 95.0-180.0  | 180.0
+http_status  | uptimerobot | 60 | 0.96    | 0.88-0.99    | 0            | 62.0  | 98.0  | 95.0  | 80.0-120.0  | 145.0 | 110.0-220.0 | 220.0
 ...
 ```
 
@@ -304,7 +305,7 @@ Output formats: human-readable table (default), TSV, JSON. Backed by SQL queries
 Per (failure_type, service) statistics:
 
 - Detection rate (true_positive / (true_positive + false_negative), excluding capability_mismatch and maintenance_suppressed).
-- Detection latency min/max/avg/p50/p95, each with 95% confidence interval.
+- Detection latency min/max/avg/p50/p95, with 95% confidence intervals for p50 and p95.
 - False-positive rate.
 - `capability_mismatch` count (separately surfaced; not folded into detection rate).
 - Sample count (so readers can judge meaning of the percentiles).
@@ -316,7 +317,7 @@ Per (failure_type, service) statistics:
 3. ✅ **Schema migration for `campaign_runs`** — `schema/003_campaign_runs.sql`; `campaign_id` FK on `scenario_runs`. `db.InsertCampaignRun` / `CloseCampaignRun` shipped.
 4. ✅ **Runner outer loop (serial)** — `runner.RunCampaign` walks `Plan.Schedule`, calls existing `Run()` per replay via `WithCampaignRunID`. Per-replay errors don't abort the campaign. Tests in `internal/runner/campaign_test.go`. `cmd/harness` accepts `-campaign=<config.toml>` as a mutually exclusive alternative to `-scenario`; campaign mode runs every enabled service from `services.toml`. Metrics are derived in one batch at campaign end via `measurement.DeriveCampaign`, keyed by `scenario_runs.campaign_id`.
 5. ✅ **Initial `cmd/uptime-bench-report`** — campaign metrics can be summarized from `derived_metrics` into table / TSV / JSON output. Current scope: per-(failure_type, service) samples, detection rate, TP/FN/FP/Unknown/maintenance counts, and latency min/avg/p50/p95/max.
-6. **Full report statistics** — add bias self-checks, confidence intervals, and explicit capability_mismatch counts from `monitor_reports.reason_code`.
+6. ✅ **Full report statistics** — table/JSON reports now include bias self-checks, Wilson 95% detection-rate intervals, deterministic nearest-rank percentile intervals for p50/p95, and explicit `capability_mismatch` counts from `monitor_reports.reason_code`. TSV stays row-only for scripts but includes the additional columns.
 7. **Escalation support** — resolves the "replacement" pattern in the scenario format (per-failure `duration` override or new stage abstraction); generator emits multi-stage scenarios. Layered escalation already works end-to-end.
 
 Each phase is independently mergeable. Phases 1–5 deliver the "campaigns work, no escalation" milestone — that alone produces useful comparison data.
@@ -347,28 +348,29 @@ The methodology choices (which failure types are high-discrimination, what the s
 
 ## Maintenance window suppression
 
-**Status:** Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26. Reviewed/approved → ready to implement. Combined with alert-cooldown work below since they share infrastructure.
+**Status:** Implemented. Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26; scenario parsing, runner capability gating, adapter `ProvisionConfig.MaintenanceWindow`, vendor-side maintenance APIs, and `maintenance_suppressed` metric classification are in place.
 
 Monitors commonly support scheduled maintenance windows during which alerts are suppressed. Testing whether a monitor correctly silences alerts during a declared window is a meaningful accuracy dimension — a monitor that still alerts during maintenance produces false positives; a monitor that never alerts afterward may have also cleared state it shouldn't have.
 
-**What needs to be built:**
+**Implemented pieces:**
 
-- A `ProvisionConfig` extension for maintenance window scheduling (start time, duration).
-- Adapters that support this feature implement it in `Provision`; those that don't produce a `capability_mismatch` Unknown for any scenario that declares a window.
-- A new outcome in the measurement model: `maintenance_suppressed` — failure active, adapter returned Known with no reports, maintenance window was active. Correct behavior, not a false negative.
-- Scenario TOML field (or run parameter) to declare a maintenance window overlay on the failure period. Two natural patterns:
+- `ProvisionConfig.MaintenanceWindow` schedules absolute vendor-side suppression windows.
+- Runner gates scenarios with `[maintenance]` against `SupportsMaintenanceWindows`; unsupported adapters produce `reason_code = "capability_mismatch"` and are not provisioned.
+- The measurement model emits `maintenance_suppressed` when a failure is active, the adapter returned Known with no reports, and the maintenance window covered at least 80% of the failure period. Correct behavior, not a false negative.
+- Scenario TOML supports a `[maintenance]` block with relative `start_offset` and `duration`. Natural patterns:
   - *Overlapping*: window covers the failure entirely (tests "alerts suppressed during maintenance").
   - *Edge*: window ends midway through the failure (tests "alerts fire as soon as window closes, even though failure was already active").
 
-**Per-vendor research needed:**
+**Per-vendor implementation status:**
 
-- *Pingdom* — `Maintenance.create` API exists; check window granularity.
-- *UptimeRobot* — `newMWindow` API; recurring vs one-shot semantics.
-- *Datadog Synthetics* — synthetic tests can be paused, but is there a true scheduled-suppression primitive vs. just `pause`?
-- *Better Uptime* — `policies` and `escalation` API may carry this; not yet checked.
-- *Jetmon* — likely no first-class concept; would need to be modeled at the agent level.
+- *Pingdom* — creates a one-shot maintenance window with the check attached; unit-covered.
+- *UptimeRobot* — creates and attaches a maintenance window; unit-covered.
+- *Datadog Synthetics* — creates downtime scoped to the synthetic monitor id; unit-covered.
+- *Better Uptime* — patches monitor pause/maintenance fields for the requested window; unit-covered.
+- *Jetmon v2* — patches `maintenance_start` / `maintenance_end`; unit-covered and live API-contract covered.
+- *Jetmon v1* — still no first-class bridge/API support; maintenance scenarios gate as `capability_mismatch`.
 
-The capability flag for this is new; add `SupportsMaintenanceWindows` to `Capabilities`.
+Remaining follow-up: run true live fail-during-maintenance scenarios against each vendor to verify suppression behavior, not just API request shape and metric classification.
 
 ---
 

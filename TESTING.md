@@ -122,6 +122,14 @@ make report-campaign CAMPAIGN=<campaign-run-id-or-config-id>
 make report-campaign CAMPAIGN=<campaign-run-id-or-config-id> REPORT_FORMAT=json
 ```
 
+The default table report starts with `#` comment lines that disclose the
+matched campaign scope and bias self-checks, then prints per-failure/service
+statistics. The bias checks cover per-service sample balance,
+per-failure/service cell balance with missing cells rendered as zero,
+capability mismatches, and uncategorized Unknown rows. TSV output is row-only
+for scripts. JSON output wraps the same data as `meta`, `bias_checks`, and
+`summaries`.
+
 ## 6. Available v1 Scenarios
 
 | Scenario | Failure | What it tests |

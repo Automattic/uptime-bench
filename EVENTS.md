@@ -111,6 +111,11 @@ Both Unknown and capability mismatch are recorded with `event_type = unknown`, b
 
 Never count Unknown or capability_mismatch as a false negative in accuracy calculations. Reports that aggregate without filtering on `reason_code` will conflate "the service missed the failure" with "the service was never asked," which is the central data-integrity hazard the harness is built to avoid.
 
+`cmd/uptime-bench-report` loads `monitor_reports.reason_code` alongside
+`derived_metrics`, surfaces `capability_mismatch` counts as a separate report
+column, and emits bias self-checks so sample imbalance or uncategorized Unknown
+rows are visible before latency numbers.
+
 ---
 
 ## Identity and idempotency
