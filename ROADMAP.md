@@ -73,6 +73,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## Operations, testing, and hardening
 
 - **Fleet provisioning and deploy flow** — scripts create config skeletons, install systemd units, handle DNS port conflicts, deploy binaries, and cover target, DNS, harness, and certmint roles.
+- **Deployed fleet smoke tooling** — `deploy/target-smoke.sh` and `deploy/dns-smoke.sh` exercise target HTTP/TCP/TLS injection and DNS-member injection through the real deployed control APIs, including cleanup checks that fail if active failures remain.
 - **Probe IP refresh automation** — `cmd/probe-ips-refresh` generates reviewable probe-range fragments, `make refresh-probe-ips` gives operators a local review command, and a weekly GitHub Action opens a PR with the latest generated fragment for operator review.
 - **Regression coverage** — tests cover parsers, runner error handling, adapter factories, DNS handlers, target handlers, cert selection, campaign anti-favoritism, reporting, and live-test compilation.
 - **CI checks** — build, vet, live-test compilation, race testing, and formatting/tidiness checks are represented in the project workflow.
@@ -118,9 +119,11 @@ Remaining follow-up: broaden live API smoke coverage for each vendor's keyword b
 
 ## TLS target implementation
 
-**Status:** Schema-defined, partially implemented. Active priority.
+**Status:** Target/DNS direct acceptance is implemented; aged-certificate and monitor-facing TLS validation remain active priorities.
 
 The target binary now exposes an HTTPS listener with a generated self-signed fallback certificate. With `-cert-library-manifest`, healthy requests use the longest-valid matching library certificate, while active `tls_expired` and `tls_expiring` failures select the closest matching expired/expiring certificate for the request SNI. `tls_invalid` can force the generated self-signed cert or a generated hostname-mismatch cert, `tls_deprecated` can clamp the HTTPS listener to TLS 1.0 or TLS 1.1, and `tls_handshake` aborts the handshake before certificate selection. Remaining TLS work: deployed-fleet probe acceptance against a real certmint-produced library.
+
+Deployed direct acceptance now covers healthy HTTP/HTTPS, method-sensitive HEAD/GET mismatches, HTTP status/body/redirect/partial/timeout failures, global `tcp_refused`, `tls_invalid` self-signed and hostname-mismatch variants, `tls_handshake`, and `tls_deprecated` across both live cert-library domains. It also covers direct DNS-member injection on both nameservers. Remaining TLS work is narrower: `tls_expired` / `tls_expiring` acceptance once certmint has aged snapshots suitable for those scenarios, plus monitor-facing external probe runs through the adapters.
 
 ### Phase 1 — HTTPS listener with self-signed default
 
@@ -141,7 +144,7 @@ The target binary now exposes an HTTPS listener with a generated self-signed fal
 
 - `tls_handshake`: implemented for target-side config selection by returning a deterministic handshake error before certificate selection. Probe receives a TLS alert; no HTTP response.
 - `tls_deprecated`: implemented for target-side config selection by clamping `tls.Config.MaxVersion` to TLS 1.1 or TLS 1.0. In-process TLS handshake tests cover the target behavior.
-- OpenSSL acceptance: `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active. `deploy/tls-smoke.sh` repeats the protocol checks against deployed targets through the control API. Remaining fleet acceptance is monitor-facing probe smoke against a real certmint-produced library.
+- OpenSSL acceptance: `openssl s_client -tls1_3 ...` fails handshake when `tls_handshake` is active; `openssl s_client -tls1_1 ...` succeeds when `tls_deprecated` is active. `deploy/tls-smoke.sh` repeats the protocol checks against deployed targets through the control API, and `deploy/target-smoke.sh` folds those checks into broader HTTP/TCP/TLS deployed-target acceptance. Remaining fleet acceptance is monitor-facing probe smoke against a real certmint-produced library with aged snapshots for `tls_expired` / `tls_expiring`.
 
 **Measurement note for `tls_deprecated`**: implemented. Because the request actually returns 200 OK, monitor outcomes split three ways: missed advisory, correct `tls_advisory` classification, or false outage report. The measurement engine records these as `tls_advisory_missed`, `tls_advisory_detected`, and `tls_advisory_false_outage`, distinct from true-positive and false-negative.
 

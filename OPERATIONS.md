@@ -212,19 +212,27 @@ After provisioning completes, re-authentication as root is disabled. All subsequ
 
 The script's "Next steps" output at the end of each run lists the exact commands to copy and edit each `.example` file. The next three steps cover the same ground in narrative form.
 
-### 5a. Optional TLS target smoke
+### 5a. Optional deployed-fleet smoke
 
-After a target server is provisioned and deployed, run a data-plane TLS smoke before starting long campaigns:
+After target and DNS servers are provisioned and deployed, run direct data-plane smoke checks before starting long campaigns.
 
 ```sh
 CONTROL_URL=http://203.0.113.20:9000 \
 TARGET_HOST=bench-a.bench-example.com \
 TARGET_IP=203.0.113.20 \
 CONTROL_TOKEN_FILE=/path/to/control-token \
-deploy/tls-smoke.sh
+deploy/target-smoke.sh
+
+CONTROL_URL=http://203.0.113.10:9100 \
+DNS_SERVER=203.0.113.10 \
+TARGET_HOST=bench-a.bench-example.com \
+CONTROL_TOKEN_FILE=/path/to/control-token \
+deploy/dns-smoke.sh
 ```
 
-The script verifies healthy HTTPS, activates `tls_handshake` through the target control API and expects the TLS handshake to fail, then activates `tls_deprecated` and expects OpenSSL to negotiate TLS 1.1. It is a target/fleet acceptance check; monitor-facing API tests still run through ordinary scenarios and adapter live tests.
+`deploy/target-smoke.sh` verifies healthy HTTP/HTTPS, method-sensitive HEAD/GET mismatches, HTTP status/body/redirect/partial/timeout failures, global `tcp_refused`, `tls_invalid`, `tls_handshake`, and `tls_deprecated`, then confirms the target control registry is clean. `deploy/dns-smoke.sh` verifies healthy A records plus `dns_nxdomain`, `dns_servfail`, `dns_timeout`, `dns_cname_nxdomain`, `dns_latency`, and both `dns_ns_unavailable` modes, then confirms the DNS control registry is clean.
+
+These scripts are direct target/fleet acceptance checks. Monitor-facing API tests still run through ordinary scenarios and adapter live tests. The older `deploy/tls-smoke.sh` remains available when you only need a minimal TLS protocol check.
 
 ---
 
