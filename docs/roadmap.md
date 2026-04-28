@@ -92,6 +92,13 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 **Status:** Blocked. Direct deployed target/DNS smoke passed on 2026-04-28; the full harness path against Jetmon v2 is still the next proof point, but the first deployed attempt exposed two prerequisites rather than a product result.
 
+Rechecked on 2026-04-28:
+
+- The Jetmon v2 API health endpoint at the current dev address is reachable from the workstation.
+- The last supplied API token still returns `401 invalid_token` from `/api/v1/me`, so adapter provisioning cannot proceed.
+- The harness server times out when calling the same API health endpoint, so runner-to-API reachability is still blocked.
+- The deployed harness `/etc/uptime-bench/services.toml` still has `jetmon-v2` disabled with no API URL or token configured.
+
 Attempted on 2026-04-28:
 
 - The deployed harness binary was stale and could not parse `http_method_status`; redeploying the current harness fixed that parser gap.
