@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
@@ -20,7 +22,9 @@ import (
 	"github.com/Automattic/uptime-bench/internal/certmint/lockfile"
 	"github.com/Automattic/uptime-bench/internal/certmint/manifest"
 	"github.com/Automattic/uptime-bench/internal/certmint/planner"
+	"github.com/Automattic/uptime-bench/internal/control"
 	"github.com/Automattic/uptime-bench/internal/fleet"
+	"github.com/Automattic/uptime-bench/internal/tokenfile"
 )
 
 // loadFleetEnv reads fleet.toml at path and returns the env-var
@@ -145,6 +149,8 @@ func runDaemon(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	configPath := fs.String("config", "", "config file path")
 	fleetPath := fs.String("fleet", "", "path to fleet.toml — DNS control URLs for ACME hooks are derived from [[nameservers]]. Production systemd unit passes /etc/uptime-bench/fleet.toml; leave empty for ad-hoc local runs")
+	libraryPort := fs.Int("library-port", 9200, "port for the read-only cert-library HTTP API targets poll. 0 disables the server (issuance still runs)")
+	tokenFile := fs.String("token-file", "", "path to control token file (default: CONTROL_TOKEN env var)")
 	dryRun := fs.Bool("dry-run", false, "log due certbot commands without issuing certs")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -169,6 +175,45 @@ func runDaemon(ctx context.Context, args []string) error {
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Optionally start the cert-library HTTP API. Targets poll
+	// /library/manifest.json and /library/{entry_id}/{file} from
+	// here; the port is restricted to a known target list at the
+	// firewall (see deploy/provision-server.sh) and the bearer-token
+	// middleware gates every request.
+	var librarySrv *http.Server
+	if *libraryPort > 0 {
+		token, err := tokenfile.Read(*tokenFile)
+		if err != nil {
+			return fmt.Errorf("certmint: cert-library server token: %w", err)
+		}
+		mux := http.NewServeMux()
+		library.RegisterServerHandlers(mux, library.ManifestPathForConfig(cfg))
+		librarySrv = &http.Server{
+			Addr:    fmt.Sprintf(":%d", *libraryPort),
+			Handler: control.AuthMiddleware(token)(mux),
+		}
+		ln, err := net.Listen("tcp", librarySrv.Addr)
+		if err != nil {
+			return fmt.Errorf("certmint: cert-library listen %s: %w", librarySrv.Addr, err)
+		}
+		go func() {
+			log.Printf("certmint: cert-library API on :%d", *libraryPort)
+			if err := librarySrv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				log.Printf("certmint: cert-library server: %v", err)
+			}
+		}()
+	}
+
+	defer func() {
+		if librarySrv != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := librarySrv.Shutdown(shutdownCtx); err != nil {
+				log.Printf("certmint: cert-library shutdown: %v", err)
+			}
+		}
+	}()
 
 	for {
 		// Reload fleet on each iteration so a fleet.toml edit
