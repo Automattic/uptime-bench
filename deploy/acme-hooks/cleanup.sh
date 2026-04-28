@@ -11,12 +11,12 @@
 
 set -euo pipefail
 
-: "${CERTBOT_IDENTIFIER:?certbot env CERTBOT_IDENTIFIER not set}"
+: "${CERTBOT_DOMAIN:?certbot env CERTBOT_DOMAIN not set}"
 : "${CERTBOT_VALIDATION:?certbot env CERTBOT_VALIDATION not set}"
 : "${UPTIME_BENCH_DNS_CONTROL_URLS:?set UPTIME_BENCH_DNS_CONTROL_URLS to your DNS member control URLs}"
 : "${CONTROL_TOKEN:?set CONTROL_TOKEN to the DNS control token}"
 
-identifier="${CERTBOT_IDENTIFIER#\*.}"
+identifier="${CERTBOT_DOMAIN#\*.}"
 name="_acme-challenge.${identifier}"
 value="${CERTBOT_VALIDATION}"
 

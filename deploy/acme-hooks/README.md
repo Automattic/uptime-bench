@@ -21,7 +21,7 @@ Both hooks read:
 | `UPTIME_BENCH_DNS_CONTROL_URLS` | Space-separated control base URLs, e.g. `http://dns-01.bench:9100 http://dns-02.bench:9100`.     | Set by `cmd/certmint` from `[[nameservers]]` in `fleet.toml`.     |
 | `CONTROL_TOKEN`                 | Bearer token configured on the DNS members.                                                      | Read from `/etc/uptime-bench/certmint.env` via `EnvironmentFile=`. |
 
-Certbot itself populates `CERTBOT_IDENTIFIER`, `CERTBOT_VALIDATION`, and
+Certbot itself populates `CERTBOT_DOMAIN`, `CERTBOT_VALIDATION`, and
 the other `CERTBOT_*` variables.
 
 The `UPTIME_BENCH_DNS_CONTROL_URLS` value isn't carried in
@@ -49,7 +49,7 @@ that flag if certmint stops being authoritative for it.
 
 ## How challenge names are derived
 
-Both hooks strip a leading `*.` from `CERTBOT_IDENTIFIER` and prepend
+Both hooks strip a leading `*.` from `CERTBOT_DOMAIN` and prepend
 `_acme-challenge.`:
 
 ```
@@ -79,14 +79,14 @@ With a DNS member running locally on port 9100:
 ```sh
 export UPTIME_BENCH_DNS_CONTROL_URLS="http://127.0.0.1:9100"
 export CONTROL_TOKEN="$(cat /etc/uptime-bench/control-token)"
-CERTBOT_IDENTIFIER="bench.example.com" \
+CERTBOT_DOMAIN="bench.example.com" \
 CERTBOT_VALIDATION="manual-smoke-token" \
   ./deploy/acme-hooks/auth.sh
 
 dig @127.0.0.1 -p 53 TXT _acme-challenge.bench.example.com +short
 # → "manual-smoke-token"
 
-CERTBOT_IDENTIFIER="bench.example.com" \
+CERTBOT_DOMAIN="bench.example.com" \
 CERTBOT_VALIDATION="manual-smoke-token" \
   ./deploy/acme-hooks/cleanup.sh
 

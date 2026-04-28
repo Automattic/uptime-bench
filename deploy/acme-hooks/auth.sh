@@ -5,17 +5,19 @@
 # --manual-auth-hook /path/to/auth.sh`. Certbot invokes this script
 # once per identifier in the order, with these env vars set:
 #
-#   CERTBOT_IDENTIFIER             e.g. *.bench.example.com or bench.example.com
+#   CERTBOT_DOMAIN                 e.g. bench.example.com (the apex; certbot
+#                                  has already stripped any leading "*.")
 #   CERTBOT_VALIDATION             validation token to install at TXT
 #   CERTBOT_TOKEN                  ACME challenge token (unused here)
 #   CERTBOT_REMAINING_CHALLENGES   countdown, present until 0
-#   CERTBOT_ALL_IDENTIFIERS        comma-separated list of every identifier
+#   CERTBOT_ALL_DOMAINS            comma-separated list of every domain
 #
 # This script writes the validation TXT to every authoritative DNS
 # member listed in $UPTIME_BENCH_DNS_CONTROL_URLS, using the bearer
-# token in $CONTROL_TOKEN. The wildcard prefix `*.` is
-# stripped from the identifier — RFC 8555 §8.4 requires both apex and
-# wildcard authorizations to validate at the same _acme-challenge name.
+# token in $CONTROL_TOKEN. We still defensively strip a leading "*."
+# from CERTBOT_DOMAIN — certbot strips it for the manual plugin today,
+# but the safety strip means a future certbot change won't silently
+# encode a wildcard prefix into the TXT owner name.
 #
 # Usage from certmint config:
 #   "authenticator_args": [
@@ -32,12 +34,12 @@
 
 set -euo pipefail
 
-: "${CERTBOT_IDENTIFIER:?certbot env CERTBOT_IDENTIFIER not set}"
+: "${CERTBOT_DOMAIN:?certbot env CERTBOT_DOMAIN not set}"
 : "${CERTBOT_VALIDATION:?certbot env CERTBOT_VALIDATION not set}"
 : "${UPTIME_BENCH_DNS_CONTROL_URLS:?set UPTIME_BENCH_DNS_CONTROL_URLS to your DNS member control URLs}"
 : "${CONTROL_TOKEN:?set CONTROL_TOKEN to the DNS control token}"
 
-identifier="${CERTBOT_IDENTIFIER#\*.}"
+identifier="${CERTBOT_DOMAIN#\*.}"
 name="_acme-challenge.${identifier}"
 value="${CERTBOT_VALIDATION}"
 
