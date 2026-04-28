@@ -49,7 +49,11 @@ make provision-certmint CERTMINT_HOST=203.0.113.30
 This:
 - Creates `/etc/uptime-bench/`, `/var/lib/uptime-bench-certmint/`, and
   `/var/lib/uptime-bench/certs/` with the right ownership.
-- Installs `certbot` from apt.
+- Installs `certbot` from snap (current upstream release; the apt
+  certbot on Ubuntu 24.04 is too old to support ACME profiles, which
+  the shortlived profile in `certmint.json` depends on). Symlinks
+  `/snap/bin/certbot` to `/usr/bin/certbot` so the daemon's default
+  `binary: "certbot"` setting just works.
 - Installs the systemd unit at `/etc/systemd/system/uptime-bench-certmint.service`
   and enables it (the daemon won't start until the binary is deployed).
 - Installs `/etc/uptime-bench/certmint.example.json` and the RFC2136 example.

@@ -127,12 +127,28 @@ apt-get install -y -qq \
     chrony
 ok "Packages installed"
 
-# Certmint role needs certbot for ACME issuance. Installed only when the
-# role calls for it so other fleet members don't carry an unused
-# Python/letsencrypt-client footprint.
+# Certmint role needs certbot for ACME issuance. Use the snap build
+# rather than apt: Ubuntu 24.04 ships certbot 2.9.0, which predates
+# ACME-profile support — `--required-profile` / `--preferred-profile`
+# are unrecognized and the shortlived profile in cmd/certmint breaks.
+# Snap ships the upstream-maintained current release and auto-updates,
+# matching the certbot project's recommended install path.
+#
+# Idempotent: tolerates apt-certbot being pre-installed (removed with
+# its old config), tolerates snap-certbot already installed (re-run is
+# a no-op refresh), and creates /usr/bin/certbot as a symlink only if
+# nothing's there — operators who hand-managed it locally aren't
+# clobbered.
 if [[ "$TYPE" == "certmint" ]]; then
-    apt-get install -y -qq certbot
-    ok "Installed certbot for certmint role"
+    if ! command -v snap &>/dev/null; then
+        apt-get install -y -qq snapd
+    fi
+    apt-get remove -y -qq certbot 2>/dev/null || true
+    snap install --classic certbot 2>/dev/null || snap refresh certbot
+    if [[ ! -e /usr/bin/certbot ]]; then
+        ln -sf /snap/bin/certbot /usr/bin/certbot
+    fi
+    ok "Installed certbot via snap (current release, ACME-profile support)"
 fi
 
 # ---------------------------------------------------------------------------
