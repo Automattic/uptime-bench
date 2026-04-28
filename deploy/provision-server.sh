@@ -331,6 +331,19 @@ if [[ "$TYPE" == "certmint" ]]; then
         rm -f /tmp/rfc2136.ini.example
         ok "Installed /etc/uptime-bench/rfc2136.ini.example"
     fi
+
+    # Install the certbot manual-auth/manual-cleanup hooks at the
+    # canonical /usr/local/bin paths the example certmint.json
+    # references. These run as root (certbot inherits whatever user
+    # invoked it; certmint runs as root per the systemd unit) so 0755
+    # is fine and lets operators inspect them without sudo.
+    for hook in uptime-bench-acme-auth uptime-bench-acme-cleanup; do
+        if [[ -f /tmp/$hook ]]; then
+            install -m 755 -o root -g root /tmp/$hook /usr/local/bin/$hook
+            rm -f /tmp/$hook
+            ok "Installed /usr/local/bin/$hook"
+        fi
+    done
 fi
 
 # ---------------------------------------------------------------------------

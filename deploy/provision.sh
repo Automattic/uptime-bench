@@ -128,6 +128,14 @@ if [[ "$TYPE" == "certmint" ]]; then
     scp $SCP_OPTS \
         "${REPO_ROOT}/configs/certmint/rfc2136.ini.example" \
         "${SSH_USER}@${HOST}:/tmp/rfc2136.ini.example"
+
+    section "Uploading certbot manual-hook scripts"
+    scp $SCP_OPTS \
+        "${REPO_ROOT}/deploy/acme-hooks/auth.sh" \
+        "${SSH_USER}@${HOST}:/tmp/uptime-bench-acme-auth"
+    scp $SCP_OPTS \
+        "${REPO_ROOT}/deploy/acme-hooks/cleanup.sh" \
+        "${SSH_USER}@${HOST}:/tmp/uptime-bench-acme-cleanup"
 fi
 
 section "Running provisioning on ${HOST} (type: ${TYPE})"

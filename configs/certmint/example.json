@@ -14,11 +14,10 @@
     "logs_dir": "/var/log/uptime-bench-certmint",
     "issuance_timeout": "10m",
     "authenticator_args": [
-      "--dns-rfc2136",
-      "--dns-rfc2136-credentials",
-      "/etc/uptime-bench-certmint/rfc2136.ini",
-      "--dns-rfc2136-propagation-seconds",
-      "60"
+      "--manual",
+      "--preferred-challenges", "dns",
+      "--manual-auth-hook",    "/usr/local/bin/uptime-bench-acme-auth",
+      "--manual-cleanup-hook", "/usr/local/bin/uptime-bench-acme-cleanup"
     ]
   },
   "domains": [
