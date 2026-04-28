@@ -10,23 +10,29 @@ It is not a dashboard benchmark. It is not a pricing comparison. It is a measure
 
 **When the site fails in a specific way, who notices, how fast, and how accurately?**
 
-## Why this exists
+The core benchmark story stays simple:
+
+```text
+scripted failure -> real monitor probes -> normalized evidence -> comparison reports
+```
+
+## Why This Matters
 
 Uptime vendors all publish confidence. They do not publish the same definitions.
 
 One service may probe with `HEAD`, another with `GET`. One may classify TLS trouble precisely, another may call everything "down." One may support content integrity checks, another may only watch status codes. When you compare their dashboards directly, you are often comparing different tests.
 
-`uptime-bench` makes the test itself the controlled variable:
+| Audience | What Gets Better |
+|---|---|
+| Monitoring evaluators | A controlled benchmark instead of dashboard-by-dashboard guesswork. |
+| SRE and operations teams | Ground-truth failure windows, detection latency, false positives, and classification fidelity in one comparable event model. |
+| Product and platform teams | Evidence for which monitor capabilities matter: method behavior, content integrity, DNS, TLS, maintenance, cooldown, and geo-scoped checks. |
+| Adapter contributors | A small service boundary: declare capabilities, provision a monitor, retrieve reports, and normalize vendor vocabulary. |
+| Benchmark readers | Results that separate misses from unsupported, unknown, maintenance-suppressed, and cooldown-suppressed cases. |
 
-- the same target site
-- the same failure window
-- the same ground-truth timestamps
-- the same scenario repeated across every enabled monitor
-- raw vendor output preserved beside normalized metrics
+The final comparison is about monitor behavior, not about guesswork: the same target site, failure window, ground-truth timestamps, scenario definition, and preserved vendor output.
 
-That makes the final comparison about monitor behavior, not about guesswork.
-
-## What it can throw at monitors
+## What It Can Throw At Monitors
 
 The scenario library covers the failure modes that make uptime monitoring interesting:
 
@@ -42,7 +48,7 @@ The scenario library covers the failure modes that make uptime monitoring intere
 
 Some scenarios are deliberately unfair to shallow checks. A page can show a defacement, hidden spam links, or a ransomware demand while the HTTP status is perfectly healthy. That is the point.
 
-## How the system works
+## How The System Works
 
 ```text
 scenario
@@ -70,7 +76,7 @@ The fleet is made of real servers running small Go binaries:
 
 The important rule: **the harness does not special-case services.** Service quirks live in adapters. The comparison layer works from normalized events.
 
-## Services in scope
+## Services In Scope
 
 | Service | Adapter | Notes |
 |---|---|---|
@@ -83,7 +89,7 @@ The important rule: **the harness does not special-case services.** Service quir
 
 New services are added by implementing the adapter interface, declaring capabilities, and mapping vendor event vocabulary into uptime-bench's normalized model.
 
-## What the results mean
+## What The Results Mean
 
 The benchmark records raw facts first, then computes metrics later.
 
@@ -98,7 +104,7 @@ That keeps the data honest:
 
 Unknown, unsupported, and intentionally suppressed cases are not counted as misses. They are part of the support matrix.
 
-## Quick start
+## Try It Locally
 
 For a local fleet:
 
@@ -122,18 +128,18 @@ The local quick start is useful for proving the loop. Real benchmark data comes 
 
 ## Documentation
 
-Start here:
-
-- [Docs index](docs/README.md) - the complete map of project docs
-- [Architecture](docs/architecture.md) - system shape and design principles
-- [Fleet overview](docs/fleet-overview.md) - each deployed component and how they talk
-- [Scenarios](docs/scenarios.md) - the failure library
-- [Scenario format](docs/scenario-format.md) - TOML fields and examples
-- [Adapters](docs/adapters.md) - how monitoring services plug in
-- [Events and metrics](docs/events.md) - output model and scoring rules
-- [Testing guide](docs/testing.md) - local end-to-end setup
-- [Operations guide](docs/operations.md) - deployed fleet provisioning and smoke tests
-- [Roadmap](docs/roadmap.md) - completed work, active priorities, and deferred ideas
+| Document | Start Here For |
+|---|---|
+| [docs/README.md](docs/README.md) | Complete map of project docs |
+| [docs/architecture.md](docs/architecture.md) | System shape and design principles |
+| [docs/fleet-overview.md](docs/fleet-overview.md) | Each deployed component and how they communicate |
+| [docs/scenarios.md](docs/scenarios.md) | Failure library and scenario families |
+| [docs/scenario-format.md](docs/scenario-format.md) | TOML fields and scenario examples |
+| [docs/adapters.md](docs/adapters.md) | How monitoring services plug in |
+| [docs/events.md](docs/events.md) | Output model and scoring rules |
+| [docs/testing.md](docs/testing.md) | Local end-to-end setup |
+| [docs/operations.md](docs/operations.md) | Deployed fleet provisioning and smoke tests |
+| [docs/roadmap.md](docs/roadmap.md) | Completed work, active priorities, and deferred ideas |
 
 ## Status
 
