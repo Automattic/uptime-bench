@@ -46,31 +46,64 @@ const (
 
 	maxCreateAttempts = 5
 	maxEventPages     = 100
+
+	jetmonErrorTimeout       = 1
+	jetmonErrorConnect       = 2
+	jetmonErrorSSL           = 3
+	jetmonErrorRedirect      = 4
+	jetmonErrorKeyword       = 5
+	jetmonErrorTLSExpired    = 6
+	jetmonErrorTLSDeprecated = 7
 )
 
-// classification maps Jetmon v2 event states to uptime-bench's normalized
-// vocabulary. Raw report labels are lower snake case, matching Jetmon v1's
-// existing adapter labels where the concepts overlap.
+// classification maps Jetmon v2 event states and metadata-derived reason
+// labels to uptime-bench's normalized vocabulary. Raw report labels are lower
+// snake case, matching Jetmon v1's existing adapter labels where the concepts
+// overlap.
 var classification = map[string]string{
-	"down":        "http_failure",
-	"seems_down":  "http_failure",
-	"degraded":    "http_failure",
-	"up":          "recovered",
-	"resolved":    "recovered",
-	"warning":     "unknown",
-	"paused":      "unknown",
-	"maintenance": "unknown",
-	"unknown":     "unknown",
+	"down":           "http_failure",
+	"seems_down":     "http_failure",
+	"degraded":       "http_failure",
+	"server":         "http_failure",
+	"client":         "http_failure",
+	"blocked":        "http_failure",
+	"connect":        "http_failure",
+	"redirect":       "http_failure",
+	"timeout":        "timeout",
+	"ssl":            "tls_failure",
+	"https":          "tls_failure",
+	"tls_expired":    "tls_failure",
+	"tls_expiry":     "tls_advisory",
+	"keyword":        "content_failure",
+	"up":             "recovered",
+	"resolved":       "recovered",
+	"tls_deprecated": "tls_advisory",
+	"warning":        "unknown",
+	"paused":         "unknown",
+	"maintenance":    "unknown",
+	"unknown":        "unknown",
 
-	"Down":        "http_failure",
-	"Seems Down":  "http_failure",
-	"Degraded":    "http_failure",
-	"Up":          "recovered",
-	"Resolved":    "recovered",
-	"Warning":     "unknown",
-	"Paused":      "unknown",
-	"Maintenance": "unknown",
-	"Unknown":     "unknown",
+	"Down":           "http_failure",
+	"Seems Down":     "http_failure",
+	"Degraded":       "http_failure",
+	"Server":         "http_failure",
+	"Client":         "http_failure",
+	"Blocked":        "http_failure",
+	"Connect":        "http_failure",
+	"Redirect":       "http_failure",
+	"Timeout":        "timeout",
+	"SSL":            "tls_failure",
+	"HTTPS":          "tls_failure",
+	"TLS Expired":    "tls_failure",
+	"TLS Expiry":     "tls_advisory",
+	"Keyword":        "content_failure",
+	"Up":             "recovered",
+	"Resolved":       "recovered",
+	"TLS Deprecated": "tls_advisory",
+	"Warning":        "unknown",
+	"Paused":         "unknown",
+	"Maintenance":    "unknown",
+	"Unknown":        "unknown",
 }
 
 // Adapter implements adapter.Adapter for Jetmon 2.
@@ -311,10 +344,10 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	reports := make([]adapter.MonitorReport, 0, len(events)*2)
 	for _, ev := range events {
 		startedAt, ok := parseAPITime(ev.StartedAt)
-		if ok && isFailureState(ev.State) {
+		if ok && isReportableEvent(ev) {
 			reports = append(reports, adapter.MonitorReport{
 				EventType:         adapter.EventAlertFired,
-				RawClassification: rawState(ev.State),
+				RawClassification: rawClassification(ev),
 				ReportedAt:        startedAt,
 				RetrievedAt:       now,
 				Metadata:          eventMetadata(ev),
@@ -348,7 +381,7 @@ func (a *Adapter) fetchEvents(ctx context.Context, siteID string, window adapter
 	for page := 0; page < maxEventPages; page++ {
 		q := url.Values{}
 		q.Set("limit", "200")
-		q.Set("check_type", "http")
+		q.Set("check_type__in", "http,tls_expiry")
 		q.Set("started_at__gte", window.FailureStarted.UTC().Format(time.RFC3339))
 		q.Set("started_at__lt", window.GracePeriodEnd.UTC().Format(time.RFC3339))
 		if cursor != "" {
@@ -531,6 +564,53 @@ func isFailureState(state string) bool {
 	}
 }
 
+func isReportableEvent(ev eventResponse) bool {
+	if isFailureState(ev.State) {
+		return true
+	}
+	switch rawClassification(ev) {
+	case "tls_deprecated", "tls_expiry":
+		return true
+	default:
+		return false
+	}
+}
+
+func rawClassification(ev eventResponse) string {
+	if strings.EqualFold(ev.CheckType, "tls_expiry") {
+		return "tls_expiry"
+	}
+	if code, ok := metadataInt(ev.Metadata, "error_code"); ok {
+		switch code {
+		case jetmonErrorTimeout:
+			return "timeout"
+		case jetmonErrorConnect:
+			return "connect"
+		case jetmonErrorSSL:
+			return "ssl"
+		case jetmonErrorRedirect:
+			return "redirect"
+		case jetmonErrorKeyword:
+			return "keyword"
+		case jetmonErrorTLSExpired:
+			return "tls_expired"
+		case jetmonErrorTLSDeprecated:
+			return "tls_deprecated"
+		}
+	}
+	if httpCode, ok := metadataInt(ev.Metadata, "http_code"); ok {
+		switch {
+		case httpCode == http.StatusForbidden:
+			return "blocked"
+		case httpCode >= 500:
+			return "server"
+		case httpCode >= 400:
+			return "client"
+		}
+	}
+	return rawState(ev.State)
+}
+
 func rawState(state string) string {
 	s := strings.ToLower(strings.TrimSpace(state))
 	s = strings.ReplaceAll(s, " ", "_")
@@ -545,6 +625,29 @@ func inRetrieveWindow(t time.Time, window adapter.RunWindow) bool {
 		return true
 	}
 	return !t.After(window.GracePeriodEnd.UTC())
+}
+
+func metadataInt(raw json.RawMessage, key string) (int, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, false
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return 0, false
+	}
+	v, ok := meta[key]
+	if !ok {
+		return 0, false
+	}
+	switch typed := v.(type) {
+	case float64:
+		return int(typed), true
+	case string:
+		parsed, err := strconv.Atoi(typed)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func eventMetadata(ev eventResponse) map[string]any {

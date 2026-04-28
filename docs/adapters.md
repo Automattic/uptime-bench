@@ -4,7 +4,7 @@ This document defines the Go interface all monitor service adapters must impleme
 
 ## Design decisions
 
-- **Normalization lives in the harness.** Adapters return the service's raw classification label unmodified. The harness maps raw labels to uptime-bench's common vocabulary via a per-service normalization table. This keeps service-specific vocabulary out of the interface and allows remapping without touching adapter code.
+- **Normalization lives in the harness.** Adapters return the service's raw classification label, or a service-native reason code exposed in event metadata, without collapsing it to uptime-bench's vocabulary. The harness maps raw labels to uptime-bench's common vocabulary via a per-service normalization table. This keeps service-specific vocabulary out of the interface and allows remapping without touching adapter code.
 - **Retrieve returns a result struct, not a raw slice.** `RetrieveResult` carries an explicit `Status` (Known or Unknown), any reports retrieved, and a reason when Unknown. This handles partial retrieval (some data returned before the API became unavailable) and makes Unknown unambiguous — it is never inferred from an empty slice.
 - **Adapters declare their capabilities.** The harness checks `Capabilities()` before provisioning and skips incompatible scenario/service pairs automatically. This prevents agent-only scenarios from running silently against probe-only services and producing misleading false-negative results.
 - **Adapters block internally in Retrieve.** Each adapter polls its service API internally until data is complete or the context is cancelled. The context deadline is the harness's lever for controlling how long it will wait. This keeps the harness simple and lets each adapter encapsulate its own service's data availability patterns.
@@ -243,7 +243,7 @@ Skipped pairs are recorded in the run output with reason `"capability_mismatch"`
 
 ### Normalization
 
-After Retrieve, the harness asks each adapter to map its `RawClassification` labels to uptime-bench's common vocabulary. Each adapter owns its own mapping table — service-specific knowledge belongs in the adapter, not in the core (CLAUDE.md). Both the raw and normalized labels are stored in the run output.
+After Retrieve, the harness asks each adapter to map its `RawClassification` labels to uptime-bench's common vocabulary. Each adapter owns its own mapping table — service-specific knowledge belongs in the adapter, not in the core (CLAUDE.md). Both the raw and normalized labels are stored in the run output. When a service exposes a generic event state plus a richer machine reason, prefer the richer service-native reason for `RawClassification`; for example, Jetmon v2 events carry `error_code` metadata that distinguishes timeout, TLS, redirect, and keyword failures even when the event state is only `Seems Down`.
 
 ```go
 // On the Adapter interface:

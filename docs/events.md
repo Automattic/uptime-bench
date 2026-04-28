@@ -59,7 +59,7 @@ Monitor report events record what each monitoring service under test reported. W
 | `monitor_service_id` | FK | Which monitoring service reported this. |
 | `target_id` | FK | Which target endpoint was involved. |
 | `event_type` | enum | `alert_fired`, `alert_resolved`, `status_change`, `unknown` |
-| `raw_classification` | string | The service's own label, unmodified. |
+| `raw_classification` | string | The service's own label or service-native reason code, before uptime-bench normalization. |
 | `normalized_classification` | string, null | uptime-bench's normalized label, for cross-service comparison. |
 | `reported_at` | timestamp | When the service recorded this event (service's own clock, if available). |
 | `retrieved_at` | timestamp | When the adapter retrieved this event from the service's API. |

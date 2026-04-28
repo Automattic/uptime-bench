@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -82,18 +83,29 @@ func TestCapabilities(t *testing.T) {
 func TestNormalize(t *testing.T) {
 	a := newTestAdapter("http://x", "tok")
 	cases := map[string]string{
-		"down":        "http_failure",
-		"seems_down":  "http_failure",
-		"degraded":    "http_failure",
-		"Down":        "http_failure",
-		"Seems Down":  "http_failure",
-		"Degraded":    "http_failure",
-		"up":          "recovered",
-		"Resolved":    "recovered",
-		"Warning":     "unknown",
-		"Maintenance": "unknown",
-		"":            adapter.UnrecognizedClassification,
-		"flapping":    adapter.UnrecognizedClassification,
+		"down":           "http_failure",
+		"seems_down":     "http_failure",
+		"degraded":       "http_failure",
+		"server":         "http_failure",
+		"client":         "http_failure",
+		"blocked":        "http_failure",
+		"connect":        "http_failure",
+		"redirect":       "http_failure",
+		"timeout":        "timeout",
+		"ssl":            "tls_failure",
+		"tls_expired":    "tls_failure",
+		"tls_expiry":     "tls_advisory",
+		"tls_deprecated": "tls_advisory",
+		"keyword":        "content_failure",
+		"Down":           "http_failure",
+		"Seems Down":     "http_failure",
+		"Degraded":       "http_failure",
+		"up":             "recovered",
+		"Resolved":       "recovered",
+		"Warning":        "unknown",
+		"Maintenance":    "unknown",
+		"":               adapter.UnrecognizedClassification,
+		"flapping":       adapter.UnrecognizedClassification,
 	}
 	for raw, want := range cases {
 		if got := a.Normalize(raw); got != want {
@@ -403,7 +415,7 @@ func TestRetrieve_HappyPathResolvedEvent(t *testing.T) {
 	if res.Reports[0].EventType != adapter.EventAlertFired {
 		t.Errorf("Reports[0].EventType = %q", res.Reports[0].EventType)
 	}
-	if res.Reports[0].RawClassification != "down" {
+	if res.Reports[0].RawClassification != "server" {
 		t.Errorf("Reports[0].RawClassification = %q", res.Reports[0].RawClassification)
 	}
 	if res.Reports[1].EventType != adapter.EventAlertResolved {
@@ -415,8 +427,12 @@ func TestRetrieve_HappyPathResolvedEvent(t *testing.T) {
 	if c.path != "/api/v1/sites/8000000000000123/events" {
 		t.Errorf("path = %q", c.path)
 	}
-	if !strings.Contains(c.query, "check_type=http") {
-		t.Errorf("query = %q, want check_type=http", c.query)
+	query, err := url.ParseQuery(c.query)
+	if err != nil {
+		t.Fatalf("query parse: %v", err)
+	}
+	if query.Get("check_type__in") != "http,tls_expiry" {
+		t.Errorf("query = %q, want check_type__in=http,tls_expiry", c.query)
 	}
 	if !strings.Contains(c.query, "started_at__gte=") || !strings.Contains(c.query, "started_at__lt=") {
 		t.Errorf("query = %q, want started_at range", c.query)
@@ -531,6 +547,115 @@ func TestRetrieve_LowercaseFailureStatesCountAsFired(t *testing.T) {
 		}
 		if res.Reports[i].RawClassification != raw {
 			t.Fatalf("Reports[%d].RawClassification = %q, want %q", i, res.Reports[i].RawClassification, raw)
+		}
+	}
+}
+
+func TestRetrieve_ClassifiesJetmonMetadata(t *testing.T) {
+	var c captured
+	body := `{
+		"data": [
+			{
+				"id": 1,
+				"site_id": 8000000000000123,
+				"check_type": "http",
+				"severity": 3,
+				"state": "Seems Down",
+				"started_at": "2026-04-25T08:00:00Z",
+				"ended_at": null,
+				"metadata": {"http_code": 0, "error_code": 3},
+				"duration_ms": 1000,
+				"transition_count": 1
+			},
+			{
+				"id": 2,
+				"site_id": 8000000000000123,
+				"check_type": "http",
+				"severity": 3,
+				"state": "Seems Down",
+				"started_at": "2026-04-25T08:01:00Z",
+				"ended_at": null,
+				"metadata": {"http_code": 0, "error_code": 1},
+				"duration_ms": 1000,
+				"transition_count": 1
+			},
+			{
+				"id": 3,
+				"site_id": 8000000000000123,
+				"check_type": "http",
+				"severity": 3,
+				"state": "Seems Down",
+				"started_at": "2026-04-25T08:02:00Z",
+				"ended_at": null,
+				"metadata": {"http_code": 200, "error_code": 5},
+				"duration_ms": 1000,
+				"transition_count": 1
+			},
+			{
+				"id": 4,
+				"site_id": 8000000000000123,
+				"check_type": "http",
+				"severity": 1,
+				"state": "Warning",
+				"started_at": "2026-04-25T08:03:00Z",
+				"ended_at": null,
+				"metadata": {"http_code": 200, "error_code": 7},
+				"duration_ms": 1000,
+				"transition_count": 1
+			},
+			{
+				"id": 5,
+				"site_id": 8000000000000123,
+				"check_type": "tls_expiry",
+				"severity": 1,
+				"state": "Warning",
+				"started_at": "2026-04-25T08:04:00Z",
+				"ended_at": null,
+				"metadata": {"days_until": 5},
+				"duration_ms": 1000,
+				"transition_count": 1
+			},
+			{
+				"id": 6,
+				"site_id": 8000000000000123,
+				"check_type": "http",
+				"severity": 4,
+				"state": "Down",
+				"started_at": "2026-04-25T08:05:00Z",
+				"ended_at": null,
+				"metadata": {"http_code": "403", "error_code": "0"},
+				"duration_ms": 1000,
+				"transition_count": 1
+			}
+		],
+		"page": {"next": null, "limit": 200}
+	}`
+	srv := fakeAPI(t, &c, http.StatusOK, body)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	res, err := a.Retrieve(context.Background(),
+		adapter.MonitorHandle{MonitorID: "8000000000000123"},
+		adapter.RunWindow{
+			FailureStarted: time.Date(2026, 4, 25, 7, 55, 0, 0, time.UTC),
+			GracePeriodEnd: time.Date(2026, 4, 25, 8, 10, 0, 0, time.UTC),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Reports) != 6 {
+		t.Fatalf("reports = %d, want 6", len(res.Reports))
+	}
+
+	wantRaw := []string{"ssl", "timeout", "keyword", "tls_deprecated", "tls_expiry", "blocked"}
+	wantNormalized := []string{"tls_failure", "timeout", "content_failure", "tls_advisory", "tls_advisory", "http_failure"}
+	for i := range wantRaw {
+		if res.Reports[i].RawClassification != wantRaw[i] {
+			t.Fatalf("Reports[%d].RawClassification = %q, want %q", i, res.Reports[i].RawClassification, wantRaw[i])
+		}
+		if got := a.Normalize(res.Reports[i].RawClassification); got != wantNormalized[i] {
+			t.Fatalf("Normalize(%q) = %q, want %q", res.Reports[i].RawClassification, got, wantNormalized[i])
 		}
 	}
 }
