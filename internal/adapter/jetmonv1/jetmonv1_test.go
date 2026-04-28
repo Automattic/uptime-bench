@@ -27,7 +27,7 @@ func TestNormalize(t *testing.T) {
 }
 
 func TestCapabilities(t *testing.T) {
-	c := New("jetmon-v1", "http://localhost:7400", "tok", true).Capabilities()
+	c := New("jetmon-v1", "http://localhost:7400", "tok", false).Capabilities()
 	if c.MinCheckFrequency != time.Minute {
 		t.Errorf("MinCheckFrequency = %v, want 1m", c.MinCheckFrequency)
 	}
@@ -44,10 +44,17 @@ func TestCapabilities(t *testing.T) {
 		t.Error("SupportsMaintenanceWindows should be false until jetmon-bridge supports maintenance windows")
 	}
 	if c.SupportsCooldownReset {
-		t.Error("SupportsCooldownReset should be false until jetmon-bridge can clear alert cooldown state")
+		t.Error("SupportsCooldownReset should be false in read-only mode")
 	}
 	if c.DefaultMaxCallsPerRun != 0 {
 		t.Errorf("DefaultMaxCallsPerRun = %d, want 0 for self-hosted bridge", c.DefaultMaxCallsPerRun)
+	}
+}
+
+func TestCapabilities_WriteModeSupportsCooldownReset(t *testing.T) {
+	c := New("jetmon-v1", "http://localhost:7400", "tok", true).Capabilities()
+	if !c.SupportsCooldownReset {
+		t.Error("SupportsCooldownReset should be true in write mode")
 	}
 }
 

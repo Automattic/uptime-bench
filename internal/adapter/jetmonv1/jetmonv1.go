@@ -82,6 +82,7 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 		MinCheckFrequency:     time.Minute,
 		SupportsKeyword:       false,
 		SupportsAgentChecks:   true,
+		SupportsCooldownReset: a.writeMode,
 		DefaultMaxCallsPerRun: 0, // self-hosted, no API cost limit
 	}
 }

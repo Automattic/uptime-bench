@@ -381,7 +381,7 @@ Edit each `[[services]]` block: set `enabled = true` for the services you want t
 Jetmon 1 has no public API; the adapter talks to a sidecar `jetmon-bridge` that fronts Jetmon's MySQL. Two modes are supported, controlled by the `write_mode` auth key:
 
 - `write_mode = "false"` (default) — read-only. The adapter looks up each target URL in Jetmon's `jetpack_monitor_sites` table during Provision. If the row is missing, the run fails fast with `jetmon-v1: no monitor pre-seeded for <url> — add it to jetpack_monitor_sites`. **You must insert one row per site URL declared in `fleet.toml` before the first scenario runs.** Each row needs at minimum `blog_id`, `bucket_no`, `monitor_url`, `monitor_active = 1`, and a sensible `check_interval`. Rows are persistent — pre-seed once per fleet, not per run.
-- `write_mode = "true"` — read/write. Provision creates (or reactivates) the row automatically; Deprovision soft-deletes it at the end of the run. Use this only if your `jetmon-bridge` deployment was started with write capability enabled, and only against a Jetmon environment whose contents you fully control.
+- `write_mode = "true"` — read/write. Provision creates (or reactivates) the row automatically; Deprovision soft-deletes it at the end of the run. Current `jetmon-bridge` write mode resets `site_status = 1` and refreshes `last_status_change` on both POST and DELETE, so uptime-bench treats this mode as clean-state capable for campaign cooldown gating. Use this only if your `jetmon-bridge` deployment was started with write capability enabled, and only against a Jetmon environment whose contents you fully control.
 
 The API-backed adapters create their monitors via API on every run and have no equivalent pre-seeding step.
 

@@ -4,7 +4,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 **Active priorities (next-up, in rough order):**
 1. [Jetmon v2 deployed scenario smoke](#jetmon-v2-deployed-scenario-smoke) — blocked on a current token and runner-to-API reachability.
-2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs) — next implementable work while Jetmon v2 smoke is blocked.
+2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
 3. [TLS monitor-facing validation](#tls-monitor-facing-validation)
 4. [Live maintenance-window validation](#live-maintenance-window-validation)
 5. [Campaign hardening dry run](#campaign-hardening-dry-run)
@@ -72,7 +72,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 - **Maintenance windows** — scenario parsing, runner gating, adapter provisioning, vendor-side APIs for Pingdom, UptimeRobot, Datadog, Better Uptime, and Jetmon v2, plus `maintenance_suppressed` measurement classification are implemented.
 - **Overlapping failure-window suppression math** — maintenance coverage is computed over the merged union of failure windows, so layered campaign escalations do not double-count overlap when deciding whether an absent alert was suppressed.
-- **Cooldown groundwork** — capability flags, delete/recreate cleanup paths, campaign replay gating, and cooldown-suppression measurement categories exist where supported.
+- **Cooldown reset and classification** — capability flags, delete/recreate cleanup paths, campaign replay gating, Jetmon v1 write-mode bridge reset semantics, and cooldown-suppression measurement categories exist where supported.
 
 ## Operations, testing, and hardening
 
@@ -495,7 +495,7 @@ Acceptance:
 
 ## Alert cooldown interaction between runs
 
-**Status:** Partially implemented. Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26. Capability flags are wired, delete/recreate adapters claim reset support, Jetmon v2 disables alert cooldown at provision time, campaign scheduling enforces per-target spacing, campaign replays now gate adapters without `SupportsCooldownReset`, and the measurement engine emits `cooldown_suppressed` / `cooldown_uncertain` outcomes from retrieve metadata. Remaining work is bridge/API support for Jetmon v1.
+**Status:** Implemented for adapters that can guarantee clean state; live validation remains. Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26. Capability flags are wired, delete/recreate adapters claim reset support, Jetmon v2 disables alert cooldown at provision time, Jetmon v1 write mode claims reset support through the bridge's POST/DELETE state reset semantics, campaign scheduling enforces per-target spacing, campaign replays gate adapters without `SupportsCooldownReset`, and the measurement engine emits `cooldown_suppressed` / `cooldown_uncertain` outcomes from retrieve metadata.
 
 Most monitors suppress repeated alerts for the same site within a cooldown window (commonly 30 minutes). When uptime-bench runs multiple consecutive scenarios against the same provisioned monitor, the second run's alert may be suppressed by the cooldown from the first — producing a result that looks like a missed detection but is actually the monitor working correctly.
 
@@ -510,11 +510,11 @@ Most monitors suppress repeated alerts for the same site within a cooldown windo
 - *Datadog Synthetics* — delete/recreate cycles the synthetic test and attached monitor state; `SupportsCooldownReset = true`.
 - *Better Uptime* — delete/recreate cycles monitor and incident state; `SupportsCooldownReset = true`.
 - *Jetmon v2* — adapter provisions sites with `alert_cooldown_minutes = 0`; `SupportsCooldownReset = true`.
-- *Jetmon v1* — still needs bridge/API support; campaign runs gate it as `capability_mismatch`. The bridge should expose an explicit alert-state reset path, or document that delete/reactivate clears Jetmon's cooldown fields, before the adapter claims `SupportsCooldownReset = true`.
+- *Jetmon v1* — write-mode bridge runs reset `site_status` / `last_status_change` on POST and DELETE, so `SupportsCooldownReset = true` only when `auth.write_mode = "true"`; read-only bridge runs still gate as `capability_mismatch`.
 
 Each adapter must document how it handles this in its implementation notes.
 
-This and "Maintenance window suppression" should be designed together — they're both ways the monitor's *current state* affects future detections, and both want the same cross-cutting infrastructure (a per-adapter "reset to clean state" capability that Deprovision can call, and a measurement category for "suppressed but correct").
+Remaining follow-up: deploy the updated bridge and run a back-to-back Jetmon v1 write-mode scenario pair to confirm the reset behavior with the real worker loop.
 
 ---
 
