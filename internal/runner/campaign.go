@@ -158,7 +158,7 @@ func RunCampaign(
 			continue
 		}
 
-		if _, err := Run(ctx, sc, fl, database, adapters, svcCfg, WithCampaignRunID(campaignRunID)); err != nil {
+		if _, err := Run(ctx, sc, fl, database, adapters, svcCfg, WithCampaignRunID(campaignRunID), withRequireCooldownReset()); err != nil {
 			// Per-replay failure isolation: log and continue. The
 			// scenario_runs row carries its own resolution_reason for
 			// downstream querying.

@@ -378,7 +378,7 @@ Each phase is independently mergeable. Phases 1–5 deliver the "campaigns work,
 
 ### Cross-cutting concerns
 
-- **Budget interplay with vendor cooldowns**: even with `cooldown.per_target_minimum`, vendor-side alert cooldowns may suppress the second of two same-target runs that fire close together. The cooldown-reset capability flag (already designed; Phase B implementations in progress) handles this. Campaigns require `SupportsCooldownReset = true` on every adapter they touch; adapters where it's false get gated as `capability_mismatch` for the campaign's runs. Currently all probe-based adapters with Phase B set this true (delete-recreate cycles state); Jetmon-v1 needs bridge work to do the same.
+- **Budget interplay with vendor cooldowns**: even with `cooldown.per_target_minimum`, vendor-side alert cooldowns may suppress the second of two same-target runs that fire close together. Campaign replays now require `SupportsCooldownReset = true`; adapters where it's false get gated as `capability_mismatch` for the campaign's runs. Currently all probe-based adapters with Phase B set this true (delete-recreate cycles state); Jetmon-v1 needs bridge work to do the same.
 - **Concurrent execution**: a 1,000-run campaign at ~8 minutes per scenario is ~133 sequential hours. Campaigns must run scenarios concurrently across non-overlapping (target, service) pairs. The runner currently runs one scenario at a time end-to-end; concurrent campaign mode is an explicit extension. Open question for the design pass: where the parallelism axis lives (per-target, per-service, per-(target,service) pair). Single-scenario mode remains serial.
 - **Reproducibility under randomness**: every campaign records its master seed and config in `campaign_runs`. Re-running with the same seed against the same fleet+adapter versions produces the same design set and schedule. The project's existing reproducibility invariant scales to campaigns.
 - **Per-stage keyword config (deferred)**: the scenario format carries one `Keyword` + `KeywordCheck` pair per run. An escalation that mixes a `keyword_injected` stage with a non-injected http_body stage (`ransomware`, `defacement`, `keyword_missing`, …) collapses to `KeywordCheck="absent"` with the injected keyword, silencing the canary-missing signal the non-injected stage was meant to measure. `applyHTTPBodyDefaults` documents this. The fix is per-failure `Keyword`/`KeywordCheck` fields and adapter rework to switch keyword config mid-run — most adapters configure once at Provision and can't. Before paying that cost, instrument prevalence in real campaign runs (log when a translated scenario contains a mixed-content escalation) and only schedule the schema change if mixed escalations are >5% of designs in practice.
@@ -430,7 +430,7 @@ Remaining follow-up: run true live fail-during-maintenance scenarios against eac
 
 ## Alert cooldown interaction between runs
 
-**Status:** Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26. Designed alongside maintenance windows above; implementation gated on user review of the spec.
+**Status:** Partially implemented. Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26. Capability flags are wired, delete/recreate adapters claim reset support, Jetmon v2 disables alert cooldown at provision time, and campaign replays now gate adapters without `SupportsCooldownReset`. Remaining work is bridge/API support for Jetmon v1 and measurement classifications for residual cooldown-suppressed or cooldown-uncertain outcomes.
 
 Most monitors suppress repeated alerts for the same site within a cooldown window (commonly 30 minutes). When uptime-bench runs multiple consecutive scenarios against the same provisioned monitor, the second run's alert may be suppressed by the cooldown from the first — producing a result that looks like a missed detection but is actually the monitor working correctly.
 
@@ -438,13 +438,14 @@ Most monitors suppress repeated alerts for the same site within a cooldown windo
 
 **If the API doesn't support either:** record the cooldown state at the time of Retrieve and include it in `MonitorReport.Metadata`. The measurement engine then classifies the suppressed result separately rather than as a false negative.
 
-**Per-vendor research needed:**
+**Current implementation status:**
 
-- *Pingdom* — `pause` / `unpause` resets some state; investigate whether it resets cooldown.
-- *UptimeRobot* — `editMonitor status=0` then `status=1` toggles; behavior on cooldown unknown.
-- *Datadog Synthetics* — alert state can be reset via the monitor (not synthetic) API; cross-product API touch.
-- *Better Uptime* — incident closure resets some state; documentation is sparse.
-- *Jetmon* — under operator control via the bridge; trivial.
+- *Pingdom* — delete/recreate cycles check state; `SupportsCooldownReset = true`.
+- *UptimeRobot* — delete/recreate cycles monitor state; `SupportsCooldownReset = true`.
+- *Datadog Synthetics* — delete/recreate cycles the synthetic test and attached monitor state; `SupportsCooldownReset = true`.
+- *Better Uptime* — delete/recreate cycles monitor and incident state; `SupportsCooldownReset = true`.
+- *Jetmon v2* — adapter provisions sites with `alert_cooldown_minutes = 0`; `SupportsCooldownReset = true`.
+- *Jetmon v1* — still needs bridge/API support; campaign runs gate it as `capability_mismatch`.
 
 Each adapter must document how it handles this in its implementation notes.
 

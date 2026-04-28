@@ -39,13 +39,21 @@ type recorder interface {
 type RunOption func(*runOpts)
 
 type runOpts struct {
-	campaignRunID string
+	campaignRunID        string
+	requireCooldownReset bool
 }
 
 // WithCampaignRunID stamps the given campaign_run_id on the run row so
 // downstream queries can group every replay back to its parent campaign.
 func WithCampaignRunID(id string) RunOption {
 	return func(o *runOpts) { o.campaignRunID = id }
+}
+
+// withRequireCooldownReset gates adapters that cannot clear alert
+// cooldown state between runs. It is used by campaign mode, where many
+// repeated same-target replays make cooldown carry-over a real bias.
+func withRequireCooldownReset() RunOption {
+	return func(o *runOpts) { o.requireCooldownReset = true }
 }
 
 // Run executes a scenario end-to-end and returns the run ID.
@@ -160,7 +168,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		budgets[a.ServiceID()] = limit
 	}
 
-	handles, provisionErr := provisionAdapters(ctx, sc, target, adapters, database, runID, startedAt)
+	handles, provisionErr := provisionAdapters(ctx, sc, target, adapters, database, runID, startedAt, o.requireCooldownReset)
 	if provisionErr {
 		resolutionReason = "adapter_error"
 	}
@@ -432,6 +440,7 @@ func provisionAdapters(
 	database recorder,
 	runID string,
 	startedAt time.Time,
+	requireCooldownReset bool,
 ) (handles []provisioned, provisionErr bool) {
 	for _, a := range adapters {
 		caps := a.Capabilities()
@@ -467,6 +476,15 @@ func provisionAdapters(
 			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
 				Status:     adapter.RetrieveUnknown,
 				Reason:     "scenario requires a [maintenance] block; adapter SupportsMaintenanceWindows = false",
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
+		if requireCooldownReset && !caps.SupportsCooldownReset {
+			log.Printf("runner: skip %s: campaign requires cooldown reset support", a.ServiceID())
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     "campaign replays require clean alert state; adapter SupportsCooldownReset = false",
 				ReasonCode: adapter.ReasonCapabilityMismatch,
 			})
 			continue

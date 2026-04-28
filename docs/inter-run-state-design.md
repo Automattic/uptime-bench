@@ -1,6 +1,6 @@
 # Inter-run monitor state — design spec
 
-**Status:** Partially implemented, updated 2026-04-28. The maintenance-window half of this design has landed in scenario parsing, runner gating, adapter provisioning, and measurement. The cooldown-reset half is partly represented by `SupportsCooldownReset` flags and delete/recreate adapter behavior, but the measurement categories for cooldown suppression remain future work.
+**Status:** Partially implemented, updated 2026-04-28. The maintenance-window half of this design has landed in scenario parsing, runner gating, adapter provisioning, and measurement. The cooldown-reset half now has `SupportsCooldownReset` flags, delete/recreate adapter behavior, Jetmon v2 zero-cooldown provisioning, and campaign replay gating for adapters that cannot reset cooldown state. Measurement categories for residual cooldown suppression remain future work.
 
 ## Why these two features belong in one spec
 
@@ -36,7 +36,7 @@ This table is the load-bearing reference. Each entry below was verified against 
 | Better Uptime | Monitor is delete-recreated each run (current adapter behaviour). Any incident state from the prior monitor doesn't transfer. | **No additional work needed.** |
 | Jetmon (self-hosted) | Direct DB access via the bridge; trivial to add a `clear_alert_state` endpoint. Currently the adapter (in write mode) creates/reactivates rows; would need bridge-side support to also clear `last_alert_at` or equivalent. | Implement alongside maintenance window bridge changes. |
 
-**Implication:** all four probe-based adapters get cooldown reset essentially for free because they already delete+recreate per run. `SupportsCooldownReset = true` is the default for the four; only Jetmon needs bridge work to claim it.
+**Implication:** all four probe-based adapters get cooldown reset essentially for free because they already delete+recreate per run. `SupportsCooldownReset = true` is the default for the four; Jetmon v2 disables alert cooldown at provision time; Jetmon v1 still needs bridge work to claim it. Campaign replays now enforce this flag and record `capability_mismatch` rows for adapters that cannot guarantee clean alert state.
 
 ## Decisions
 
@@ -180,7 +180,8 @@ For each adapter:
 
 1. [done] Update `internal/measurement` to compute `maintenance_suppressed`.
 2. [done] Add the 80%-overlap threshold logic with tests for fully covered, below-threshold partial coverage, above-threshold partial coverage, alert-during-maintenance, and no-maintenance cases.
-3. Pending cooldown work: implement `cooldown_suppressed` / `cooldown_uncertain` classification once prior-run state tracking is designed.
+3. [done] Campaign replay gating requires `SupportsCooldownReset` and records `capability_mismatch` when an adapter cannot guarantee clean alert state.
+4. Pending cooldown work: implement `cooldown_suppressed` / `cooldown_uncertain` classification once prior-run state tracking is designed.
 
 ## What this spec deliberately doesn't cover
 

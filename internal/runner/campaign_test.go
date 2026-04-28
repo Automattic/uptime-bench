@@ -48,6 +48,7 @@ func TestRunCampaign_HappyPath(t *testing.T) {
 	f.Adapters = []adapter.Adapter{
 		&runtest.SimpleAdapter{
 			ID:            "svc-a",
+			Caps:          adapter.Capabilities{SupportsCooldownReset: true},
 			RetrieveValue: adapter.RetrieveResult{Status: adapter.RetrieveKnown},
 		},
 	}
@@ -102,6 +103,51 @@ func TestRunCampaign_HappyPath(t *testing.T) {
 	if f.Recorder.Runs[0].CampaignID != campaignRunID {
 		t.Errorf("Runs[0].CampaignID = %q, want %q (campaign_id must be stamped on every scenario_runs row)",
 			f.Recorder.Runs[0].CampaignID, campaignRunID)
+	}
+	if len(f.Recorder.MonitorReports) != 0 {
+		t.Fatalf("MonitorReports = %+v, want none for known/no-report happy path", f.Recorder.MonitorReports)
+	}
+}
+
+// TestRunCampaign_GatesAdaptersWithoutCooldownReset verifies campaign mode
+// enforces clean inter-run alert state. Single scenario runs may still use
+// adapters without SupportsCooldownReset, but campaign replays record a
+// capability_mismatch because repeated samples can otherwise be biased by
+// vendor-side cooldown carry-over.
+func TestRunCampaign_GatesAdaptersWithoutCooldownReset(t *testing.T) {
+	f := runtest.NewFixture(t)
+	f.Adapters = []adapter.Adapter{
+		&runtest.SimpleAdapter{
+			ID:            "svc-a",
+			Caps:          adapter.Capabilities{SupportsCooldownReset: false},
+			RetrieveValue: adapter.RetrieveResult{Status: adapter.RetrieveKnown},
+		},
+	}
+
+	c := smallCampaign(t, []string{"bench"}, []string{"single"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := runner.RunCampaign(ctx, c, c.Seed, f.Fleet, f.Recorder, f.Adapters, f.Services, runner.RunCampaignOptions{}); err != nil {
+		t.Fatalf("RunCampaign: %v", err)
+	}
+
+	if len(f.Recorder.Runs) != 1 {
+		t.Fatalf("Runs = %d, want 1 replay row", len(f.Recorder.Runs))
+	}
+	if len(f.Recorder.MonitorReports) != 1 {
+		t.Fatalf("MonitorReports = %+v, want one capability_mismatch row", f.Recorder.MonitorReports)
+	}
+	row := f.Recorder.MonitorReports[0]
+	if row.ServiceID != "svc-a" {
+		t.Errorf("ServiceID = %q, want svc-a", row.ServiceID)
+	}
+	if row.ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("ReasonCode = %q, want %q", row.ReasonCode, adapter.ReasonCapabilityMismatch)
+	}
+	if !strings.Contains(row.RetrieveUnknownReason, "SupportsCooldownReset") {
+		t.Errorf("RetrieveUnknownReason = %q, want SupportsCooldownReset detail", row.RetrieveUnknownReason)
 	}
 }
 

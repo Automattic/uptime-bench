@@ -485,7 +485,7 @@ func TestProvisionAdapters_MinCheckFrequencyGate(t *testing.T) {
 	sc := &scenario.Scenario{Target: "bench", CheckFrequency: 30 * time.Second}
 
 	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
-		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if provisionErr {
 		t.Errorf("provisionErr = true, want false (gate skip is not an adapter error)")
@@ -519,7 +519,7 @@ func TestProvisionAdapters_KeywordGate(t *testing.T) {
 	sc := &scenario.Scenario{Target: "bench", Keyword: "uptime-bench-canary", KeywordCheck: "present"}
 
 	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
-		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if a.provisionedAs != nil {
 		t.Errorf("Provision should be skipped when keyword required and SupportsKeyword=false")
@@ -547,7 +547,7 @@ func TestProvisionAdapters_InvertedKeywordGate(t *testing.T) {
 	sc := &scenario.Scenario{Target: "bench", Keyword: "HACKED", KeywordCheck: adapter.KeywordCheckAbsent}
 
 	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
-		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if a.provisionedAs != nil {
 		t.Error("Provision should be skipped when keyword_check=absent and SupportsInvertedKeyword=false")
@@ -575,7 +575,7 @@ func TestProvisionAdapters_MaintenanceWindowGate(t *testing.T) {
 	}
 
 	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
-		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if a.provisionedAs != nil {
 		t.Error("Provision should be skipped when [maintenance] requested and SupportsMaintenanceWindows=false")
@@ -585,6 +585,39 @@ func TestProvisionAdapters_MaintenanceWindowGate(t *testing.T) {
 	}
 	if !strings.Contains(rec.monitorReportRows[0].RetrieveUnknownReason, "SupportsMaintenanceWindows") {
 		t.Errorf("Reason should mention SupportsMaintenanceWindows, got %q", rec.monitorReportRows[0].RetrieveUnknownReason)
+	}
+}
+
+// TestProvisionAdapters_CooldownResetGate — campaign mode requires
+// clean alert state between repeated replays. When the caller asks for
+// cooldown reset support and an adapter cannot provide it, the adapter
+// is gated as a capability_mismatch rather than producing biased
+// campaign data.
+func TestProvisionAdapters_CooldownResetGate(t *testing.T) {
+	a := &gateTestAdapter{
+		id:   "svc",
+		caps: adapter.Capabilities{SupportsCooldownReset: false},
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{Target: "bench", CheckFrequency: time.Minute}
+
+	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), true)
+
+	if provisionErr {
+		t.Errorf("provisionErr = true, want false (cooldown gate skip is not an adapter error)")
+	}
+	if len(handles) != 0 {
+		t.Errorf("handles = %d, want 0 (adapter was gated)", len(handles))
+	}
+	if a.provisionedAs != nil {
+		t.Errorf("Provision was called despite cooldown gate; got config %+v", a.provisionedAs)
+	}
+	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Fatalf("expected one capability_mismatch row, got %+v", rec.monitorReportRows)
+	}
+	if !strings.Contains(rec.monitorReportRows[0].RetrieveUnknownReason, "SupportsCooldownReset") {
+		t.Errorf("Reason should mention SupportsCooldownReset, got %q", rec.monitorReportRows[0].RetrieveUnknownReason)
 	}
 }
 
@@ -612,7 +645,7 @@ func TestProvisionAdapters_HappyPath(t *testing.T) {
 	}
 
 	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
-		[]adapter.Adapter{a}, rec, "run-1", startedAt)
+		[]adapter.Adapter{a}, rec, "run-1", startedAt, false)
 
 	if provisionErr {
 		t.Errorf("provisionErr = true, want false")
@@ -648,7 +681,7 @@ func TestProvisionAdapters_ProvisionErrorSetsFlag(t *testing.T) {
 	sc := &scenario.Scenario{Target: "bench", CheckFrequency: time.Minute}
 
 	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
-		[]adapter.Adapter{a}, rec, "run-1", time.Now())
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if !provisionErr {
 		t.Errorf("provisionErr = false, want true (Provision returned an error)")
@@ -691,7 +724,7 @@ func TestProvisionAdapters_MixedAdapters(t *testing.T) {
 	}
 
 	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
-		[]adapter.Adapter{good, gated, failing}, rec, "run-1", time.Now())
+		[]adapter.Adapter{good, gated, failing}, rec, "run-1", time.Now(), false)
 
 	if !provisionErr {
 		t.Errorf("provisionErr should be true because 'failing' errored")
