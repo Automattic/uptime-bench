@@ -149,7 +149,11 @@ func Generate(c *Campaign, masterSeed int64) (*Plan, error) {
 		return nil, fmt.Errorf("campaign: Generate: every cell resolved to zero samples")
 	}
 
-	plan.Schedule = generateSchedule(plan.Designs, c.Duration, masterSeed)
+	schedule, err := generateSchedule(plan.Designs, c.Duration, c.Cooldown.PerTargetMinimum, masterSeed)
+	if err != nil {
+		return nil, err
+	}
+	plan.Schedule = schedule
 	return plan, nil
 }
 
@@ -330,30 +334,34 @@ func pickEscalation(r *rand.Rand, c *Campaign, baseFailureType string, scenarioD
 	return out
 }
 
-// generateSchedule lays out replays evenly across the campaign duration.
-// Distribution is uniform with deterministic jitter; per-target cooldown
-// and hour-of-day spread are runner-level concerns (the runner can skip
-// or defer slots that violate constraints, since cooldown enforcement
-// at scheduling time would require knowing the per-replay scenario
-// runtime, which depends on adapter behaviour the generator can't see).
-func generateSchedule(designs []Design, campaignDuration time.Duration, masterSeed int64) []ReplaySlot {
+// replayPair is the generator's internal representation of one requested
+// replay before it has a campaign offset.
+type replayPair struct {
+	design int
+	replay int
+}
+
+// generateSchedule lays out replays across the campaign duration. It first
+// tries the original uniform jittered grid. If that would violate the
+// campaign's per-target cooldown, it falls back to a cooldown-aware layout
+// that keeps every target's planned starts at least cooldown apart.
+func generateSchedule(designs []Design, campaignDuration, cooldown time.Duration, masterSeed int64) ([]ReplaySlot, error) {
 	total := 0
 	for _, d := range designs {
 		total += d.Replays
 	}
 	if total == 0 {
-		return nil
+		return nil, nil
 	}
 
 	r := newRand(deriveSeed(masterSeed, "schedule", 0))
 
 	// Build a flat list of (design index, replay index) pairs and shuffle
 	// it. Each pair gets one slot in the time grid.
-	type pair struct{ design, replay int }
-	pairs := make([]pair, 0, total)
+	pairs := make([]replayPair, 0, total)
 	for di, d := range designs {
 		for ri := 0; ri < d.Replays; ri++ {
-			pairs = append(pairs, pair{design: di, replay: ri})
+			pairs = append(pairs, replayPair{design: di, replay: ri})
 		}
 	}
 	// Fisher-Yates shuffle for deterministic randomization.
@@ -362,6 +370,15 @@ func generateSchedule(designs []Design, campaignDuration time.Duration, masterSe
 		pairs[i], pairs[j] = pairs[j], pairs[i]
 	}
 
+	slots := generateUniformSchedule(designs, pairs, campaignDuration, r)
+	if cooldown <= 0 || scheduleRespectsTargetCooldown(slots, designsByID(designs), cooldown) {
+		return slots, nil
+	}
+	return generateCooldownSchedule(designs, pairs, campaignDuration, cooldown)
+}
+
+func generateUniformSchedule(designs []Design, pairs []replayPair, campaignDuration time.Duration, r *rand.Rand) []ReplaySlot {
+	total := len(pairs)
 	slot := campaignDuration / time.Duration(total)
 	slots := make([]ReplaySlot, len(pairs))
 	for i, p := range pairs {
@@ -387,6 +404,92 @@ func generateSchedule(designs []Design, campaignDuration time.Duration, masterSe
 		return slots[i].Offset < slots[j].Offset
 	})
 	return slots
+}
+
+func generateCooldownSchedule(designs []Design, pairs []replayPair, campaignDuration, cooldown time.Duration) ([]ReplaySlot, error) {
+	targetReplayCounts := make(map[string]int)
+	for _, p := range pairs {
+		for _, target := range designs[p.design].Targets {
+			targetReplayCounts[target]++
+		}
+	}
+	for target, count := range targetReplayCounts {
+		requiredSpan := time.Duration(count-1) * cooldown
+		if requiredSpan >= campaignDuration {
+			return nil, fmt.Errorf("campaign: schedule infeasible: target %q has %d replays requiring %v spacing, which does not fit within %v",
+				target, count, cooldown, campaignDuration)
+		}
+	}
+
+	targetPositions := make(map[string]int, len(targetReplayCounts))
+	slots := make([]ReplaySlot, len(pairs))
+	var latest time.Duration
+	for i, p := range pairs {
+		targets := designs[p.design].Targets
+		var offset time.Duration
+		for _, target := range targets {
+			candidate := time.Duration(targetPositions[target]) * cooldown
+			if candidate > offset {
+				offset = candidate
+			}
+		}
+		for _, target := range targets {
+			targetPositions[target]++
+		}
+		if offset > latest {
+			latest = offset
+		}
+		slots[i] = ReplaySlot{
+			DesignID: designs[p.design].ID,
+			Index:    p.replay,
+			Offset:   offset,
+		}
+	}
+
+	if latest > 0 {
+		scaleTo := campaignDuration - time.Nanosecond
+		if scaleTo > latest {
+			scale := float64(scaleTo) / float64(latest)
+			for i := range slots {
+				slots[i].Offset = time.Duration(float64(slots[i].Offset) * scale)
+			}
+		}
+	}
+
+	sort.SliceStable(slots, func(i, j int) bool {
+		return slots[i].Offset < slots[j].Offset
+	})
+	if !scheduleRespectsTargetCooldown(slots, designsByID(designs), cooldown) {
+		return nil, fmt.Errorf("campaign: internal error: generated schedule violates per-target cooldown %v", cooldown)
+	}
+	return slots, nil
+}
+
+func scheduleRespectsTargetCooldown(slots []ReplaySlot, designs map[string]Design, cooldown time.Duration) bool {
+	lastByTarget := make(map[string]time.Duration)
+	seenByTarget := make(map[string]bool)
+	for _, slot := range slots {
+		design, ok := designs[slot.DesignID]
+		if !ok {
+			continue
+		}
+		for _, target := range design.Targets {
+			if seenByTarget[target] && slot.Offset-lastByTarget[target] < cooldown {
+				return false
+			}
+			lastByTarget[target] = slot.Offset
+			seenByTarget[target] = true
+		}
+	}
+	return true
+}
+
+func designsByID(designs []Design) map[string]Design {
+	out := make(map[string]Design, len(designs))
+	for _, d := range designs {
+		out[d.ID] = d
+	}
+	return out
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

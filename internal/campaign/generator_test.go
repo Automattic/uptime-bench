@@ -3,6 +3,7 @@ package campaign
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,7 +44,7 @@ status_code_choices = [503, 502, 504]
 type = "tcp_refused"
 
 [cooldown]
-per_target_minimum = "5m"
+per_target_minimum = "0s"
 `))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -147,18 +148,94 @@ func TestGenerate_ScheduleSortedAndWithinDuration(t *testing.T) {
 	c := generatorTestCampaign(t)
 	plan, _ := Generate(c, 42)
 
-	if !sort.SliceIsSorted(plan.Schedule, func(i, j int) bool {
-		return plan.Schedule[i].Offset < plan.Schedule[j].Offset
+	assertScheduleSortedAndWithinDuration(t, plan.Schedule, c.Duration)
+}
+
+func assertScheduleSortedAndWithinDuration(t *testing.T, schedule []ReplaySlot, duration time.Duration) {
+	t.Helper()
+	if !sort.SliceIsSorted(schedule, func(i, j int) bool {
+		return schedule[i].Offset < schedule[j].Offset
 	}) {
 		t.Error("schedule is not sorted by Offset")
 	}
-	for _, s := range plan.Schedule {
+	for _, s := range schedule {
 		if s.Offset < 0 {
 			t.Errorf("slot %s/%d has negative offset %v", s.DesignID, s.Index, s.Offset)
 		}
-		if s.Offset >= c.Duration {
-			t.Errorf("slot %s/%d offset %v exceeds campaign duration %v", s.DesignID, s.Index, s.Offset, c.Duration)
+		if s.Offset >= duration {
+			t.Errorf("slot %s/%d offset %v exceeds campaign duration %v", s.DesignID, s.Index, s.Offset, duration)
 		}
+	}
+}
+
+func TestGenerate_ScheduleRespectsPerTargetCooldown(t *testing.T) {
+	c, err := Parse([]byte(`
+id              = "cooldown-gen"
+duration        = "1h"
+seed            = 0
+check_frequency = "60s"
+
+[targets]
+pool     = ["bench-a"]
+patterns = ["single"]
+
+[duration_buckets]
+brief = { min = "1m", max = "2m" }
+
+[sampling]
+samples_per_cell_default = 6
+
+[[failure_types]]
+type = "tcp_refused"
+
+[cooldown]
+per_target_minimum = "10m"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, err := Generate(c, 42)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !scheduleRespectsTargetCooldown(plan.Schedule, designsByID(plan.Designs), c.Cooldown.PerTargetMinimum) {
+		t.Fatalf("schedule does not respect per-target cooldown: %+v", plan.Schedule)
+	}
+	assertScheduleSortedAndWithinDuration(t, plan.Schedule, c.Duration)
+}
+
+func TestGenerate_ScheduleCooldownInfeasible(t *testing.T) {
+	c, err := Parse([]byte(`
+id              = "cooldown-infeasible"
+duration        = "20m"
+seed            = 0
+check_frequency = "60s"
+
+[targets]
+pool     = ["bench-a"]
+patterns = ["single"]
+
+[duration_buckets]
+brief = { min = "1m", max = "2m" }
+
+[sampling]
+samples_per_cell_default = 4
+
+[[failure_types]]
+type = "tcp_refused"
+
+[cooldown]
+per_target_minimum = "10m"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	_, err = Generate(c, 42)
+	if err == nil {
+		t.Fatal("expected Generate to reject an infeasible cooldown schedule")
+	}
+	if !strings.Contains(err.Error(), "schedule infeasible") {
+		t.Fatalf("Generate error = %v, want schedule infeasible", err)
 	}
 }
 
