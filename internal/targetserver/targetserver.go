@@ -202,7 +202,7 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if spec, ok := h.Registry.Lookup("http_timeout", host, path); ok {
+	if spec, ok := h.Registry.Lookup("http_timeout", host, path); ok && matchesRequestMethod(spec, r.Method) {
 		delay := spec.Duration
 		if d, ok := spec.Params["delay"]; ok {
 			if ds, ok := d.(string); ok {
@@ -222,7 +222,7 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if spec, ok := h.Registry.Lookup("http_partial", host, path); ok {
+	if spec, ok := h.Registry.Lookup("http_partial", host, path); ok && matchesRequestMethod(spec, r.Method) {
 		truncate := paramInt(spec.Params["truncate_after_bytes"], 64)
 		body := healthyPageHTML(host, path)
 		w.Header().Set("Content-Type", "text/html")
@@ -242,7 +242,7 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if spec, ok := h.Registry.Lookup("http_body", host, path); ok {
+	if spec, ok := h.Registry.Lookup("http_body", host, path); ok && matchesRequestMethod(spec, r.Method) {
 		content, _ := spec.Params["content"].(string)
 		keyword, _ := spec.Params["keyword"].(string)
 		// Don't write the 200 header until we know the content variant is
@@ -275,7 +275,7 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if spec, ok := h.Registry.Lookup("http_redirect", host, path); ok {
+	if spec, ok := h.Registry.Lookup("http_redirect", host, path); ok && matchesRequestMethod(spec, r.Method) {
 		variant, _ := spec.Params["variant"].(string)
 		switch variant {
 		case "loop":
@@ -292,6 +292,14 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, healthyPageHTML(host, path))
+}
+
+func matchesRequestMethod(spec control.FailureSpec, method string) bool {
+	configured, _ := spec.Params["method"].(string)
+	if configured == "" {
+		return true
+	}
+	return strings.EqualFold(configured, method)
 }
 
 // paramInt coerces an interface{} JSON-decoded number to an int with a

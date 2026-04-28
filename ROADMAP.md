@@ -48,7 +48,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 - **Target server** — `cmd/target` serves realistic virtual hosts and injects HTTP status, timeout, partial body, redirect, content, method-specific status, TCP, and TLS failures.
 - **Content failure library** — target pages cover canary removal, bad-keyword injection, CMS-style error pages, ransomware, defacement, malicious scripts, and hidden spam links while preserving realistic HTTP behavior.
 - **DNS server** — `cmd/dns` acts as authoritative DNS for the fleet, supports DNS failure modes, serves A/NS/SOA/TXT records, and has ACME TXT control endpoints.
-- **Geo and method-sensitive cases** — source-IP filtering enables geo-scoped failures, and HEAD/GET mismatch scenarios cover false-up and false-down risks for HEAD-only monitors.
+- **Geo and method-sensitive cases** — source-IP filtering enables geo-scoped failures, and HEAD/GET mismatch scenarios cover false-up and false-down risks for HEAD-only monitors across status, redirect, timeout, and partial-body failures.
 
 ## TLS and certificate infrastructure
 
@@ -127,7 +127,7 @@ The target binary now exposes an HTTPS listener with a generated self-signed fal
 - Add a `:443` listener to `cmd/target` using `crypto/tls`.
 - Generate a self-signed fallback cert on startup; future work may persist it under `/etc/uptime-bench/tls/` if stable fingerprints become useful.
 - Wire the listener to the same virtual-host router used for `:80` so healthy pages work over HTTPS.
-- Acceptance: `curl -k https://bench-a.<domain>/` returns the canary body; the existing 11 scenarios still pass on the HTTPS variant.
+- Acceptance: `curl -k https://bench-a.<domain>/` returns the canary body; the shipped HTTP/TCP/content scenarios still pass on the HTTPS variant.
 
 ### Phase 2 — Certificate library
 
@@ -502,18 +502,18 @@ The `offset` field is honored by the runner: failures activate at `scenario_star
 
 ## Method-sensitive HTTP behavior beyond status
 
-**Status:** Partially implemented. `http_method_status` covers the two high-priority HEAD/GET status mismatches: HEAD failure with healthy GET, and healthy HEAD with GET failure. Broader method/header-sensitive behaviors are deferred until the status cases produce real benchmark data.
+**Status:** Partially implemented. `http_method_status` covers the two high-priority HEAD/GET status mismatches: HEAD failure with healthy GET, and healthy HEAD with GET failure. The target also honors optional `method = "GET"` / `"HEAD"` predicates for `http_redirect`, `http_timeout`, `http_partial`, and `http_body`, with shipped scenarios for GET-only redirect loops, GET-only truncated bodies, GET-only TTFB stalls, and HEAD-only TTFB stalls. Header-sensitive behaviors remain deferred until the method cases produce real benchmark data.
 
 These are expected Jetmon-v1 pitfalls if it relies on shallow HEAD/status checks, and they should become Jetmon-v2 regression cases if v2 probes the user-visible GET path:
 
-- **Method-scoped redirects:** HEAD returns 200 while GET enters a redirect loop, redirects to the wrong host, or downgrades HTTPS to HTTP. Inverse case: GET is healthy but HEAD is redirected or challenged.
-- **Method-scoped latency and truncation:** HEAD returns quickly with 200 while GET stalls before first byte, stalls during the body, or closes mid-response. Inverse case: HEAD stalls but GET is healthy.
+- **Method-scoped redirects:** HEAD returns 200 while GET enters a redirect loop. Inverse cases such as GET healthy but HEAD redirected/challenged, wrong-host redirects, and HTTPS downgrade redirects remain future variants.
+- **Method-scoped latency and truncation:** HEAD returns quickly with 200 while GET stalls before first byte or closes mid-response; the inverse HEAD-stalls/GET-healthy case is also represented for TTFB stalls. Body-phase stalls remain future variants.
 - **Request-header divergence:** the origin, WAF, cache, or bot protection serves different status/content for monitor-specific `User-Agent`, `Accept`, `Accept-Language`, or missing browser-like headers. This can create either false-up or false-down results depending on which request shape the monitor uses.
 
 Implementation shape:
 
-- Extend the target failure matcher beyond `(type, host, path)` to include optional request predicates (`method`, selected headers, maybe user-agent substring).
-- Add method/header-scoped variants for `http_redirect`, `http_timeout`, `http_partial`, and selected `http_body` scenarios once the matcher can express them cleanly.
+- Extend the target failure matcher beyond `(type, host, path)` to include optional request predicates. `method` is implemented; selected headers and maybe user-agent substring remain deferred.
+- Add method/header-scoped variants for `http_redirect`, `http_timeout`, `http_partial`, and selected `http_body` scenarios once the matcher can express them cleanly. Method-scoped target support exists now; remaining work is adding header-scoped variants and deciding which method/body combinations deserve campaign weight.
 - Keep the existing content scenarios as the baseline for "GET body is bad while HEAD/status looks fine"; those already cover ransomware, defacement, malicious script, SEO spam, keyword missing, and keyword injection.
 
 ---

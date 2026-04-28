@@ -85,6 +85,7 @@ Delays or withholds the response at a specific phase of the HTTP exchange.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
+| `method` | string | no | any | Optional request-method predicate. If set, only `"GET"` or `"HEAD"` requests trigger this failure; other methods receive the healthy response. |
 | `phase` | string | yes | — | Which phase to delay: `"ttfb"` (time to first byte — headers are withheld), `"body"` (headers sent promptly, body transfer stalls), `"total"` (entire response withheld). |
 | `delay` | duration string | yes | — | How long to stall the affected phase before responding or closing the connection. |
 
@@ -103,6 +104,7 @@ Accepts the connection and begins responding, then closes it mid-response (trunc
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
+| `method` | string | no | any | Optional request-method predicate. If set, only `"GET"` or `"HEAD"` requests trigger this failure; other methods receive the healthy response. |
 | `truncate_after_bytes` | integer | no | random | Close the connection after this many bytes of the response body. If omitted, the truncation point is randomised per request within the run seed. |
 
 ```toml
@@ -119,6 +121,7 @@ Injects a broken redirect that monitors following redirects will fail to resolve
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
+| `method` | string | no | any | Optional request-method predicate. If set, only `"GET"` or `"HEAD"` requests trigger this failure; other methods receive the healthy response. |
 | `variant` | string | yes | — | `"loop"` (A → B → A redirect cycle) or `"chain"` (redirect chain exceeding the monitor's follow limit). |
 | `chain_length` | integer | no | `15` | For `variant = "chain"`: number of hops in the redirect chain. Should exceed the monitor's max-redirect limit (typically > 10). Ignored when `variant = "loop"`. |
 
@@ -136,6 +139,7 @@ Returns a modified response body with a 200 OK status, simulating silent applica
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
+| `method` | string | no | any | Optional request-method predicate. If set, only `"GET"` or `"HEAD"` requests trigger this failure; other methods receive the healthy response. |
 | `content` | string | yes | — | Content variant. See variant table below. |
 
 `http_body` failures coordinate with the scenario-level `keyword` and `keyword_check` fields (see the top-level Scenario section). The target uses `keyword` to know what string to remove (`keyword_missing`) or inject (`keyword_injected`); the monitor uses `keyword` + `keyword_check` to know what body content to alert on. They are not separate per-failure fields.

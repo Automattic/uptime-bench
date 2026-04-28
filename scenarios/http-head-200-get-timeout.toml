@@ -1,0 +1,15 @@
+id          = "http-head-200-get-timeout"
+version     = "1"
+description = "HEAD returns 200 while GET stalls before first byte — catches false-up signals from HEAD-only checks"
+target      = "bench-a"
+monitors    = ["jetmon-v1"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1009
+
+[[failures]]
+type   = "http_timeout"
+method = "GET"
+phase  = "ttfb"
+delay  = "35s"

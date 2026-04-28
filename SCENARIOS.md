@@ -173,6 +173,7 @@ The server accepts the connection and speaks HTTP — but does it respond correc
 - **[v1]** TCP connection accepted, no HTTP response sent (hang)
 - **[v1]** Response timeout (server slow to first byte beyond threshold)
 - **[v1]** Connection closed mid-response (truncated body)
+- **[v2]** Method-scoped timeout/truncation: HEAD succeeds but GET stalls before first byte or closes mid-response; inverse HEAD-stalls/GET-healthy cases catch false-down HEAD-only checks
 - **[v2]** Invalid HTTP framing (bad Content-Length, chunked encoding errors)
 
 ### Status code anomalies
@@ -182,6 +183,7 @@ The server accepts the connection and speaks HTTP — but does it respond correc
 - **[v1]** 401/403 on public pages
 - **[v1]** Method inconsistency: HEAD returns 200 but GET returns 4xx/5xx — `http_method_status method="GET" status_code=503` — catches false-up signals from HEAD-only checks
 - **[v1]** Method inconsistency: GET succeeds but HEAD returns 405 — `http_method_status method="HEAD" status_code=405` — catches false-down signals from HEAD-only checks
+- **[v2]** Method inconsistency: HEAD returns 200 but GET enters a redirect loop — `http_redirect method="GET" variant="loop"` — catches false-up signals from HEAD-only checks that never follow the user-visible GET path
 - **[v2]** OPTIONS preflight failures affecting CORS-dependent pages
 
 ### Network timing breakdown

@@ -182,6 +182,80 @@ func TestVHH_HTTPMethodStatus_GetFailsHeadHealthy(t *testing.T) {
 	}
 }
 
+func TestVHH_HTTPRedirect_MethodScoped(t *testing.T) {
+	h, reg := newHandler()
+	reg.Set(control.FailureSpec{
+		Type: "http_redirect", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{"method": "GET", "variant": "loop"},
+	}, 0)
+
+	head := request(t, h, http.MethodHead, "site.local", "/")
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want 200", head.Code)
+	}
+	get := request(t, h, http.MethodGet, "site.local", "/")
+	if get.Code != http.StatusFound {
+		t.Fatalf("GET status = %d, want 302", get.Code)
+	}
+	if loc := get.Header().Get("Location"); loc != "/" {
+		t.Fatalf("GET Location = %q, want /", loc)
+	}
+}
+
+func TestVHH_HTTPPartial_MethodScoped(t *testing.T) {
+	h, reg := newHandler()
+	reg.Set(control.FailureSpec{
+		Type: "http_partial", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{"method": "GET", "truncate_after_bytes": 9},
+	}, 0)
+
+	head := request(t, h, http.MethodHead, "site.local", "/")
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want 200", head.Code)
+	}
+	get := request(t, h, http.MethodGet, "site.local", "/")
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", get.Code)
+	}
+	if got := get.Body.String(); got != "<!DOCTYPE" {
+		t.Fatalf("GET body = %q, want first 9 healthy bytes", got)
+	}
+}
+
+func TestVHH_HTTPBody_MethodScoped(t *testing.T) {
+	h, reg := newHandler()
+	reg.Set(control.FailureSpec{
+		Type: "http_body", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{"method": "GET", "content": "defacement"},
+	}, 0)
+
+	head := request(t, h, http.MethodHead, "site.local", "/")
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want 200", head.Code)
+	}
+	get := request(t, h, http.MethodGet, "site.local", "/")
+	if !strings.Contains(get.Body.String(), "H4CK3D") {
+		t.Fatalf("GET body missing defacement marker: %q", get.Body.String())
+	}
+}
+
+func TestVHH_HTTPTimeout_MethodScoped(t *testing.T) {
+	h, reg := newHandler()
+	reg.Set(control.FailureSpec{
+		Type: "http_timeout", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{"method": "GET", "delay": "1ms"},
+	}, 0)
+
+	head := request(t, h, http.MethodHead, "site.local", "/")
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want 200", head.Code)
+	}
+	get := request(t, h, http.MethodGet, "site.local", "/")
+	if get.Code != http.StatusGatewayTimeout {
+		t.Fatalf("GET status = %d, want 504", get.Code)
+	}
+}
+
 // TestVHH_HTTPTimeout_RespectsRequestCancel — the http_timeout path
 // sleeps until the configured delay or the request context is cancelled.
 // A monitor that gives up before the delay elapses must not leave the

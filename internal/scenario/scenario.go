@@ -374,15 +374,16 @@ func validateFailureType(ctx string, f *Failure) error {
 		if f.StatusCode < 100 || f.StatusCode > 599 {
 			return fmt.Errorf("%s: status_code must be a valid HTTP status code (100-599)", ctx)
 		}
-		switch f.Method {
-		case "GET", "HEAD":
-		default:
-			return fmt.Errorf("%s: method must be one of: GET, HEAD", ctx)
+		if err := validateMethod(ctx, f.Method, true); err != nil {
+			return err
 		}
 		if len(f.Regions) > 0 {
 			return fmt.Errorf("%s: regions are not supported for http_method_status", ctx)
 		}
 	case "http_timeout":
+		if err := validateMethod(ctx, f.Method, false); err != nil {
+			return err
+		}
 		if f.Phase == "" {
 			return fmt.Errorf("%s: phase is required for http_timeout", ctx)
 		}
@@ -395,8 +396,14 @@ func validateFailureType(ctx string, f *Failure) error {
 			return fmt.Errorf("%s: delay is required for http_timeout", ctx)
 		}
 	case "http_partial":
+		if err := validateMethod(ctx, f.Method, false); err != nil {
+			return err
+		}
 		// truncate_after_bytes is optional
 	case "http_redirect":
+		if err := validateMethod(ctx, f.Method, false); err != nil {
+			return err
+		}
 		if f.Variant == "" {
 			return fmt.Errorf("%s: variant is required for http_redirect", ctx)
 		}
@@ -409,6 +416,9 @@ func validateFailureType(ctx string, f *Failure) error {
 			f.ChainLength = 15
 		}
 	case "http_body":
+		if err := validateMethod(ctx, f.Method, false); err != nil {
+			return err
+		}
 		if f.Content == "" {
 			return fmt.Errorf("%s: content is required for http_body", ctx)
 		}
@@ -478,6 +488,21 @@ func validateFailureType(ctx string, f *Failure) error {
 		return fmt.Errorf("%s: unknown failure type %q", ctx, f.Type)
 	}
 	return nil
+}
+
+func validateMethod(ctx, method string, required bool) error {
+	if method == "" {
+		if required {
+			return fmt.Errorf("%s: method must be one of: GET, HEAD", ctx)
+		}
+		return nil
+	}
+	switch method {
+	case "GET", "HEAD":
+		return nil
+	default:
+		return fmt.Errorf("%s: method must be one of: GET, HEAD", ctx)
+	}
 }
 
 func parseDuration(field, s string, required bool) (time.Duration, error) {

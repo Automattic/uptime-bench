@@ -153,6 +153,12 @@ type        = "http_method_status"
 method      = "POST"
 status_code = 503
 `, "method must be one of"},
+		{"http_redirect bad method predicate", `
+[[failures]]
+type    = "http_redirect"
+method  = "POST"
+variant = "loop"
+`, "method must be one of"},
 		{"http_method_status bad code", `
 [[failures]]
 type        = "http_method_status"
@@ -237,6 +243,31 @@ status_code = 405
 	f := sc.Failures[0]
 	if f.Type != "http_method_status" || f.Method != "HEAD" || f.StatusCode != 405 {
 		t.Fatalf("failure = %+v, want http_method_status HEAD 405", f)
+	}
+}
+
+func TestHTTPFailureMethodPredicateParses(t *testing.T) {
+	const body = `
+id              = "x"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "60s"
+
+[[failures]]
+type    = "http_redirect"
+method  = "GET"
+variant = "loop"
+`
+	sc, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	f := sc.Failures[0]
+	if f.Type != "http_redirect" || f.Method != "GET" || f.Variant != "loop" {
+		t.Fatalf("failure = %+v, want method-scoped http_redirect GET loop", f)
 	}
 }
 
