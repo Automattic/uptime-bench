@@ -195,7 +195,7 @@ make provision-dns DNS_HOST=203.0.113.10 HARNESS_IP=203.0.113.5
 make provision-dns DNS_HOST=203.0.113.11 HARNESS_IP=203.0.113.5
 
 # Certmint VM (optional — only if running real-CA TLS scenarios)
-make provision-certmint CERTMINT_HOST=203.0.113.30 TARGET_IPS=203.0.113.20
+make provision-certmint CERTMINT_HOST=203.0.113.30
 ```
 
 Each provisioning run:

@@ -131,10 +131,9 @@ TARGET_HOST   ?= $(error set TARGET_HOST)
 DNS_HOST      ?= $(error set DNS_HOST)
 CERTMINT_HOST ?= $(error set CERTMINT_HOST)
 HARNESS_IP    ?=
-TARGET_IPS    ?=
 DEPLOY_USER   ?= ubuntu
 
-PROVISION_ARGS = $(if $(HARNESS_IP),--harness-ip $(HARNESS_IP)) $(if $(TARGET_IPS),--target-ips $(TARGET_IPS))
+PROVISION_ARGS = $(if $(HARNESS_IP),--harness-ip $(HARNESS_IP))
 
 .PHONY: provision-harness
 provision-harness:
@@ -208,7 +207,7 @@ help:
 	@echo "  make provision-harness  HARNESS_HOST=host  [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
 	@echo "  make provision-target   TARGET_HOST=host   [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
 	@echo "  make provision-dns      DNS_HOST=host      [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
-	@echo "  make provision-certmint CERTMINT_HOST=host [TARGET_IPS=ip,ip] [DEPLOY_USER=ubuntu]"
+	@echo "  make provision-certmint CERTMINT_HOST=host                     [DEPLOY_USER=ubuntu]"
 	@echo ""
 	@echo "Deploy (push updated binary and restart service):"
 	@echo "  make deploy-harness  HARNESS_HOST=host  [DEPLOY_USER=ubuntu]"

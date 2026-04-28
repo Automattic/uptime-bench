@@ -12,9 +12,6 @@
 #   --harness-ip IP     Restrict the control API port to requests from this IP.
 #                       Recommended for target and dns servers. If omitted, the
 #                       control port is accessible from any source.
-#   --target-ips LIST   Comma-separated target IPs allowed to pull the cert
-#                       library from a certmint host. If omitted, the library
-#                       port is accessible from any source.
 #   --deploy-user USER  The SSH/admin user to preserve in firewall and SSH config.
 #                       (default: ubuntu)
 #   --ssh-port PORT     SSH port to allow through the firewall (default: 22)
@@ -39,7 +36,6 @@ set -euo pipefail
 
 TYPE=""
 HARNESS_IP=""
-TARGET_IPS=""
 DEPLOY_USER="ubuntu"
 SSH_PORT="22"
 SKIP_SWAP=false
@@ -48,7 +44,6 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --type)         TYPE="$2";         shift 2 ;;
         --harness-ip)   HARNESS_IP="$2";   shift 2 ;;
-        --target-ips)   TARGET_IPS="$2";   shift 2 ;;
         --deploy-user)  DEPLOY_USER="$2";  shift 2 ;;
         --ssh-port)     SSH_PORT="$2";     shift 2 ;;
         --skip-swap)    SKIP_SWAP=true;    shift ;;
@@ -518,23 +513,17 @@ case "$TYPE" in
         ;;
 
     certmint)
-        # The cert-library HTTP API is read-only by design; targets poll
-        # it for the manifest + cert files. Restrict inbound to the
-        # specific target IPs the operator passes in via --target-ips
-        # so a stolen control token can't be used from the open
-        # Internet to enumerate public-cert lineages. Falls open if no
-        # IPs are passed, with a warning the operator will see.
-        if [[ -n "$TARGET_IPS" ]]; then
-            IFS=',' read -ra _TARGET_IP_LIST <<< "$TARGET_IPS"
-            for ip in "${_TARGET_IP_LIST[@]}"; do
-                ip="${ip// /}"
-                [[ -z "$ip" ]] && continue
-                ufw allow from "$ip" to any port 9200 proto tcp \
-                    comment "Cert-library HTTP API (target $ip)"
-            done
-        else
-            ufw allow 9200/tcp comment "Cert-library HTTP API (any source — set --target-ips to restrict)"
-        fi
+        # The cert-library HTTP API is read-only and gated by the same
+        # bearer-token auth the rest of the fleet uses. The certmint
+        # host deliberately doesn't carry a list of target IPs —
+        # certmint shouldn't know about targets at all; that knowledge
+        # lives in fleet.toml on the harness, and targets learn the
+        # certmint URL from there. Operators who want belt-and-
+        # suspenders firewall scoping should layer on DigitalOcean
+        # Cloud Firewall (or equivalent) externally, where the target
+        # list is naturally maintained alongside the rest of the fleet
+        # topology.
+        ufw allow 9200/tcp comment "Cert-library HTTP API (bearer-token authed)"
         ;;
 
     harness)

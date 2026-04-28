@@ -40,10 +40,10 @@ and skip the hooks.
 ## Provisioning
 
 From your local checkout of `uptime-bench`, with the certmint VM standing
-up at e.g. `203.0.113.30` and your target VM at `203.0.113.20`:
+up at e.g. `203.0.113.30`:
 
 ```sh
-make provision-certmint CERTMINT_HOST=203.0.113.30 TARGET_IPS=203.0.113.20
+make provision-certmint CERTMINT_HOST=203.0.113.30
 ```
 
 This:
@@ -53,9 +53,13 @@ This:
 - Installs the systemd unit at `/etc/systemd/system/uptime-bench-certmint.service`
   and enables it (the daemon won't start until the binary is deployed).
 - Installs `/etc/uptime-bench/certmint.example.json` and the RFC2136 example.
-- Configures UFW: `:9200` (cert-library HTTP API) is restricted to
-  `TARGET_IPS`. Omit `TARGET_IPS` to leave the port open to any source —
-  not recommended in production.
+- Configures UFW to allow `:9200` (the cert-library HTTP API) inbound. The
+  port is gated by the same bearer-token auth used elsewhere in the fleet;
+  certmint doesn't carry a target list because targets shouldn't know about
+  certmint (they learn its URL from `fleet.toml` via the harness). If you
+  want IP-level scoping in addition to bearer auth, layer DigitalOcean
+  Cloud Firewall (or equivalent) on top — that's where your fleet topology
+  is already maintained.
 
 Edit the env file and the certmint config in-place on the host:
 
