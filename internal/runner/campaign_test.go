@@ -283,12 +283,12 @@ func TestRunCampaign_ContextCancellation(t *testing.T) {
 	}
 }
 
-// TestRunCampaign_MultiHostDesignSkipped — campaign generator currently
-// produces multi-host designs from "two_random" / "all" patterns. The
-// scenario format is single-host only, so ToScenario rejects them; the
-// campaign must skip the slot and continue rather than abort. Resulting
-// campaign closes as planned_completion with zero scenario_runs rows.
-func TestRunCampaign_MultiHostDesignSkipped(t *testing.T) {
+// TestRunCampaign_RejectsMultiHostPatterns — campaign generator can produce
+// multi-host designs from "two_random" / "all" patterns, but the scenario
+// format and runner execution path are single-target today. Reject before
+// writing an audit row so operators do not accidentally publish a zero-sample
+// campaign.
+func TestRunCampaign_RejectsMultiHostPatterns(t *testing.T) {
 	f := runtest.NewFixture(t)
 	f.Adapters = []adapter.Adapter{
 		&runtest.SimpleAdapter{
@@ -303,15 +303,16 @@ func TestRunCampaign_MultiHostDesignSkipped(t *testing.T) {
 	defer cancel()
 
 	_, err := runner.RunCampaign(ctx, c, c.Seed, f.Fleet, f.Recorder, f.Adapters, f.Services, runner.RunCampaignOptions{})
-	if err != nil {
-		t.Fatalf("RunCampaign: %v", err)
+	if err == nil {
+		t.Fatal("RunCampaign: expected multi-host pattern error, got nil")
 	}
-
+	if !strings.Contains(err.Error(), "multi-host scenario support") {
+		t.Fatalf("RunCampaign error = %v, want multi-host support detail", err)
+	}
+	if len(f.Recorder.CampaignRuns) != 0 {
+		t.Fatalf("CampaignRuns = %d, want 0 (scope failure should happen before audit row insert)", len(f.Recorder.CampaignRuns))
+	}
 	if len(f.Recorder.Runs) != 0 {
-		t.Errorf("Runs = %d, want 0 (multi-host design should be skipped)", len(f.Recorder.Runs))
-	}
-	if f.Recorder.CloseCampaignRunReason != "planned_completion" {
-		t.Errorf("CloseCampaignRunReason = %q, want planned_completion (skip is data, not failure)",
-			f.Recorder.CloseCampaignRunReason)
+		t.Errorf("Runs = %d, want 0", len(f.Recorder.Runs))
 	}
 }

@@ -123,7 +123,7 @@ make report-campaign CAMPAIGN=<campaign-run-id-or-config-id>
 make report-campaign CAMPAIGN=<campaign-run-id-or-config-id> REPORT_FORMAT=json
 ```
 
-Current campaign scope is serial execution over single-target scenarios. The generator understands `single`, `two_random`, and `all` host patterns, but translation and runner execution currently support only one target per scenario; configure runnable campaigns with `patterns = ["single"]` until multi-host scenario support lands.
+Current campaign scope is serial execution over single-target scenarios. The generator understands `single`, `two_random`, and `all` host patterns, but `RunCampaign` rejects multi-host patterns before execution because scenario translation currently supports only one target per scenario. Configure runnable campaigns with `patterns = ["single"]` until multi-host scenario support lands.
 
 ## Testing
 

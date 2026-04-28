@@ -60,11 +60,9 @@ type RunCampaignOptions struct {
 // (campaign.Generate returning an error) or a database failure on
 // InsertCampaignRun aborts before any replay starts.
 //
-// Caveat: campaign.Generate currently produces multi-host designs for
-// host_pattern = "two_random" / "all", but the scenario format only
-// supports single-host scenarios. Multi-host replays surface as
-// per-replay errors from Design.ToScenario and are skipped — the
-// campaign still completes; those cells just have zero samples. The
+// Current runner scope: the scenario format only supports one target
+// per run, so RunCampaign rejects host_pattern = "two_random" / "all"
+// before inserting the audit row or starting vendor work. The
 // scenario-format multi-host extension is on the roadmap; until it
 // lands, configure campaigns with patterns = ["single"] only.
 func RunCampaign(
@@ -79,6 +77,9 @@ func RunCampaign(
 ) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("runner: RunCampaign: nil campaign")
+	}
+	if err := validateCampaignRunnerScope(c); err != nil {
+		return "", err
 	}
 
 	plan, err := campaign.Generate(c, masterSeed)
@@ -201,6 +202,16 @@ func campaignRunParameters(d *campaign.Design, slot campaign.ReplaySlot) map[str
 		params["campaign_escalation_stage_types"] = stageTypes
 	}
 	return params
+}
+
+func validateCampaignRunnerScope(c *campaign.Campaign) error {
+	for _, pattern := range c.Targets.Patterns {
+		if pattern != campaign.HostPatternSingle {
+			return fmt.Errorf("runner: RunCampaign: host pattern %q requires multi-host scenario support; campaign runner currently supports only %q",
+				pattern, campaign.HostPatternSingle)
+		}
+	}
+	return nil
 }
 
 func mixedContentEscalationCount(designs []campaign.Design) int {
