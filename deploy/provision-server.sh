@@ -362,6 +362,15 @@ if [[ "$TYPE" == "certmint" ]]; then
     done
 fi
 
+# Target role: /var/cache/uptime-bench-target/ holds the cert-library
+# mirror the polling client populates from certmint. The daemon runs as
+# uptime-bench, so the cache dir must be writable by that user. 0700
+# matches the cert-library on certmint — private keys live here.
+if [[ "$TYPE" == "target" ]]; then
+    install -d -m 700 -o uptime-bench -g uptime-bench /var/cache/uptime-bench-target/cert-library
+    ok "Created /var/cache/uptime-bench-target/cert-library"
+fi
+
 # ---------------------------------------------------------------------------
 # Phase 4c: Create operator config files from skeletons (non-destructive)
 # ---------------------------------------------------------------------------
