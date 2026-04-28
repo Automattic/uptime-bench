@@ -96,6 +96,7 @@ Rechecked on 2026-04-28:
 
 - The Jetmon v2 API health endpoint at the current dev address is reachable from the workstation.
 - A replacement API token returns `200 OK` from `/api/v1/me` and the build-tagged Jetmon v2 live adapter tests pass locally, including provision, retrieve, API contract, and deprovision.
+- Workstation-run harness smoke passed `http-503`: run `5aa0a909c9e92249ec657ad995cf3daa` closed with `planned_completion`, retrieved raw `server` / normalized `http_failure` with `http_code=503`, derived `true_positive=1`, `false_negative=0`, `false_positive=0`, `detection_latency_s=246.447102`, and left the target control registry clean. No resolve event arrived within the three-minute grace window.
 - Workstation-run harness smoke using a temporary Jetmon v2 services config passed `http-head-200-get-503` against the deployed target fleet: run `81d439ab1fb15ba53df06dc5adaad71b` closed with `planned_completion`, retrieved `alert_fired` / `alert_resolved`, derived `true_positive=1`, `false_negative=0`, `false_positive=0`, and left the target control registry clean.
 - Workstation-run harness smoke passed `http-head-405-get-200` after fixing method-sensitive metric semantics: run `d00ad54bf28dcb9577e78f02f2b0d17c` closed with `planned_completion`, retrieved `status=known reports=0`, derived `false_negative=0`, `false_positive=0`, and left the target control registry clean.
 - Workstation-run harness smoke passed `tls-invalid-self-signed` against the deployed target fleet: run `ae0ca69b79f065a7c1817ad291f7d159` closed with `planned_completion`, retrieved `alert_fired` / `alert_resolved`, derived `true_positive=1`, `false_negative=0`, `false_positive=0`, `detection_latency_s=36.043472`, and left the target control registry clean. Rerun `e8aa57f15b872004d2ab5dad6cbe1293` confirmed the updated adapter stores raw `ssl`, normalized `tls_failure`, `error_code=3`, `true_positive=1`, and `detection_latency_s=35.250424`.
@@ -119,7 +120,7 @@ Run the remaining small monitor-facing scenario set through the real deployed fl
 Initial scenario set:
 
 - HEAD/GET mismatch cases: `http-head-405-get-200.toml` and `http-head-200-get-503.toml` are passing from the workstation-run harness path; repeat from the deployed harness once reachability/config are fixed.
-- Basic outage and timing cases: `http-503.toml`, `http-timeout-ttfb.toml`, and `http-partial.toml`.
+- Basic outage and timing cases: `http-503.toml` is passing from the workstation-run harness path; `http-timeout-ttfb.toml` and `http-partial.toml` remain to run.
 - Content/keyword cases: `content-keyword-missing.toml`, `content-keyword-injected.toml`, and one high-signal compromise page such as `content-defacement.toml`.
 
 Acceptance:
