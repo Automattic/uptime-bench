@@ -89,17 +89,17 @@ The connection itself — TCP, TLS, and the cryptographic handshake.
 - **[v1]** Slow handshake exceeding threshold
 
 ### TLS handshake
-- **[v1]** TLS handshake failure (generic)
+- **[v1]** TLS handshake failure (generic) — `tls_handshake reason="version_mismatch"`; checked in as `tls-handshake-version-mismatch.toml`
 - **[v2]** Unsupported protocol version mismatch
 - **[v2]** No common cipher suite
 - **[v2]** SNI mismatch (wrong vhost served)
 - **[v2]** TLS alert parsing: `handshake_failure`, `protocol_version`, `unrecognized_name`
 
 ### Certificate validity
-- **[v1]** Expired certificate
+- **[v1]** Expired certificate — `tls_expired days_expired=30`; checked in as `tls-expired-30d.toml`
 - **[v1]** Not-yet-valid certificate (clock skew or premature deployment)
-- **[v1]** Certificate hostname mismatch (CN/SAN doesn't cover requested host)
-- **[v1]** Self-signed certificate in production
+- **[v1]** Certificate hostname mismatch (CN/SAN doesn't cover requested host) — `tls_invalid variant="hostname_mismatch"`; checked in as `tls-invalid-hostname-mismatch.toml`
+- **[v1]** Self-signed certificate in production — `tls_invalid variant="self_signed"`; checked in as `tls-invalid-self-signed.toml`
 - **[v1]** Certificate signed by untrusted CA
 - **[v1]** Missing intermediate certificate(s) — chain incomplete
 - **[v2]** Revoked certificate (CRL or OCSP says revoked)
@@ -109,7 +109,7 @@ The connection itself — TCP, TLS, and the cryptographic handshake.
 ### Certificate operational issues
 - **[v2]** OCSP stapling broken or returning `unknown`/`revoked`
 - **[v3]** Certificate Transparency: cert not logged
-- **[v1]** Approaching expiration (warning threshold, e.g., <30 days)
+- **[v1]** Approaching expiration (warning threshold, e.g., <30 days) — `tls_expiring days_remaining=5`; checked in as `tls-expiring-5d.toml`
 - **[v2]** HSTS header missing when expected
 - **[v3]** HSTS `max-age` too low or preload list drift
 

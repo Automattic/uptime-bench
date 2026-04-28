@@ -1,0 +1,13 @@
+id          = "tls-deprecated-tls11"
+version     = "1"
+description = "HTTPS still succeeds but only with deprecated TLS 1.1"
+target      = "bench-a"
+monitors    = ["jetmon-v2"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 3004
+
+[[failures]]
+type    = "tls_deprecated"
+variant = "TLS11"

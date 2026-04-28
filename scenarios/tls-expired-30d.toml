@@ -1,0 +1,13 @@
+id          = "tls-expired-30d"
+version     = "1"
+description = "HTTPS serves a certificate that expired thirty days ago"
+target      = "bench-a"
+monitors    = ["jetmon-v2"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 3006
+
+[[failures]]
+type         = "tls_expired"
+days_expired = 30

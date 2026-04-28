@@ -1,0 +1,13 @@
+id          = "tls-handshake-version-mismatch"
+version     = "1"
+description = "TLS handshake aborts before HTTP due to a protocol-version mismatch"
+target      = "bench-a"
+monitors    = ["jetmon-v2"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 3003
+
+[[failures]]
+type   = "tls_handshake"
+reason = "version_mismatch"

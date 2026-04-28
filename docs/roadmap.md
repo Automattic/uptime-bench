@@ -4,7 +4,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 **Active priorities (next-up, in rough order):**
 1. [Jetmon v2 deployed scenario smoke](#jetmon-v2-deployed-scenario-smoke) — blocked on runner-to-API reachability and deployed harness config.
-2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
+2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs) — blocked on Jetmon v1 bridge write-mode provisioning.
 3. [TLS monitor-facing validation](#tls-monitor-facing-validation)
 4. [Live maintenance-window validation](#live-maintenance-window-validation)
 5. [Campaign hardening dry run](#campaign-hardening-dry-run)
@@ -162,11 +162,11 @@ Remaining follow-up: broaden live API smoke coverage for each vendor's keyword b
 
 ## TLS monitor-facing validation
 
-**Status:** Target/DNS direct acceptance is implemented; aged-certificate and monitor-facing TLS validation remain active priorities.
+**Status:** Target/DNS direct acceptance is implemented; scenario corpus coverage is now present for monitor-facing TLS validation. Aged-certificate and live monitor-facing TLS validation remain active priorities.
 
 The target binary now exposes an HTTPS listener with a generated self-signed fallback certificate. With `-cert-library-manifest`, healthy requests use the longest-valid matching library certificate, while active `tls_expired` and `tls_expiring` failures select the closest matching expired/expiring certificate for the request SNI. `tls_invalid` can force the generated self-signed cert or a generated hostname-mismatch cert, `tls_deprecated` can clamp the HTTPS listener to TLS 1.0 or TLS 1.1, and `tls_handshake` aborts the handshake before certificate selection. Remaining TLS work: deployed-fleet probe acceptance against a real certmint-produced library.
 
-Deployed direct acceptance now covers healthy HTTP/HTTPS, method-sensitive HEAD/GET mismatches, HTTP status/body/redirect/partial/timeout failures, global `tcp_refused`, `tls_invalid` self-signed and hostname-mismatch variants, `tls_handshake`, and `tls_deprecated` across both live cert-library domains. It also covers direct DNS-member injection on both nameservers. Remaining TLS work is narrower: `tls_expired` / `tls_expiring` acceptance once certmint has aged snapshots suitable for those scenarios, plus monitor-facing external probe runs through the adapters.
+Deployed direct acceptance now covers healthy HTTP/HTTPS, method-sensitive HEAD/GET mismatches, HTTP status/body/redirect/partial/timeout failures, global `tcp_refused`, `tls_invalid` self-signed and hostname-mismatch variants, `tls_handshake`, and `tls_deprecated` across both live cert-library domains. It also covers direct DNS-member injection on both nameservers. Checked-in monitor-facing scenarios now cover `tls_invalid` self-signed and hostname mismatch, `tls_handshake` version mismatch, `tls_deprecated` TLS 1.1, `tls_expiring` at five days, and `tls_expired` at thirty days. Remaining TLS work is narrower: run those scenarios through real monitors, and repeat `tls_expired` / `tls_expiring` acceptance once certmint has aged snapshots suitable for those scenarios.
 
 ### Phase 1 — HTTPS listener with self-signed default
 
@@ -505,7 +505,7 @@ Acceptance:
 
 ## Alert cooldown interaction between runs
 
-**Status:** Implemented for adapters that can guarantee clean state; live validation remains. Design draft at [inter-run-state-design.md](inter-run-state-design.md), 2026-04-26. Capability flags are wired, delete/recreate adapters claim reset support, Jetmon v2 disables alert cooldown at provision time, Jetmon v1 write mode claims reset support through the bridge's POST/DELETE state reset semantics, campaign scheduling enforces per-target spacing, campaign replays gate adapters without `SupportsCooldownReset`, and the measurement engine emits `cooldown_suppressed` / `cooldown_uncertain` outcomes from retrieve metadata.
+**Status:** Implemented for adapters that can guarantee clean state; Jetmon v1 live validation is blocked before cooldown can be tested. Design draft at [inter-run-state-design.md](inter-run-state-design.md), 2026-04-26. Capability flags are wired, delete/recreate adapters claim reset support, Jetmon v2 disables alert cooldown at provision time, Jetmon v1 write mode claims reset support through the bridge's POST/DELETE state reset semantics, campaign scheduling enforces per-target spacing, campaign replays gate adapters without `SupportsCooldownReset`, and the measurement engine emits `cooldown_suppressed` / `cooldown_uncertain` outcomes from retrieve metadata.
 
 Most monitors suppress repeated alerts for the same site within a cooldown window (commonly 30 minutes). When uptime-bench runs multiple consecutive scenarios against the same provisioned monitor, the second run's alert may be suppressed by the cooldown from the first — producing a result that looks like a missed detection but is actually the monitor working correctly.
 
@@ -524,7 +524,15 @@ Most monitors suppress repeated alerts for the same site within a cooldown windo
 
 Each adapter must document how it handles this in its implementation notes.
 
-Remaining follow-up: deploy the updated bridge and run a back-to-back Jetmon v1 write-mode scenario pair to confirm the reset behavior with the real worker loop.
+Live validation attempt on 2026-04-28:
+
+- Deployed the current harness binary to the harness host so `-monitors=jetmon-v1` can target the Jetmon v1 adapter alone.
+- Applied the append-only `003_campaign_runs.sql` migration to the deployed harness database; `002_reason_code.sql` was already present.
+- Confirmed the Jetmon v1 bridge is reachable from the harness host and accepts the configured bearer token.
+- First `http-503` run failed before cooldown could be tested because Jetmon v1 bridge write mode returned `500` from `POST /monitors`; the run `6e737b679e6052851a34ea3ade1ad2a9` closed as `adapter_error`.
+- The target failure deactivated normally and the target control registry was clean afterward.
+
+Remaining follow-up: fix or redeploy the Jetmon v1 bridge write-mode `POST /monitors` path, then run a back-to-back Jetmon v1 write-mode scenario pair to confirm reset behavior with the real worker loop.
 
 ---
 

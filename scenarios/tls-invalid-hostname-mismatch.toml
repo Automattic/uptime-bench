@@ -1,0 +1,13 @@
+id          = "tls-invalid-hostname-mismatch"
+version     = "1"
+description = "HTTPS serves a certificate for the wrong hostname"
+target      = "bench-a"
+monitors    = ["jetmon-v2"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 3002
+
+[[failures]]
+type    = "tls_invalid"
+variant = "hostname_mismatch"

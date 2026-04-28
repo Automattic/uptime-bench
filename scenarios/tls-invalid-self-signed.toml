@@ -1,0 +1,13 @@
+id          = "tls-invalid-self-signed"
+version     = "1"
+description = "HTTPS serves a self-signed certificate — baseline certificate validation failure"
+target      = "bench-a"
+monitors    = ["jetmon-v2"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 3001
+
+[[failures]]
+type    = "tls_invalid"
+variant = "self_signed"
