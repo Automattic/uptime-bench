@@ -4,6 +4,7 @@ BINARY_TARGET   = $(BIN_DIR)/uptime-bench-target
 BINARY_DNS      = $(BIN_DIR)/uptime-bench-dns
 BINARY_CERTMINT = $(BIN_DIR)/uptime-bench-certmint
 BINARY_REPORT   = $(BIN_DIR)/uptime-bench-report
+BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 
 .DEFAULT_GOAL := build
 
@@ -12,7 +13,7 @@ BINARY_REPORT   = $(BIN_DIR)/uptime-bench-report
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_PROBE_IPS_REFRESH)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -33,6 +34,10 @@ $(BINARY_CERTMINT): $(shell find cmd/certmint internal -name '*.go' 2>/dev/null)
 $(BINARY_REPORT): $(shell find cmd/uptime-bench-report internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/uptime-bench-report
+
+$(BINARY_PROBE_IPS_REFRESH): $(shell find cmd/probe-ips-refresh internal/probeips -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/probe-ips-refresh
 
 .PHONY: clean
 clean:
@@ -121,6 +126,12 @@ REPORT_FORMAT ?= table
 .PHONY: report-campaign
 report-campaign: $(BINARY_REPORT)
 	$(BINARY_REPORT) -campaign=$(CAMPAIGN) -format=$(REPORT_FORMAT)
+
+PROBE_IPS_ARGS ?=
+
+.PHONY: refresh-probe-ips
+refresh-probe-ips: $(BINARY_PROBE_IPS_REFRESH)
+	$(BINARY_PROBE_IPS_REFRESH) $(PROBE_IPS_ARGS)
 
 .PHONY: logs
 logs:

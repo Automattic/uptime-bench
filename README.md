@@ -138,6 +138,10 @@ CI verifies `go.mod` tidiness, `gofmt`, `go build ./...`, `go vet ./...`, `go ve
 
 Corpus tests assert every shipped scenario parses cleanly and the documented config examples stay loadable. Live build-tagged smoke tests under each adapter (`internal/adapter/<name>/live_test.go`) exercise the Provision/Retrieve/Deprovision contract against real APIs; CI compiles them but does not run them because they require credentials.
 
+## Probe IP Ranges
+
+`make refresh-probe-ips` runs the review-oriented probe CIDR refresh tool and prints a parseable `services.toml` fragment. Review the diff and merge only the `[services.probe_ranges]` updates; do not append the generated fragment wholesale.
+
 ## Deployment
 
 Fleet servers run Ubuntu Server 24.04. Provisioning is split into two phases: setup once, deploy whenever the binary changes.

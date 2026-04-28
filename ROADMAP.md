@@ -73,7 +73,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## Operations, testing, and hardening
 
 - **Fleet provisioning and deploy flow** — scripts create config skeletons, install systemd units, handle DNS port conflicts, deploy binaries, and cover target, DNS, harness, and certmint roles.
-- **Probe IP refresh automation** — `cmd/probe-ips-refresh` generates reviewable probe-range fragments, and a weekly GitHub Action opens a PR with the latest generated fragment for operator review.
+- **Probe IP refresh automation** — `cmd/probe-ips-refresh` generates reviewable probe-range fragments, `make refresh-probe-ips` gives operators a local review command, and a weekly GitHub Action opens a PR with the latest generated fragment for operator review.
 - **Regression coverage** — tests cover parsers, runner error handling, adapter factories, DNS handlers, target handlers, cert selection, campaign anti-favoritism, reporting, and live-test compilation.
 - **CI checks** — build, vet, live-test compilation, race testing, and formatting/tidiness checks are represented in the project workflow.
 
@@ -459,7 +459,7 @@ This and "Maintenance window suppression" should be designed together — they'r
 
 ## Probe IP CIDR refresh tool
 
-**Status:** MVP implemented. `cmd/probe-ips-refresh` fetches public vendor probe lists, normalizes IPs/CIDRs, and emits a reviewable TOML fragment. A weekly GitHub Action opens a PR with the latest generated fragment. Manual review is still required for vendor feeds that lack stable regional metadata.
+**Status:** MVP implemented. `cmd/probe-ips-refresh` fetches public vendor probe lists, normalizes IPs/CIDRs, and emits a reviewable TOML fragment. `make refresh-probe-ips` runs the tool locally, and a weekly GitHub Action opens a PR with the latest generated fragment. Manual review is still required for vendor feeds that lack stable regional metadata.
 
 `services.toml`'s `[services.probe_ranges]` blocks list per-region CIDRs for each vendor's published probe pool. Vendors update these lists periodically. Each vendor publishes (or doesn't) in machine-readable form:
 
@@ -477,11 +477,11 @@ This and "Maintenance window suppression" should be designed together — they'r
 **Region mapping:**
 
 - Datadog tags each IP/CIDR with a provider location; the tool folds those into coarse uptime-bench regions such as `us-east`, `eu-west`, and `ap-sea`.
-- Pingdom's current public IPv4 feed is untagged plain text. The tool emits it under `global` with a warning, so operators can keep the all-probe pool fresh without pretending it is region-specific.
+- Pingdom's current public IPv4 feed is untagged plain text. Decision: keep Pingdom under `global` unless Pingdom publishes stable region tags or an operator-maintained map with verified provenance; the tool emits a warning so operators can keep the all-probe pool fresh without pretending it is region-specific.
 - UptimeRobot doesn't tag regions. Maintain a hand-edited `internal/probeips/uptimerobot_regions.json` that maps IP prefixes to regions; the tool warns when a new IP doesn't fall in any known prefix. Keep this file in the repo so updates are visible in PRs.
 - Better Uptime publishes IPs in HTML prose with broad region annotations; the tool parses the current FAQ page best-effort and warns that mappings need review.
 
-**Remaining:** seed the UptimeRobot region map with verified prefixes and decide whether Pingdom should stay `global` or use a separate curated map.
+**Remaining:** seed the UptimeRobot region map with verified prefixes. Pingdom stays `global` until an official tagged feed or a verified curated map exists.
 
 ---
 
