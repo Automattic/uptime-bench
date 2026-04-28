@@ -30,8 +30,9 @@ const failureTypeUnrecorded = "<no_failure>"
 // span). Required for the methodology disclosure called out in
 // ROADMAP.md.
 type Report struct {
-	Meta      Meta      `json:"meta"`
-	Summaries []Summary `json:"summaries"`
+	Meta       Meta        `json:"meta"`
+	BiasChecks []BiasCheck `json:"bias_checks,omitempty"`
+	Summaries  []Summary   `json:"summaries"`
 }
 
 // Meta describes how a Report was assembled. CampaignRuns counts how
@@ -95,20 +96,40 @@ func MetaFromLookup(l *db.CampaignLookup) Meta {
 
 // Summary is one campaign report row for a failure type and service.
 type Summary struct {
-	FailureType           string   `json:"failure_type"`
-	ServiceID             string   `json:"service_id"`
-	Samples               int      `json:"samples"`
-	DetectionRate         *float64 `json:"detection_rate,omitempty"`
-	TruePositive          int      `json:"true_positive"`
-	FalseNegative         int      `json:"false_negative"`
-	FalsePositive         int      `json:"false_positive"`
-	Unknown               int      `json:"unknown"`
-	MaintenanceSuppressed int      `json:"maintenance_suppressed"`
-	LatencyMinSeconds     *float64 `json:"latency_min_s,omitempty"`
-	LatencyAvgSeconds     *float64 `json:"latency_avg_s,omitempty"`
-	LatencyP50Seconds     *float64 `json:"latency_p50_s,omitempty"`
-	LatencyP95Seconds     *float64 `json:"latency_p95_s,omitempty"`
-	LatencyMaxSeconds     *float64 `json:"latency_max_s,omitempty"`
+	FailureType           string         `json:"failure_type"`
+	ServiceID             string         `json:"service_id"`
+	Samples               int            `json:"samples"`
+	DetectionRate         *float64       `json:"detection_rate,omitempty"`
+	DetectionRateCI95     *CI            `json:"detection_rate_ci95,omitempty"`
+	TruePositive          int            `json:"true_positive"`
+	FalseNegative         int            `json:"false_negative"`
+	FalsePositive         int            `json:"false_positive"`
+	Unknown               int            `json:"unknown"`
+	CapabilityMismatch    int            `json:"capability_mismatch"`
+	ReasonCodes           map[string]int `json:"reason_codes,omitempty"`
+	MaintenanceSuppressed int            `json:"maintenance_suppressed"`
+	LatencyMinSeconds     *float64       `json:"latency_min_s,omitempty"`
+	LatencyAvgSeconds     *float64       `json:"latency_avg_s,omitempty"`
+	LatencyP50Seconds     *float64       `json:"latency_p50_s,omitempty"`
+	LatencyP50CI95Seconds *CI            `json:"latency_p50_ci95_s,omitempty"`
+	LatencyP95Seconds     *float64       `json:"latency_p95_s,omitempty"`
+	LatencyP95CI95Seconds *CI            `json:"latency_p95_ci95_s,omitempty"`
+	LatencyMaxSeconds     *float64       `json:"latency_max_s,omitempty"`
+}
+
+// CI is a two-sided 95% confidence interval for a report statistic.
+type CI struct {
+	Lower float64 `json:"lower"`
+	Upper float64 `json:"upper"`
+}
+
+// BiasCheck is a pre-summary diagnostic. These checks intentionally
+// use service-agnostic inputs only; report code must never special-case
+// a vendor.
+type BiasCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
 type summaryKey struct {
@@ -124,13 +145,14 @@ type accumulator struct {
 	unknown               int
 	maintenanceSuppressed int
 	latencies             []float64
+	reasonRuns            map[string]map[string]struct{}
 }
 
 // Summarize folds campaign metric rows into one row per
-// (failure_type, service_id). It intentionally works from derived
-// metrics only; support-matrix counts from monitor_reports.reason_code
-// are a later reporting phase.
-func Summarize(rows []db.CampaignMetricRow) []Summary {
+// (failure_type, service_id). Optional reason-code rows add
+// support-matrix counts from monitor_reports.reason_code without
+// changing the derived_metrics math.
+func Summarize(rows []db.CampaignMetricRow, reasonRows ...[]db.CampaignReasonRow) []Summary {
 	byKey := map[summaryKey]*accumulator{}
 	for _, row := range rows {
 		failureType := row.FailureType
@@ -140,7 +162,7 @@ func Summarize(rows []db.CampaignMetricRow) []Summary {
 		key := summaryKey{failureType: failureType, serviceID: row.ServiceID}
 		acc := byKey[key]
 		if acc == nil {
-			acc = &accumulator{runs: map[string]struct{}{}}
+			acc = newAccumulator()
 			byKey[key] = acc
 		}
 		acc.runs[row.RunID] = struct{}{}
@@ -163,6 +185,30 @@ func Summarize(rows []db.CampaignMetricRow) []Summary {
 			}
 		}
 	}
+	for _, rows := range reasonRows {
+		for _, row := range rows {
+			if row.ReasonCode == "" {
+				continue
+			}
+			failureType := row.FailureType
+			if failureType == "" {
+				failureType = failureTypeUnrecorded
+			}
+			key := summaryKey{failureType: failureType, serviceID: row.ServiceID}
+			acc := byKey[key]
+			if acc == nil {
+				acc = newAccumulator()
+				byKey[key] = acc
+			}
+			acc.runs[row.RunID] = struct{}{}
+			runs := acc.reasonRuns[row.ReasonCode]
+			if runs == nil {
+				runs = map[string]struct{}{}
+				acc.reasonRuns[row.ReasonCode] = runs
+			}
+			runs[row.RunID] = struct{}{}
+		}
+	}
 
 	out := make([]Summary, 0, len(byKey))
 	for key, acc := range byKey {
@@ -176,10 +222,21 @@ func Summarize(rows []db.CampaignMetricRow) []Summary {
 			Unknown:               acc.unknown,
 			MaintenanceSuppressed: acc.maintenanceSuppressed,
 		}
+		if len(acc.reasonRuns) > 0 {
+			s.ReasonCodes = make(map[string]int, len(acc.reasonRuns))
+			for code, runs := range acc.reasonRuns {
+				count := len(runs)
+				s.ReasonCodes[code] = count
+				if code == "capability_mismatch" {
+					s.CapabilityMismatch = count
+				}
+			}
+		}
 		eligible := acc.truePositive + acc.falseNegative
 		if eligible > 0 {
 			rate := float64(acc.truePositive) / float64(eligible)
 			s.DetectionRate = &rate
+			s.DetectionRateCI95 = wilsonCI(acc.truePositive, eligible)
 		}
 		applyLatencyStats(&s, acc.latencies)
 		out = append(out, s)
@@ -192,6 +249,153 @@ func Summarize(rows []db.CampaignMetricRow) []Summary {
 		return out[i].ServiceID < out[j].ServiceID
 	})
 	return out
+}
+
+func newAccumulator() *accumulator {
+	return &accumulator{
+		runs:       map[string]struct{}{},
+		reasonRuns: map[string]map[string]struct{}{},
+	}
+}
+
+// AnalyzeBias produces service-agnostic diagnostics that should be
+// read before the latency table. The checks are deliberately simple
+// and conservative: imbalance warnings are about whether the campaign
+// data is comparable, not about why it became imbalanced.
+func AnalyzeBias(summaries []Summary) []BiasCheck {
+	if len(summaries) == 0 {
+		return nil
+	}
+	return []BiasCheck{
+		sampleBalanceCheck(summaries),
+		cellBalanceCheck(summaries),
+		capabilityMismatchCheck(summaries),
+		uncategorizedUnknownCheck(summaries),
+	}
+}
+
+func sampleBalanceCheck(summaries []Summary) BiasCheck {
+	counts := map[string]int{}
+	for _, s := range summaries {
+		counts[s.ServiceID] += s.Samples
+	}
+	min, max := minMax(counts)
+	status := "ok"
+	if exceedsFivePercentSkew(min, max) {
+		status = "warn"
+	}
+	return BiasCheck{
+		Name:    "service_sample_balance",
+		Status:  status,
+		Message: fmt.Sprintf("per-service samples: %s", formatCounts(counts)),
+	}
+}
+
+func cellBalanceCheck(summaries []Summary) BiasCheck {
+	services := map[string]struct{}{}
+	byFailure := map[string]map[string]int{}
+	for _, s := range summaries {
+		services[s.ServiceID] = struct{}{}
+		counts := byFailure[s.FailureType]
+		if counts == nil {
+			counts = map[string]int{}
+			byFailure[s.FailureType] = counts
+		}
+		counts[s.ServiceID] = s.Samples
+	}
+	var warnings []string
+	for failureType, counts := range byFailure {
+		for serviceID := range services {
+			if _, ok := counts[serviceID]; !ok {
+				counts[serviceID] = 0
+			}
+		}
+		min, max := minMax(counts)
+		if exceedsFivePercentSkew(min, max) {
+			warnings = append(warnings, fmt.Sprintf("%s=%s", failureType, formatCounts(counts)))
+		}
+	}
+	if len(warnings) == 0 {
+		return BiasCheck{Name: "cell_sample_balance", Status: "ok", Message: "per-failure/service sample counts are balanced"}
+	}
+	sort.Strings(warnings)
+	return BiasCheck{Name: "cell_sample_balance", Status: "warn", Message: strings.Join(warnings, "; ")}
+}
+
+func capabilityMismatchCheck(summaries []Summary) BiasCheck {
+	var parts []string
+	total := 0
+	for _, s := range summaries {
+		if s.CapabilityMismatch == 0 {
+			continue
+		}
+		total += s.CapabilityMismatch
+		parts = append(parts, fmt.Sprintf("%s/%s=%d", s.FailureType, s.ServiceID, s.CapabilityMismatch))
+	}
+	if total == 0 {
+		return BiasCheck{Name: "capability_mismatch", Status: "ok", Message: "no capability_mismatch rows"}
+	}
+	sort.Strings(parts)
+	return BiasCheck{Name: "capability_mismatch", Status: "info", Message: strings.Join(parts, "; ")}
+}
+
+func uncategorizedUnknownCheck(summaries []Summary) BiasCheck {
+	var parts []string
+	total := 0
+	for _, s := range summaries {
+		categorized := s.CapabilityMismatch
+		for code, count := range s.ReasonCodes {
+			if code != "capability_mismatch" {
+				categorized += count
+			}
+		}
+		uncategorized := s.Unknown - categorized
+		if uncategorized <= 0 {
+			continue
+		}
+		total += uncategorized
+		parts = append(parts, fmt.Sprintf("%s/%s=%d", s.FailureType, s.ServiceID, uncategorized))
+	}
+	if total == 0 {
+		return BiasCheck{Name: "uncategorized_unknown", Status: "ok", Message: "no uncategorized unknown rows"}
+	}
+	sort.Strings(parts)
+	return BiasCheck{Name: "uncategorized_unknown", Status: "warn", Message: strings.Join(parts, "; ")}
+}
+
+func minMax(counts map[string]int) (int, int) {
+	min, max := 0, 0
+	first := true
+	for _, v := range counts {
+		if first || v < min {
+			min = v
+		}
+		if first || v > max {
+			max = v
+		}
+		first = false
+	}
+	return min, max
+}
+
+func exceedsFivePercentSkew(min, max int) bool {
+	if max == 0 {
+		return false
+	}
+	return float64(max-min)/float64(max) > 0.05
+}
+
+func formatCounts(counts map[string]int) string {
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, counts[k]))
+	}
+	return strings.Join(parts, ",")
 }
 
 // metricValue coerces a nullable derived_metrics row into a float so
@@ -233,8 +437,60 @@ func applyLatencyStats(s *Summary, latencies []float64) {
 	s.LatencyMinSeconds = &min
 	s.LatencyAvgSeconds = &avg
 	s.LatencyP50Seconds = &p50
+	s.LatencyP50CI95Seconds = percentileNearestCI(latencies, 0.50)
 	s.LatencyP95Seconds = &p95
+	s.LatencyP95CI95Seconds = percentileNearestCI(latencies, 0.95)
 	s.LatencyMaxSeconds = &max
+}
+
+func wilsonCI(successes, total int) *CI {
+	if total <= 0 {
+		return nil
+	}
+	const z = 1.96
+	n := float64(total)
+	p := float64(successes) / n
+	z2 := z * z
+	denom := 1 + z2/n
+	center := (p + z2/(2*n)) / denom
+	margin := z * math.Sqrt((p*(1-p)+z2/(4*n))/n) / denom
+	return &CI{
+		Lower: math.Max(0, center-margin),
+		Upper: math.Min(1, center+margin),
+	}
+}
+
+// percentileNearestCI returns an approximate non-parametric 95%
+// confidence interval for the nearest-rank percentile. It maps the
+// percentile's binomial rank uncertainty back onto observed samples,
+// so interval endpoints are real observed latencies, not interpolated
+// values. This is intentionally deterministic for reproducible reports.
+func percentileNearestCI(sorted []float64, p float64) *CI {
+	if len(sorted) == 0 {
+		return nil
+	}
+	if len(sorted) == 1 {
+		return &CI{Lower: sorted[0], Upper: sorted[0]}
+	}
+	const z = 1.96
+	n := float64(len(sorted))
+	centerRank := p * n
+	spread := z * math.Sqrt(n*p*(1-p))
+	lowerRank := int(math.Floor(centerRank - spread))
+	upperRank := int(math.Ceil(centerRank + spread))
+	if lowerRank < 1 {
+		lowerRank = 1
+	}
+	if upperRank < 1 {
+		upperRank = 1
+	}
+	if lowerRank > len(sorted) {
+		lowerRank = len(sorted)
+	}
+	if upperRank > len(sorted) {
+		upperRank = len(sorted)
+	}
+	return &CI{Lower: sorted[lowerRank-1], Upper: sorted[upperRank-1]}
 }
 
 // percentileNearest returns the value at percentile p using the
@@ -293,6 +549,11 @@ func writeTable(w io.Writer, r Report) error {
 			return err
 		}
 	}
+	for _, check := range r.BiasChecks {
+		if _, err := fmt.Fprintf(w, "# bias %s=%s %s\n", check.Name, check.Status, check.Message); err != nil {
+			return err
+		}
+	}
 	return writeDelimited(w, r.Summaries, "\t", true)
 }
 
@@ -336,9 +597,9 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 		out = tw
 	}
 	header := []string{
-		"failure_type", "service", "n", "tp_rate", "tp", "fn", "fp",
-		"unknown", "maint_suppressed", "min_s", "avg_s", "p50_s",
-		"p95_s", "max_s",
+		"failure_type", "service", "n", "tp_rate", "tp_rate_ci95", "tp", "fn", "fp",
+		"unknown", "cap_mismatch", "maint_suppressed", "min_s", "avg_s", "p50_s",
+		"p50_ci95_s", "p95_s", "p95_ci95_s", "max_s",
 	}
 	if _, err := fmt.Fprintln(out, strings.Join(header, sep)); err != nil {
 		return err
@@ -353,15 +614,19 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 			// BenchmarkWriteTSV; don't "clean up" to fmt.Sprintf.
 			strconv.Itoa(s.Samples),
 			formatRatio(s.DetectionRate),
+			formatRatioCI(s.DetectionRateCI95),
 			strconv.Itoa(s.TruePositive),
 			strconv.Itoa(s.FalseNegative),
 			strconv.Itoa(s.FalsePositive),
 			strconv.Itoa(s.Unknown),
+			strconv.Itoa(s.CapabilityMismatch),
 			strconv.Itoa(s.MaintenanceSuppressed),
 			formatSeconds(s.LatencyMinSeconds),
 			formatSeconds(s.LatencyAvgSeconds),
 			formatSeconds(s.LatencyP50Seconds),
+			formatSecondsCI(s.LatencyP50CI95Seconds),
 			formatSeconds(s.LatencyP95Seconds),
+			formatSecondsCI(s.LatencyP95CI95Seconds),
 			formatSeconds(s.LatencyMaxSeconds),
 		}
 		if _, err := fmt.Fprintln(out, strings.Join(fields, sep)); err != nil {
@@ -384,9 +649,23 @@ func formatRatio(v *float64) string {
 	return strconv.FormatFloat(*v, 'f', 3, 64)
 }
 
+func formatRatioCI(v *CI) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatFloat(v.Lower, 'f', 3, 64) + "-" + strconv.FormatFloat(v.Upper, 'f', 3, 64)
+}
+
 func formatSeconds(v *float64) string {
 	if v == nil {
 		return ""
 	}
 	return strconv.FormatFloat(*v, 'f', 1, 64)
+}
+
+func formatSecondsCI(v *CI) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatFloat(v.Lower, 'f', 1, 64) + "-" + strconv.FormatFloat(v.Upper, 'f', 1, 64)
 }

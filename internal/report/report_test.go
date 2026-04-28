@@ -19,6 +19,15 @@ func metric(runID, failureType, serviceID, name string, value float64) db.Campai
 	}
 }
 
+func reason(runID, failureType, serviceID, code string) db.CampaignReasonRow {
+	return db.CampaignReasonRow{
+		RunID:       runID,
+		FailureType: failureType,
+		ServiceID:   serviceID,
+		ReasonCode:  code,
+	}
+}
+
 func TestSummarize_GroupsMetricsByFailureAndService(t *testing.T) {
 	rows := []db.CampaignMetricRow{
 		metric("run-1", "http_status", "svc-a", "true_positive", 1),
@@ -60,6 +69,9 @@ func TestSummarize_GroupsMetricsByFailureAndService(t *testing.T) {
 	if http.DetectionRate == nil || *http.DetectionRate != 2.0/3.0 {
 		t.Fatalf("DetectionRate = %v, want 2/3", http.DetectionRate)
 	}
+	if http.DetectionRateCI95 == nil {
+		t.Fatal("DetectionRateCI95 should be populated when TP/FN denominator exists")
+	}
 	if http.LatencyMinSeconds == nil || *http.LatencyMinSeconds != 20 {
 		t.Fatalf("LatencyMinSeconds = %v, want 20", http.LatencyMinSeconds)
 	}
@@ -68,6 +80,43 @@ func TestSummarize_GroupsMetricsByFailureAndService(t *testing.T) {
 	}
 	if http.LatencyP95Seconds == nil || *http.LatencyP95Seconds != 80 {
 		t.Fatalf("LatencyP95Seconds = %v, want 80", http.LatencyP95Seconds)
+	}
+	if http.LatencyP50CI95Seconds == nil || http.LatencyP95CI95Seconds == nil {
+		t.Fatal("latency percentile confidence intervals should be populated")
+	}
+}
+
+func TestSummarize_IncludesReasonCodeCounts(t *testing.T) {
+	rows := []db.CampaignMetricRow{
+		metric("run-1", "content", "svc-a", "unknown", 1),
+		metric("run-2", "content", "svc-a", "unknown", 1),
+		metric("run-3", "content", "svc-b", "true_positive", 1),
+	}
+	reasons := []db.CampaignReasonRow{
+		reason("run-1", "content", "svc-a", "capability_mismatch"),
+		reason("run-1", "content", "svc-a", "capability_mismatch"), // duplicate row should still count one run
+		reason("run-2", "content", "svc-a", "auth_failed"),
+	}
+
+	got := Summarize(rows, reasons)
+	var svcA Summary
+	for _, s := range got {
+		if s.ServiceID == "svc-a" {
+			svcA = s
+			break
+		}
+	}
+	if svcA.ServiceID == "" {
+		t.Fatalf("svc-a summary missing: %+v", got)
+	}
+	if svcA.CapabilityMismatch != 1 {
+		t.Fatalf("CapabilityMismatch = %d, want 1", svcA.CapabilityMismatch)
+	}
+	if svcA.ReasonCodes["capability_mismatch"] != 1 {
+		t.Fatalf("capability_mismatch count = %d, want 1", svcA.ReasonCodes["capability_mismatch"])
+	}
+	if svcA.ReasonCodes["auth_failed"] != 1 {
+		t.Fatalf("auth_failed count = %d, want 1", svcA.ReasonCodes["auth_failed"])
 	}
 }
 
@@ -96,7 +145,7 @@ func TestWriteTSV(t *testing.T) {
 	if !strings.Contains(out, "failure_type\tservice\tn\ttp_rate") {
 		t.Fatalf("missing TSV header in %q", out)
 	}
-	if !strings.Contains(out, "http_status\tsvc\t2\t0.500\t1\t1") {
+	if !strings.Contains(out, "http_status\tsvc\t2\t0.500\t") {
 		t.Fatalf("missing TSV row in %q", out)
 	}
 	if !strings.Contains(out, "\t12.2\t") {
@@ -107,6 +156,77 @@ func TestWriteTSV(t *testing.T) {
 	// non-row line.
 	if strings.HasPrefix(out, "#") {
 		t.Fatalf("TSV output must not carry a metadata header: %q", out)
+	}
+}
+
+func TestAnalyzeBias_FlagsImbalanceAndUnknowns(t *testing.T) {
+	summaries := []Summary{
+		{FailureType: "http_status", ServiceID: "svc-a", Samples: 100, Unknown: 1},
+		{
+			FailureType:        "http_status",
+			ServiceID:          "svc-b",
+			Samples:            80,
+			Unknown:            2,
+			CapabilityMismatch: 1,
+			ReasonCodes:        map[string]int{"capability_mismatch": 1, "auth_failed": 1},
+		},
+		{
+			FailureType:        "content",
+			ServiceID:          "svc-a",
+			Samples:            100,
+			Unknown:            3,
+			CapabilityMismatch: 3,
+			ReasonCodes:        map[string]int{"capability_mismatch": 3},
+		},
+		{FailureType: "content", ServiceID: "svc-b", Samples: 100},
+	}
+
+	got := AnalyzeBias(summaries)
+	if len(got) != 4 {
+		t.Fatalf("len(got) = %d, want 4", len(got))
+	}
+	byName := map[string]BiasCheck{}
+	for _, check := range got {
+		byName[check.Name] = check
+	}
+	if byName["service_sample_balance"].Status != "warn" {
+		t.Fatalf("service_sample_balance = %+v, want warn", byName["service_sample_balance"])
+	}
+	if byName["cell_sample_balance"].Status != "warn" {
+		t.Fatalf("cell_sample_balance = %+v, want warn", byName["cell_sample_balance"])
+	}
+	if byName["capability_mismatch"].Status != "info" {
+		t.Fatalf("capability_mismatch = %+v, want info", byName["capability_mismatch"])
+	}
+	if byName["uncategorized_unknown"].Status != "warn" {
+		t.Fatalf("uncategorized_unknown = %+v, want warn", byName["uncategorized_unknown"])
+	}
+	if !strings.Contains(byName["uncategorized_unknown"].Message, "http_status/svc-a=1") {
+		t.Fatalf("uncategorized_unknown message = %q, want uncategorized svc-a row", byName["uncategorized_unknown"].Message)
+	}
+	if strings.Contains(byName["uncategorized_unknown"].Message, "http_status/svc-b") {
+		t.Fatalf("reason-coded unknown should not be treated as uncategorized: %q", byName["uncategorized_unknown"].Message)
+	}
+}
+
+func TestAnalyzeBias_FlagsMissingServiceCells(t *testing.T) {
+	summaries := []Summary{
+		{FailureType: "http_status", ServiceID: "svc-a", Samples: 5},
+		{FailureType: "content", ServiceID: "svc-b", Samples: 5},
+	}
+
+	got := AnalyzeBias(summaries)
+	byName := map[string]BiasCheck{}
+	for _, check := range got {
+		byName[check.Name] = check
+	}
+	check := byName["cell_sample_balance"]
+	if check.Status != "warn" {
+		t.Fatalf("cell_sample_balance = %+v, want warn", check)
+	}
+	if !strings.Contains(check.Message, "content=svc-a=0,svc-b=5") ||
+		!strings.Contains(check.Message, "http_status=svc-a=5,svc-b=0") {
+		t.Fatalf("cell_sample_balance message = %q, want missing cells rendered as zero", check.Message)
 	}
 }
 
@@ -133,6 +253,9 @@ func TestWriteTable_EmitsMetaCommentLine(t *testing.T) {
 			CampaignRuns:      3,
 			EarliestStartedAt: &started,
 			LatestEndedAt:     &ended,
+		},
+		BiasChecks: []BiasCheck{
+			{Name: "service_sample_balance", Status: "ok", Message: "per-service samples: svc=1"},
 		},
 		Summaries: []Summary{
 			{FailureType: "http_status", ServiceID: "svc", Samples: 1},
@@ -161,6 +284,12 @@ func TestWriteTable_EmitsMetaCommentLine(t *testing.T) {
 	}
 	if !strings.Contains(out, "latest_ended_at=2026-04-22") {
 		t.Fatalf("meta line missing latest_ended_at: %q", out)
+	}
+	if !strings.Contains(out, "# bias service_sample_balance=ok") {
+		t.Fatalf("table output missing bias check line: %q", out)
+	}
+	if strings.Index(out, "# bias") > strings.Index(out, "failure_type") {
+		t.Fatalf("bias checks should be printed before data header: %q", out)
 	}
 }
 

@@ -268,6 +268,17 @@ type CampaignMetricRow struct {
 	MetricText  string
 }
 
+// CampaignReasonRow is one structured monitor_reports.reason_code row
+// joined to its campaign replay context for reporting. Reason-code
+// counts stay separate from derived_metrics so the support matrix
+// remains queryable even when metric derivation changes.
+type CampaignReasonRow struct {
+	RunID       string
+	FailureType string
+	ServiceID   string
+	ReasonCode  string
+}
+
 // CampaignRunSummary describes one campaign_runs row resolved by
 // ResolveCampaign — the audit-trail metadata the report tool needs to
 // disclose how an aggregated report was scoped.
@@ -410,6 +421,55 @@ func (d *DB) CampaignMetricRows(ctx context.Context, campaignRunIDs []string) ([
 		if metricValue.Valid {
 			value := metricValue.Float64
 			r.MetricValue = &value
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CampaignReasonRows returns structured monitor report reason codes
+// for every scenario run belonging to the given campaign_runs.id
+// values. These rows power support-matrix reporting such as
+// capability_mismatch counts.
+func (d *DB) CampaignReasonRows(ctx context.Context, campaignRunIDs []string) ([]CampaignReasonRow, error) {
+	if len(campaignRunIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.Repeat("?,", len(campaignRunIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(campaignRunIDs))
+	for i, id := range campaignRunIDs {
+		args[i] = id
+	}
+	query := `SELECT sr.id,
+	        COALESCE(ft.failure_types, ''),
+	        mr.service_id,
+	        COALESCE(mr.reason_code, '')
+	   FROM scenario_runs sr
+	   JOIN monitor_reports mr ON mr.run_id = sr.id
+	   LEFT JOIN (
+	     SELECT run_id,
+	            GROUP_CONCAT(DISTINCT failure_type ORDER BY failure_type SEPARATOR '+') AS failure_types
+	       FROM ground_truth_events
+	      WHERE event_type = 'failure_start'
+	        AND failure_type IS NOT NULL
+	      GROUP BY run_id
+	   ) ft ON ft.run_id = sr.id
+	  WHERE sr.campaign_id IN (` + placeholders + `)
+	    AND mr.reason_code IS NOT NULL
+	    AND mr.reason_code <> ''
+	  ORDER BY COALESCE(ft.failure_types, ''), mr.service_id, sr.started_at, sr.id, mr.reason_code`
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: CampaignReasonRows: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CampaignReasonRow
+	for rows.Next() {
+		var r CampaignReasonRow
+		if err := rows.Scan(&r.RunID, &r.FailureType, &r.ServiceID, &r.ReasonCode); err != nil {
+			return nil, fmt.Errorf("db: CampaignReasonRows: scan: %w", err)
 		}
 		out = append(out, r)
 	}

@@ -59,9 +59,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("report: load campaign metrics: %v", err)
 	}
+	reasonRows, err := database.CampaignReasonRows(ctx, runIDs)
+	if err != nil {
+		log.Fatalf("report: load campaign reason codes: %v", err)
+	}
+	summaries := report.Summarize(rows, reasonRows)
 	out := report.Report{
-		Meta:      report.MetaFromLookup(lookup),
-		Summaries: report.Summarize(rows),
+		Meta:       report.MetaFromLookup(lookup),
+		BiasChecks: report.AnalyzeBias(summaries),
+		Summaries:  summaries,
 	}
 	if err := report.Write(os.Stdout, *format, out); err != nil {
 		log.Fatalf("report: write: %v", err)
@@ -74,7 +80,9 @@ func main() {
 // stdout for TSV / JSON aren't disturbed.
 func logLookup(l *db.CampaignLookup) {
 	switch {
-	case l == nil || len(l.Runs) == 0:
+	case l == nil:
+		log.Print("report: no campaign_runs matched \"\" (neither id nor stable campaign_id)")
+	case len(l.Runs) == 0:
 		log.Printf("report: no campaign_runs matched %q (neither id nor stable campaign_id)", l.Input)
 	case l.MatchedAsRunID && l.MatchedAsConfigID:
 		log.Printf("report: %q matched both a campaign_runs.id and a stable campaign_id (%d run(s) total — review for accidental id collision)", l.Input, len(l.Runs))
