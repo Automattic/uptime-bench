@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automattic/uptime-bench/internal/adapter"
 	"github.com/Automattic/uptime-bench/internal/db"
 )
 
@@ -198,6 +199,73 @@ func TestComputeMetrics_NoMaintenanceWindow(t *testing.T) {
 	}
 	if v := out["false_negative"].MetricValue; v == nil || *v != 1 {
 		t.Fatalf("false_negative = %v, want 1", v)
+	}
+}
+
+func TestComputeMetrics_CooldownSuppressed(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	sr := &serviceData{
+		cooldownSuppressed:  true,
+		cooldownExplanation: "prior alert still inside vendor cooldown",
+	}
+
+	out := computeMetrics(sr, []failureWindow{window(start, end)}, nil)
+
+	if v := out["cooldown_suppressed"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("cooldown_suppressed = %v, want 1", v)
+	}
+	if out["cooldown_suppressed"].MetricText != "prior alert still inside vendor cooldown" {
+		t.Fatalf("cooldown_suppressed text = %q", out["cooldown_suppressed"].MetricText)
+	}
+	if v := out["false_negative"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_negative = %v, want 0 (cooldown explains absent alert)", v)
+	}
+	if v := out["cooldown_uncertain"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("cooldown_uncertain = %v, want 0", v)
+	}
+}
+
+func TestComputeMetrics_CooldownUncertain(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	sr := &serviceData{
+		cooldownUncertain:   true,
+		cooldownExplanation: "reset endpoint returned ambiguous status",
+	}
+
+	out := computeMetrics(sr, []failureWindow{window(start, end)}, nil)
+
+	if v := out["cooldown_uncertain"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("cooldown_uncertain = %v, want 1", v)
+	}
+	if out["cooldown_uncertain"].MetricText != "reset endpoint returned ambiguous status" {
+		t.Fatalf("cooldown_uncertain text = %q", out["cooldown_uncertain"].MetricText)
+	}
+	if v := out["false_negative"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_negative = %v, want 0 (cooldown uncertainty keeps row out of FN)", v)
+	}
+}
+
+func TestCooldownStateReadsMetadata(t *testing.T) {
+	state, explanation := cooldownState(db.MonitorReportRow{
+		Metadata: map[string]any{
+			"cooldown_state":       "suppressed",
+			"cooldown_explanation": "previous run alerted 5m ago",
+		},
+	})
+	if state != adapter.ReasonCooldownSuppressed {
+		t.Fatalf("state = %q, want %q", state, adapter.ReasonCooldownSuppressed)
+	}
+	if explanation != "previous run alerted 5m ago" {
+		t.Fatalf("explanation = %q", explanation)
+	}
+
+	state, _ = cooldownState(db.MonitorReportRow{
+		Metadata: map[string]any{"cooldown_reset_failed": true},
+	})
+	if state != adapter.ReasonCooldownUncertain {
+		t.Fatalf("reset failure state = %q, want %q", state, adapter.ReasonCooldownUncertain)
 	}
 }
 

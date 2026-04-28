@@ -33,7 +33,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## End-to-end run pipeline
 
 - **Single-scenario execution** — the harness can provision monitors, activate controlled failures, record ground truth, retrieve monitor events, deprovision, and close the run.
-- **Measurement engine** — raw events are converted into true positive, false negative, false positive, unknown, maintenance-suppressed, and latency metrics.
+- **Measurement engine** — raw events are converted into true positive, false negative, false positive, unknown, maintenance-suppressed, cooldown-suppressed/uncertain, and latency metrics.
 - **Reporting tool** — `cmd/uptime-bench-report` produces table, TSV, and JSON campaign summaries with aggregation metadata, bias checks, confidence intervals, and capability-mismatch counts.
 
 ## Monitoring adapters
@@ -66,7 +66,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## Inter-run state and suppression
 
 - **Maintenance windows** — scenario parsing, runner gating, adapter provisioning, vendor-side APIs for Pingdom, UptimeRobot, Datadog, Better Uptime, and Jetmon v2, plus `maintenance_suppressed` measurement classification are implemented.
-- **Cooldown groundwork** — capability flags and delete/recreate cleanup paths exist where supported; dedicated cooldown-suppression measurement remains an active follow-up.
+- **Cooldown groundwork** — capability flags, delete/recreate cleanup paths, campaign replay gating, and cooldown-suppression measurement categories exist where supported.
 
 ## Operations, testing, and hardening
 
@@ -359,7 +359,7 @@ Output formats: human-readable table (default), TSV, JSON. Backed by SQL queries
 
 Per (failure_type, service) statistics:
 
-- Detection rate (true_positive / (true_positive + false_negative), excluding capability_mismatch and maintenance_suppressed).
+- Detection rate (true_positive / (true_positive + false_negative), excluding capability_mismatch, maintenance_suppressed, cooldown_suppressed, and cooldown_uncertain).
 - Detection latency min/max/avg/p50/p95, with 95% confidence intervals for p50 and p95.
 - False-positive rate.
 - `capability_mismatch` count (separately surfaced; not folded into detection rate).
@@ -371,7 +371,7 @@ Per (failure_type, service) statistics:
 2. ✅ **Pure design + schedule generator** — `(config, masterSeed) → (designs, schedule)`. `internal/campaign/generator.go`; deterministic, fixed-seed regression coverage in `generator_test.go` + `no_favoritism_test.go`.
 3. ✅ **Schema migration for `campaign_runs`** — `schema/003_campaign_runs.sql`; `campaign_id` FK on `scenario_runs`. `db.InsertCampaignRun` / `CloseCampaignRun` shipped.
 4. ✅ **Runner outer loop (serial)** — `runner.RunCampaign` walks `Plan.Schedule`, calls existing `Run()` per replay via `WithCampaignRunID`. Per-replay errors don't abort the campaign. Tests in `internal/runner/campaign_test.go`. `cmd/harness` accepts `-campaign=<config.toml>` as a mutually exclusive alternative to `-scenario`; campaign mode runs every enabled service from `services.toml`. Metrics are derived in one batch at campaign end via `measurement.DeriveCampaign`, keyed by `scenario_runs.campaign_id`.
-5. ✅ **Initial `cmd/uptime-bench-report`** — campaign metrics can be summarized from `derived_metrics` into table / TSV / JSON output. Current scope: per-(failure_type, service) samples, detection rate, TP/FN/FP/Unknown/maintenance counts, and latency min/avg/p50/p95/max.
+5. ✅ **Initial `cmd/uptime-bench-report`** — campaign metrics can be summarized from `derived_metrics` into table / TSV / JSON output. Current scope: per-(failure_type, service) samples, detection rate, TP/FN/FP/Unknown/maintenance/cooldown counts, and latency min/avg/p50/p95/max.
 6. ✅ **Full report statistics** — table/JSON reports now include bias self-checks, Wilson 95% detection-rate intervals, deterministic nearest-rank percentile intervals for p50/p95, and explicit `capability_mismatch` counts from `monitor_reports.reason_code`. TSV stays row-only for scripts but includes the additional columns.
 7. **Escalation support** — per-failure `duration` overrides and generator pattern sampling now cover layered, replacement, and recovery representations. Remaining work: harden reporting labels for multi-stage runs and settle the exact pattern mix for published benchmark configs.
 
@@ -379,7 +379,7 @@ Each phase is independently mergeable. Phases 1–5 deliver the "campaigns work,
 
 ### Cross-cutting concerns
 
-- **Budget interplay with vendor cooldowns**: the generator now enforces `cooldown.per_target_minimum` in the replay schedule and rejects infeasible schedules, but vendor-side alert cooldowns can still matter when an adapter cannot guarantee clean state. Campaign replays require `SupportsCooldownReset = true`; adapters where it's false get gated as `capability_mismatch` for the campaign's runs. Currently all probe-based adapters with Phase B set this true (delete-recreate cycles state); Jetmon-v1 needs bridge work to do the same.
+- **Budget interplay with vendor cooldowns**: the generator now enforces `cooldown.per_target_minimum` in the replay schedule and rejects infeasible schedules, but vendor-side alert cooldowns can still matter when an adapter cannot guarantee clean state. Campaign replays require `SupportsCooldownReset = true`; adapters where it's false get gated as `capability_mismatch` for the campaign's runs. If a retrieve still carries cooldown metadata, measurement emits `cooldown_suppressed` or `cooldown_uncertain` rather than `false_negative`. Currently all probe-based adapters with Phase B set this true (delete-recreate cycles state); Jetmon-v1 needs bridge work to do the same.
 - **Concurrent execution**: a 1,000-run campaign at ~8 minutes per scenario is ~133 sequential hours. Campaigns must run scenarios concurrently across non-overlapping (target, service) pairs. The runner currently runs one scenario at a time end-to-end; concurrent campaign mode is an explicit extension. Open question for the design pass: where the parallelism axis lives (per-target, per-service, per-(target,service) pair). Single-scenario mode remains serial.
 - **Reproducibility under randomness**: every campaign records its master seed and config in `campaign_runs`. Re-running with the same seed against the same fleet+adapter versions produces the same design set and schedule. The project's existing reproducibility invariant scales to campaigns.
 - **Per-stage keyword config (deferred)**: the scenario format carries one `Keyword` + `KeywordCheck` pair per run. An escalation that mixes a `keyword_injected` stage with a non-injected http_body stage (`ransomware`, `defacement`, `keyword_missing`, …) collapses to `KeywordCheck="absent"` with the injected keyword, silencing the canary-missing signal the non-injected stage was meant to measure. `applyHTTPBodyDefaults` documents this. The fix is per-failure `Keyword`/`KeywordCheck` fields and adapter rework to switch keyword config mid-run — most adapters configure once at Provision and can't. Before paying that cost, instrument prevalence in real campaign runs (log when a translated scenario contains a mixed-content escalation) and only schedule the schema change if mixed escalations are >5% of designs in practice.
@@ -393,7 +393,7 @@ When campaign data is published, the methodology section must include, at minimu
 - Adapter and target-fleet commit SHAs.
 - Total wall-clock duration and any campaign interruptions.
 - Confidence intervals on all reported percentiles.
-- The full count of `capability_mismatch`, `adapter_error`, and `maintenance_suppressed` outcomes per service — these are part of the data, not filtered out.
+- The full count of `capability_mismatch`, `adapter_error`, `maintenance_suppressed`, `cooldown_suppressed`, and `cooldown_uncertain` outcomes per service — these are part of the data, not filtered out.
 - The percentile method used. `cmd/uptime-bench-report` uses the **nearest-rank** convention (`idx = ⌈p·N⌉ − 1` on the sorted sample, NIST / Wikipedia "C = 1"). Different from R's default `quantile()` (type 7, linear interpolation) and numpy's default `percentile()`, which produce slightly different numbers for the same data. Nearest-rank always returns an observed sample value — the published p95 is a number that actually occurred in the campaign — but skeptics recomputing with a different method will see ±1-bucket drift.
 - The aggregation depth. `cmd/uptime-bench-report` accepts either a concrete `campaign_runs.id` (one run) or a stable `campaign_id` from the campaign TOML (every matching run aggregated). The report header line discloses which interpretation matched and how many runs were folded together — quote that line in any published post so readers know the numbers span N runs, not 1.
 
@@ -431,7 +431,7 @@ Remaining follow-up: run true live fail-during-maintenance scenarios against eac
 
 ## Alert cooldown interaction between runs
 
-**Status:** Partially implemented. Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26. Capability flags are wired, delete/recreate adapters claim reset support, Jetmon v2 disables alert cooldown at provision time, campaign scheduling enforces per-target spacing, and campaign replays now gate adapters without `SupportsCooldownReset`. Remaining work is bridge/API support for Jetmon v1 and measurement classifications for residual cooldown-suppressed or cooldown-uncertain outcomes.
+**Status:** Partially implemented. Design draft at [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md), 2026-04-26. Capability flags are wired, delete/recreate adapters claim reset support, Jetmon v2 disables alert cooldown at provision time, campaign scheduling enforces per-target spacing, campaign replays now gate adapters without `SupportsCooldownReset`, and the measurement engine emits `cooldown_suppressed` / `cooldown_uncertain` outcomes from retrieve metadata. Remaining work is bridge/API support for Jetmon v1.
 
 Most monitors suppress repeated alerts for the same site within a cooldown window (commonly 30 minutes). When uptime-bench runs multiple consecutive scenarios against the same provisioned monitor, the second run's alert may be suppressed by the cooldown from the first — producing a result that looks like a missed detection but is actually the monitor working correctly.
 

@@ -377,6 +377,32 @@ func TestLogMonitorReport_LogsErrorButContinues(t *testing.T) {
 	// No assertion on Go error: this function intentionally swallows.
 }
 
+func TestLogMonitorReport_WritesKnownNoEventRow(t *testing.T) {
+	rec := &fakeRecorder{}
+	a := &recordingAdapter{id: "svc"}
+	logMonitorReport(context.Background(), rec, "run-1", a, adapter.RetrieveResult{
+		Status: adapter.RetrieveKnown,
+		Metadata: map[string]any{
+			"cooldown_state": "suppressed",
+		},
+	})
+
+	if rec.monitorReportsLogged != 1 {
+		t.Fatalf("InsertMonitorReport called %d times, want 1", rec.monitorReportsLogged)
+	}
+	row := rec.monitorReportRows[0]
+	if row.RetrieveStatus != string(adapter.RetrieveKnown) {
+		t.Fatalf("RetrieveStatus = %q, want known", row.RetrieveStatus)
+	}
+	if row.EventType != "" {
+		t.Fatalf("EventType = %q, want empty no-event audit row", row.EventType)
+	}
+	meta, ok := row.Metadata.(map[string]any)
+	if !ok || meta["cooldown_state"] != "suppressed" {
+		t.Fatalf("Metadata = %#v, want cooldown_state marker", row.Metadata)
+	}
+}
+
 // TestEffectiveSeed_ExplicitSeedWins pins the CLAUDE.md invariant that
 // scenarios with an explicit Seed record exactly that value on the run,
 // not the wall-clock fallback. Reproducibility depends on this — a

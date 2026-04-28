@@ -11,17 +11,22 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/Automattic/uptime-bench/internal/adapter"
 	"github.com/Automattic/uptime-bench/internal/db"
 )
 
 type failureWindow struct{ start, end time.Time }
 
 type serviceData struct {
-	unknown bool
-	reason  string
-	alerts  []db.MonitorReportRow
+	unknown             bool
+	reason              string
+	cooldownSuppressed  bool
+	cooldownUncertain   bool
+	cooldownExplanation string
+	alerts              []db.MonitorReportRow
 }
 
 type runStore interface {
@@ -94,6 +99,17 @@ func Derive(ctx context.Context, database runStore, runID string) error {
 			sd.unknown = true
 			sd.reason = r.RetrieveUnknownReason
 		}
+		if state, explanation := cooldownState(r); state != "" {
+			switch state {
+			case adapter.ReasonCooldownSuppressed:
+				sd.cooldownSuppressed = true
+			case adapter.ReasonCooldownUncertain:
+				sd.cooldownUncertain = true
+			}
+			if explanation != "" && sd.cooldownExplanation == "" {
+				sd.cooldownExplanation = explanation
+			}
+		}
 		if r.EventType == "alert_fired" {
 			sd.alerts = append(sd.alerts, r)
 		}
@@ -146,7 +162,7 @@ func computeMetrics(sr *serviceData, windows []failureWindow, maintenance *failu
 	// Single pass over alerts: classify each one as in-window (true positive,
 	// candidate detection-latency sample) or out-of-window (false positive).
 	truePositive := false
-	falseNegative := true
+	falseNegative := len(windows) > 0
 	falsePositive := false
 	var detectionLatency *float64
 
@@ -187,6 +203,19 @@ func computeMetrics(sr *serviceData, windows []failureWindow, maintenance *failu
 		}
 	}
 
+	cooldownSuppressed := false
+	cooldownUncertain := false
+	if falseNegative && len(windows) > 0 {
+		switch {
+		case sr.cooldownSuppressed:
+			cooldownSuppressed = true
+			falseNegative = false
+		case sr.cooldownUncertain:
+			cooldownUncertain = true
+			falseNegative = false
+		}
+	}
+
 	boolVal := func(b bool) *float64 {
 		if b {
 			return f64(1)
@@ -199,12 +228,80 @@ func computeMetrics(sr *serviceData, windows []failureWindow, maintenance *failu
 	out["false_positive"] = db.DerivedMetricRow{MetricValue: boolVal(falsePositive)}
 	out["unknown"] = db.DerivedMetricRow{MetricValue: f64(0)}
 	out["maintenance_suppressed"] = db.DerivedMetricRow{MetricValue: boolVal(maintenanceSuppressed)}
+	out["cooldown_suppressed"] = db.DerivedMetricRow{MetricValue: boolVal(cooldownSuppressed), MetricText: sr.cooldownExplanation}
+	out["cooldown_uncertain"] = db.DerivedMetricRow{MetricValue: boolVal(cooldownUncertain), MetricText: sr.cooldownExplanation}
 
 	if detectionLatency != nil {
 		out["detection_latency_s"] = db.DerivedMetricRow{MetricValue: detectionLatency}
 	}
 
 	return out
+}
+
+func cooldownState(r db.MonitorReportRow) (state string, explanation string) {
+	switch r.ReasonCode {
+	case adapter.ReasonCooldownSuppressed:
+		return adapter.ReasonCooldownSuppressed, r.RetrieveUnknownReason
+	case adapter.ReasonCooldownUncertain, adapter.ReasonCooldownResetFailed:
+		return adapter.ReasonCooldownUncertain, r.RetrieveUnknownReason
+	}
+
+	metadata, ok := r.Metadata.(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	explanation = firstRawString(metadata, "cooldown_reason", "cooldown_explanation", "reason")
+	for _, key := range []string{"reason_code", "cooldown_reason_code", "cooldown_outcome", "cooldown_state"} {
+		raw := normalizeMetadataString(metadata[key])
+		switch raw {
+		case adapter.ReasonCooldownSuppressed, "suppressed":
+			return adapter.ReasonCooldownSuppressed, explanation
+		case adapter.ReasonCooldownUncertain, adapter.ReasonCooldownResetFailed, "uncertain", "reset_failed", "reset-failed":
+			return adapter.ReasonCooldownUncertain, explanation
+		}
+	}
+	if truthy(metadata["cooldown_suppressed"]) {
+		return adapter.ReasonCooldownSuppressed, explanation
+	}
+	if truthy(metadata["cooldown_uncertain"]) || truthy(metadata["cooldown_reset_failed"]) {
+		return adapter.ReasonCooldownUncertain, explanation
+	}
+	return "", ""
+}
+
+func firstRawString(metadata map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func normalizeMetadataString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func truthy(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y":
+			return true
+		}
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	}
+	return false
 }
 
 // overlapFraction returns the fraction of the union of failure windows

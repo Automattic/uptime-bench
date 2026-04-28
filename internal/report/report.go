@@ -108,6 +108,8 @@ type Summary struct {
 	CapabilityMismatch    int            `json:"capability_mismatch"`
 	ReasonCodes           map[string]int `json:"reason_codes,omitempty"`
 	MaintenanceSuppressed int            `json:"maintenance_suppressed"`
+	CooldownSuppressed    int            `json:"cooldown_suppressed"`
+	CooldownUncertain     int            `json:"cooldown_uncertain"`
 	LatencyMinSeconds     *float64       `json:"latency_min_s,omitempty"`
 	LatencyAvgSeconds     *float64       `json:"latency_avg_s,omitempty"`
 	LatencyP50Seconds     *float64       `json:"latency_p50_s,omitempty"`
@@ -144,6 +146,8 @@ type accumulator struct {
 	falsePositive         int
 	unknown               int
 	maintenanceSuppressed int
+	cooldownSuppressed    int
+	cooldownUncertain     int
 	latencies             []float64
 	reasonRuns            map[string]map[string]struct{}
 }
@@ -179,6 +183,10 @@ func Summarize(rows []db.CampaignMetricRow, reasonRows ...[]db.CampaignReasonRow
 			acc.unknown += boolMetric(value)
 		case "maintenance_suppressed":
 			acc.maintenanceSuppressed += boolMetric(value)
+		case "cooldown_suppressed":
+			acc.cooldownSuppressed += boolMetric(value)
+		case "cooldown_uncertain":
+			acc.cooldownUncertain += boolMetric(value)
 		case "detection_latency_s":
 			if row.MetricValue != nil {
 				acc.latencies = append(acc.latencies, *row.MetricValue)
@@ -221,6 +229,8 @@ func Summarize(rows []db.CampaignMetricRow, reasonRows ...[]db.CampaignReasonRow
 			FalsePositive:         acc.falsePositive,
 			Unknown:               acc.unknown,
 			MaintenanceSuppressed: acc.maintenanceSuppressed,
+			CooldownSuppressed:    acc.cooldownSuppressed,
+			CooldownUncertain:     acc.cooldownUncertain,
 		}
 		if len(acc.reasonRuns) > 0 {
 			s.ReasonCodes = make(map[string]int, len(acc.reasonRuns))
@@ -598,8 +608,9 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 	}
 	header := []string{
 		"failure_type", "service", "n", "tp_rate", "tp_rate_ci95", "tp", "fn", "fp",
-		"unknown", "cap_mismatch", "maint_suppressed", "min_s", "avg_s", "p50_s",
-		"p50_ci95_s", "p95_s", "p95_ci95_s", "max_s",
+		"unknown", "cap_mismatch", "maint_suppressed", "cooldown_suppressed",
+		"cooldown_uncertain", "min_s", "avg_s", "p50_s", "p50_ci95_s", "p95_s",
+		"p95_ci95_s", "max_s",
 	}
 	if _, err := fmt.Fprintln(out, strings.Join(header, sep)); err != nil {
 		return err
@@ -621,6 +632,8 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 			strconv.Itoa(s.Unknown),
 			strconv.Itoa(s.CapabilityMismatch),
 			strconv.Itoa(s.MaintenanceSuppressed),
+			strconv.Itoa(s.CooldownSuppressed),
+			strconv.Itoa(s.CooldownUncertain),
 			formatSeconds(s.LatencyMinSeconds),
 			formatSeconds(s.LatencyAvgSeconds),
 			formatSeconds(s.LatencyP50Seconds),

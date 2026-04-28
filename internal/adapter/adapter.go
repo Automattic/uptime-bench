@@ -191,6 +191,13 @@ type RetrieveResult struct {
 	Reports    []MonitorReport
 	Reason     string // free-form human-readable detail (any Status)
 	ReasonCode string // structured categorisation; see Reason*Code constants
+
+	// Metadata describes retrieve-level context that is not tied to a
+	// specific alert event. It is especially important when Status is
+	// known and Reports is empty: the runner still writes a no-event
+	// monitor_reports row so measurement can derive false_negative,
+	// maintenance_suppressed, cooldown_suppressed, or cooldown_uncertain.
+	Metadata map[string]any
 }
 
 // Reason codes that may appear on RetrieveResult.ReasonCode and on the
@@ -217,6 +224,11 @@ const (
 	// uninformative for benchmark purposes. Written by the measurement
 	// engine.
 	ReasonCooldownSuppressed = "cooldown_suppressed"
+
+	// ReasonCooldownUncertain: same shape as cooldown_suppressed, but
+	// the adapter can only say cooldown may have suppressed the alert
+	// because the prior cleanup/reset state was uncertain.
+	ReasonCooldownUncertain = "cooldown_uncertain"
 
 	// ReasonCooldownResetFailed: Deprovision attempted to reset the
 	// vendor-side alert cooldown and got a non-fatal error. Recorded so

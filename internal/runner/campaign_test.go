@@ -104,8 +104,14 @@ func TestRunCampaign_HappyPath(t *testing.T) {
 		t.Errorf("Runs[0].CampaignID = %q, want %q (campaign_id must be stamped on every scenario_runs row)",
 			f.Recorder.Runs[0].CampaignID, campaignRunID)
 	}
-	if len(f.Recorder.MonitorReports) != 0 {
-		t.Fatalf("MonitorReports = %+v, want none for known/no-report happy path", f.Recorder.MonitorReports)
+	if len(f.Recorder.MonitorReports) != 1 {
+		t.Fatalf("MonitorReports = %+v, want one known/no-event audit row", f.Recorder.MonitorReports)
+	}
+	if got := f.Recorder.MonitorReports[0].RetrieveStatus; got != string(adapter.RetrieveKnown) {
+		t.Fatalf("RetrieveStatus = %q, want known", got)
+	}
+	if got := f.Recorder.MonitorReports[0].EventType; got != "" {
+		t.Fatalf("EventType = %q, want empty no-event row", got)
 	}
 }
 

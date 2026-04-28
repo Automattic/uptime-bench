@@ -372,7 +372,7 @@ func logMonitorReport(ctx context.Context, database recorder, runID string, a ad
 	if a != nil {
 		serviceID = a.ServiceID()
 	}
-	if result.Status == adapter.RetrieveUnknown && len(result.Reports) == 0 {
+	if len(result.Reports) == 0 {
 		if err := database.InsertMonitorReport(ctx, db.MonitorReportRow{
 			RunID:                 runID,
 			ServiceID:             serviceID,
@@ -380,8 +380,9 @@ func logMonitorReport(ctx context.Context, database recorder, runID string, a ad
 			RetrieveUnknownReason: result.Reason,
 			ReasonCode:            result.ReasonCode,
 			RetrievedAt:           now,
+			Metadata:              result.Metadata,
 		}); err != nil {
-			log.Printf("runner: insert monitor_report (unknown): %v", err)
+			log.Printf("runner: insert monitor_report (%s/no-events): %v", serviceID, err)
 		}
 		return
 	}

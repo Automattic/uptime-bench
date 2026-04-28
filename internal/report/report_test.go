@@ -41,6 +41,8 @@ func TestSummarize_GroupsMetricsByFailureAndService(t *testing.T) {
 		metric("run-2", "http_status", "svc-a", "false_positive", 1),
 		metric("run-3", "http_status", "svc-a", "unknown", 1),
 		metric("run-4", "http_status", "svc-a", "maintenance_suppressed", 1),
+		metric("run-7", "http_status", "svc-a", "cooldown_suppressed", 1),
+		metric("run-8", "http_status", "svc-a", "cooldown_uncertain", 1),
 		metric("run-5", "http_status", "svc-a", "true_positive", 1),
 		metric("run-5", "http_status", "svc-a", "false_negative", 0),
 		metric("run-5", "http_status", "svc-a", "detection_latency_s", 80),
@@ -57,14 +59,17 @@ func TestSummarize_GroupsMetricsByFailureAndService(t *testing.T) {
 	if http.FailureType != "http_status" || http.ServiceID != "svc-a" {
 		t.Fatalf("first summary = %+v, want http_status/svc-a", http)
 	}
-	if http.Samples != 5 {
-		t.Fatalf("Samples = %d, want 5", http.Samples)
+	if http.Samples != 7 {
+		t.Fatalf("Samples = %d, want 7", http.Samples)
 	}
 	if http.TruePositive != 2 || http.FalseNegative != 1 || http.FalsePositive != 1 {
 		t.Fatalf("TP/FN/FP = %d/%d/%d, want 2/1/1", http.TruePositive, http.FalseNegative, http.FalsePositive)
 	}
 	if http.Unknown != 1 || http.MaintenanceSuppressed != 1 {
 		t.Fatalf("Unknown/MaintenanceSuppressed = %d/%d, want 1/1", http.Unknown, http.MaintenanceSuppressed)
+	}
+	if http.CooldownSuppressed != 1 || http.CooldownUncertain != 1 {
+		t.Fatalf("CooldownSuppressed/CooldownUncertain = %d/%d, want 1/1", http.CooldownSuppressed, http.CooldownUncertain)
 	}
 	if http.DetectionRate == nil || *http.DetectionRate != 2.0/3.0 {
 		t.Fatalf("DetectionRate = %v, want 2/3", http.DetectionRate)

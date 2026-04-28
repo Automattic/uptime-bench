@@ -1,6 +1,6 @@
 # Inter-run monitor state — design spec
 
-**Status:** Partially implemented, updated 2026-04-28. The maintenance-window half of this design has landed in scenario parsing, runner gating, adapter provisioning, and measurement. The cooldown-reset half now has `SupportsCooldownReset` flags, delete/recreate adapter behavior, Jetmon v2 zero-cooldown provisioning, and campaign replay gating for adapters that cannot reset cooldown state. Measurement categories for residual cooldown suppression remain future work.
+**Status:** Partially implemented, updated 2026-04-28. The maintenance-window half of this design has landed in scenario parsing, runner gating, adapter provisioning, and measurement. The cooldown-reset half now has `SupportsCooldownReset` flags, delete/recreate adapter behavior, Jetmon v2 zero-cooldown provisioning, campaign replay gating for adapters that cannot reset cooldown state, and derived `cooldown_suppressed` / `cooldown_uncertain` measurement categories. Jetmon v1 bridge/API reset support remains future work.
 
 ## Why these two features belong in one spec
 
@@ -113,15 +113,16 @@ type MaintenanceWindow struct {
 
 ### 4. New `reason_code` values
 
-The `reason_code` column already exists (shipped with the keyword work). Add three new codes:
+The `reason_code` column already exists (shipped with the keyword work). Add these suppression-related codes:
 
 | Code | Meaning |
 |---|---|
 | `maintenance_suppressed` | A failure was active and the monitor returned no alerts, AND a maintenance window was active during the failure. Correct behaviour, not a false negative. |
-| `cooldown_suppressed` | A failure was active, the monitor returned no alerts, the maintenance gate didn't fire, AND a recent prior run on the same monitor had alerted. Correct (cooldown working) but uninformative for benchmark purposes; record separately. |
+| `cooldown_suppressed` | A failure was active, the monitor returned no alerts, the maintenance gate didn't fire, AND adapter metadata says a recent prior run on the same monitor had alerted. Correct (cooldown working) but uninformative for benchmark purposes; record separately. |
+| `cooldown_uncertain` | Same as `cooldown_suppressed`, but reset state is ambiguous rather than known-suppressed. |
 | `cooldown_reset_failed` | Deprovision attempted to reset alert cooldown and failed. Recorded so the next run's data can be flagged as potentially-cooldown-affected. |
 
-The first two are written by the **measurement engine**, not the runner. The third is written by the runner when Deprovision returns a non-fatal cooldown-reset error.
+The first three are written by the **measurement engine**, not the runner. `cooldown_reset_failed` is written by the runner or adapter metadata when Deprovision/reset state is ambiguous.
 
 ### 5. Measurement engine — three new outcome categories
 
@@ -130,8 +131,10 @@ The first two are written by the **measurement engine**, not the runner. The thi
 | Existing: `true_positive` | Failure active, monitor alerted in window, no maintenance, no cooldown suppression. |
 | Existing: `false_negative` | Failure active, monitor did not alert, no maintenance, no cooldown suppression. |
 | New: `maintenance_suppressed` | Failure active, monitor did not alert, maintenance window covered ≥80% of the failure period. **Not a missed detection.** |
-| New: `cooldown_suppressed` | Failure active, monitor did not alert, no maintenance, prior run within cooldown window had alerted. **Possibly a missed detection; we can't tell.** |
+| New: `cooldown_suppressed` | Failure active, monitor did not alert, no maintenance, and current retrieve metadata says prior run cooldown suppressed this alert. **Possibly a missed detection; we can't tell.** |
 | New: `cooldown_uncertain` | Same as `cooldown_suppressed` but for the second-run-after-reset case where Deprovision said "I don't know if reset worked." Rare. |
+
+Adapters can attach cooldown state to a known no-event retrieve result through `RetrieveResult.Metadata`, for example `{"cooldown_state":"suppressed"}` or `{"cooldown_reset_failed":true}`. The runner writes a no-event `monitor_reports` row for successful zero-event retrieves so the measurement engine has an audit row to classify.
 
 The 80% threshold for maintenance is a heuristic — fully-covered windows are unambiguous, but partial overlaps need a rule. 80% covers the "window-overlaps-trailing-edge" case where the failure ran for 5 min and the window covered the last 4 min: the monitor had time to alert during the first minute, so a missing alert is genuinely a false negative.
 
@@ -181,7 +184,7 @@ For each adapter:
 1. [done] Update `internal/measurement` to compute `maintenance_suppressed`.
 2. [done] Add the 80%-overlap threshold logic with tests for fully covered, below-threshold partial coverage, above-threshold partial coverage, alert-during-maintenance, and no-maintenance cases.
 3. [done] Campaign replay gating requires `SupportsCooldownReset` and records `capability_mismatch` when an adapter cannot guarantee clean alert state.
-4. Pending cooldown work: implement `cooldown_suppressed` / `cooldown_uncertain` classification once prior-run state tracking is designed.
+4. [done] Implement `cooldown_suppressed` / `cooldown_uncertain` classification from retrieve metadata and write known no-event audit rows.
 
 ## What this spec deliberately doesn't cover
 

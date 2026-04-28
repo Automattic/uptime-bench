@@ -47,6 +47,8 @@ func benchmarkCampaignMetricRows() []db.CampaignMetricRow {
 		"false_positive",
 		"unknown",
 		"maintenance_suppressed",
+		"cooldown_suppressed",
+		"cooldown_uncertain",
 	}
 
 	const replays = 150

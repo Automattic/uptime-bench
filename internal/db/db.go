@@ -507,7 +507,7 @@ func (d *DB) MonitorReportsForRun(ctx context.Context, runID string) ([]MonitorR
 		        COALESCE(reason_code,''),
 		        COALESCE(event_type,''), COALESCE(raw_classification,''),
 		        COALESCE(normalized_classification,''),
-		        reported_at, retrieved_at
+		        reported_at, retrieved_at, metadata
 		 FROM monitor_reports WHERE run_id = ? ORDER BY retrieved_at`,
 		runID,
 	)
@@ -519,13 +519,21 @@ func (d *DB) MonitorReportsForRun(ctx context.Context, runID string) ([]MonitorR
 	var out []MonitorReportRow
 	for rows.Next() {
 		var r MonitorReportRow
+		var metadata sql.NullString
 		if err := rows.Scan(
 			&r.RunID, &r.ServiceID, &r.RetrieveStatus,
 			&r.RetrieveUnknownReason, &r.ReasonCode, &r.EventType,
 			&r.RawClassification, &r.NormalizedClassification,
-			&r.ReportedAt, &r.RetrievedAt,
+			&r.ReportedAt, &r.RetrievedAt, &metadata,
 		); err != nil {
 			return nil, fmt.Errorf("db: MonitorReportsForRun: scan: %w", err)
+		}
+		if metadata.Valid && metadata.String != "" {
+			var decoded any
+			if err := json.Unmarshal([]byte(metadata.String), &decoded); err != nil {
+				return nil, fmt.Errorf("db: MonitorReportsForRun: metadata: %w", err)
+			}
+			r.Metadata = decoded
 		}
 		out = append(out, r)
 	}

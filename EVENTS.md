@@ -80,6 +80,9 @@ One row per monitor service per metric per run.
 | `false_positive` | Alert fired when no ground-truth failure was active. |
 | `false_negative` | No alert fired during a ground-truth failure window. |
 | `unknown` | Adapter could not retrieve the service's state for this period. |
+| `maintenance_suppressed` | No alert fired because the scenario's maintenance window covered the failure period. Correct behaviour, excluded from false negatives. |
+| `cooldown_suppressed` | No alert fired and adapter metadata says a prior alert cooldown suppressed it. Excluded from false negatives. |
+| `cooldown_uncertain` | No alert fired and adapter metadata says cooldown reset state was uncertain. Excluded from false negatives because the run is not cleanly attributable. |
 | `classification_match` | Boolean: the service's normalized classification matches the injected failure mode. |
 
 ---
@@ -103,13 +106,14 @@ These are three distinct outcomes and must never be conflated:
 - **Unknown:** the adapter could not retrieve data — API outage, rate limit, authentication failure. The service may or may not have detected the failure; we do not know.
 - **Capability mismatch:** the scenario required a feature the service does not support (e.g., keyword body inspection on a service that only does status checks), so the harness skipped Provision rather than running an inevitable false negative. The service was never asked.
 
-Both Unknown and capability mismatch are recorded with `event_type = unknown`, but they're distinguished by the `reason_code` field (free-form `reason` carries the human-readable detail). Reporting and any accuracy/coverage calculations must use `reason_code` to keep the three categories separate:
+Both Unknown and capability mismatch are recorded with `retrieve_status = unknown`, but they're distinguished by the `reason_code` field (free-form `reason` carries the human-readable detail). Reporting and any accuracy/coverage calculations must use `reason_code` to keep the three categories separate:
 
-- True/false positives and true/false negatives are computed only over rows where `reason_code` is empty (i.e. genuine adapter results).
+- True/false positives and true/false negatives are computed only over rows where `reason_code` is empty and no suppression-specific metadata explains the missing alert.
 - Unknown rates are computed over rows where `reason_code` indicates an adapter-side or API-side problem (e.g. `api_unreachable`, `rate_limited`, `auth_failed`).
 - Capability-mismatch rates are computed over rows where `reason_code = "capability_mismatch"` and form the **support matrix** — for any given scenario, which services have the feature needed to detect the failure. This is a first-class deliverable of the project, not a noise filter.
+- Maintenance and cooldown suppression are computed as derived metrics (`maintenance_suppressed`, `cooldown_suppressed`, `cooldown_uncertain`) and stay out of the false-negative denominator.
 
-Never count Unknown or capability_mismatch as a false negative in accuracy calculations. Reports that aggregate without filtering on `reason_code` will conflate "the service missed the failure" with "the service was never asked," which is the central data-integrity hazard the harness is built to avoid.
+Never count Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, or cooldown_uncertain as a false negative in accuracy calculations. Reports that aggregate without filtering these categories will conflate "the service missed the failure" with "the service was never asked or was intentionally/possibly suppressed," which is the central data-integrity hazard the harness is built to avoid.
 
 `cmd/uptime-bench-report` loads `monitor_reports.reason_code` alongside
 `derived_metrics`, surfaces `capability_mismatch` counts as a separate report
