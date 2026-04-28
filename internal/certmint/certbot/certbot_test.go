@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Automattic/uptime-bench-certmint/internal/config"
-	"github.com/Automattic/uptime-bench-certmint/internal/planner"
+	"github.com/Automattic/uptime-bench/internal/certmint/config"
+	"github.com/Automattic/uptime-bench/internal/certmint/planner"
 )
 
 func TestArgsBuildsShortlivedStagingCommand(t *testing.T) {

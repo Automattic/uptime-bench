@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automattic/uptime-bench-certmint/internal/library"
-	"github.com/Automattic/uptime-bench-certmint/internal/manifest"
-	"github.com/Automattic/uptime-bench-certmint/internal/planner"
+	"github.com/Automattic/uptime-bench/internal/certmint/library"
+	"github.com/Automattic/uptime-bench/internal/certmint/manifest"
+	"github.com/Automattic/uptime-bench/internal/certmint/planner"
 )
 
 func TestRunPlanOutputsDueOrders(t *testing.T) {

@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automattic/uptime-bench-certmint/internal/config"
-	"github.com/Automattic/uptime-bench-certmint/internal/planner"
+	"github.com/Automattic/uptime-bench/internal/certmint/config"
+	"github.com/Automattic/uptime-bench/internal/certmint/planner"
 )
 
 func TestArchiveCopiesLineageAndReturnsManifestEntry(t *testing.T) {

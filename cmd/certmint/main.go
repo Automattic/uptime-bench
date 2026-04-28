@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Automattic/uptime-bench-certmint/internal/certbot"
-	"github.com/Automattic/uptime-bench-certmint/internal/config"
-	"github.com/Automattic/uptime-bench-certmint/internal/library"
-	"github.com/Automattic/uptime-bench-certmint/internal/lockfile"
-	"github.com/Automattic/uptime-bench-certmint/internal/manifest"
-	"github.com/Automattic/uptime-bench-certmint/internal/planner"
+	"github.com/Automattic/uptime-bench/internal/certmint/certbot"
+	"github.com/Automattic/uptime-bench/internal/certmint/config"
+	"github.com/Automattic/uptime-bench/internal/certmint/library"
+	"github.com/Automattic/uptime-bench/internal/certmint/lockfile"
+	"github.com/Automattic/uptime-bench/internal/certmint/manifest"
+	"github.com/Automattic/uptime-bench/internal/certmint/planner"
 )
 
 func main() {

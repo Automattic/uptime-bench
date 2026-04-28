@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automattic/uptime-bench-certmint/internal/config"
-	"github.com/Automattic/uptime-bench-certmint/internal/manifest"
+	"github.com/Automattic/uptime-bench/internal/certmint/config"
+	"github.com/Automattic/uptime-bench/internal/certmint/manifest"
 )
 
 func TestDueCatchesUpSlotsAndSkipsManifestEntries(t *testing.T) {

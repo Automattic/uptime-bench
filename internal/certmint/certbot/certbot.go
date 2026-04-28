@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Automattic/uptime-bench-certmint/internal/config"
-	"github.com/Automattic/uptime-bench-certmint/internal/planner"
+	"github.com/Automattic/uptime-bench/internal/certmint/config"
+	"github.com/Automattic/uptime-bench/internal/certmint/planner"
 )
 
 // Args returns the certbot argv after the binary.
