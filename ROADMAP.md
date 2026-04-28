@@ -67,6 +67,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## Inter-run state and suppression
 
 - **Maintenance windows** — scenario parsing, runner gating, adapter provisioning, vendor-side APIs for Pingdom, UptimeRobot, Datadog, Better Uptime, and Jetmon v2, plus `maintenance_suppressed` measurement classification are implemented.
+- **Overlapping failure-window suppression math** — maintenance coverage is computed over the merged union of failure windows, so layered campaign escalations do not double-count overlap when deciding whether an absent alert was suppressed.
 - **Cooldown groundwork** — capability flags, delete/recreate cleanup paths, campaign replay gating, and cooldown-suppression measurement categories exist where supported.
 
 ## Operations, testing, and hardening

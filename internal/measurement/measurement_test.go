@@ -165,6 +165,21 @@ func TestComputeMetrics_MaintenancePartialAboveThreshold(t *testing.T) {
 	}
 }
 
+func TestOverlapFractionUsesFailureWindowUnion(t *testing.T) {
+	start := time.Now()
+	windows := []failureWindow{
+		window(start, start.Add(10*time.Minute)),
+		window(start.Add(5*time.Minute), start.Add(15*time.Minute)),
+	}
+	maintenance := window(start, start.Add(10*time.Minute))
+
+	got := overlapFraction(windows, maintenance)
+	want := 10.0 / 15.0
+	if got != want {
+		t.Fatalf("overlapFraction = %v, want %v (10m covered over 15m union)", got, want)
+	}
+}
+
 // TestComputeMetrics_MaintenanceWithAlert — alert fired during the
 // failure period regardless of maintenance. true_positive wins;
 // maintenance_suppressed stays 0 (an alert means the monitor honoured

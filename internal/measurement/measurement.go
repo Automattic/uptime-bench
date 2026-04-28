@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -310,21 +311,17 @@ func truthy(value any) bool {
 //
 // The denominator is the *union* duration of failure windows so
 // overlapping or simultaneous failures don't double-count. Since the
-// runner produces non-overlapping per-failure windows in practice
-// (each failure has exactly one start/end pair), the union typically
-// equals the sum, but the math is correct either way.
+// campaign generator can produce layered escalations with overlapping
+// failure windows, this first merges windows before computing coverage.
 func overlapFraction(windows []failureWindow, maintenance failureWindow) float64 {
 	if len(windows) == 0 {
 		return 0
 	}
-	// Compute total failure-window duration (sum of intersected-with-self).
-	// For non-overlapping windows this is just the sum. For overlapping
-	// ones we'd want true union; current scenarios don't generate overlap
-	// so the simpler sum is a safe approximation. Document this if a
-	// future scenario starts producing overlapping ground-truth windows.
+
+	merged := mergeWindows(windows)
 	var failureTotal time.Duration
 	var overlap time.Duration
-	for _, w := range windows {
+	for _, w := range merged {
 		failureTotal += w.end.Sub(w.start)
 		if maintenance.end.Before(w.start) || maintenance.start.After(w.end) {
 			continue
@@ -343,4 +340,36 @@ func overlapFraction(windows []failureWindow, maintenance failureWindow) float64
 		return 0
 	}
 	return float64(overlap) / float64(failureTotal)
+}
+
+func mergeWindows(windows []failureWindow) []failureWindow {
+	normalized := make([]failureWindow, 0, len(windows))
+	for _, w := range windows {
+		if w.end.After(w.start) {
+			normalized = append(normalized, w)
+		}
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	sort.Slice(normalized, func(i, j int) bool {
+		if normalized[i].start.Equal(normalized[j].start) {
+			return normalized[i].end.Before(normalized[j].end)
+		}
+		return normalized[i].start.Before(normalized[j].start)
+	})
+
+	merged := []failureWindow{normalized[0]}
+	for _, w := range normalized[1:] {
+		last := &merged[len(merged)-1]
+		if !w.start.After(last.end) {
+			if w.end.After(last.end) {
+				last.end = w.end
+			}
+			continue
+		}
+		merged = append(merged, w)
+	}
+	return merged
 }
