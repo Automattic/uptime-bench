@@ -2,7 +2,7 @@
 
 uptime-bench evaluates uptime monitoring services by running controlled failure scenarios against target endpoints and measuring how each service under test detects, classifies, and reports each failure.
 
-This document covers uptime-bench's own system architecture. For a diagrammed component map, communication flow, and reporting data flow, see [`docs/system-map.md`](docs/system-map.md). For the library of failure scenarios the benchmark covers, see [`SCENARIOS.md`](SCENARIOS.md). For the scenario file format and field reference, see [`SCHEMA.md`](SCHEMA.md). For the monitor adapter interface, see [`ADAPTER.md`](ADAPTER.md). For the event log and output schema, see [`EVENTS.md`](EVENTS.md). For known future work, see [`ROADMAP.md`](ROADMAP.md).
+This document covers uptime-bench's own system architecture. For a fleet-focused overview of each deployed component and the traffic between them, see [`docs/fleet-overview.md`](docs/fleet-overview.md). For the library of failure scenarios the benchmark covers, see [`SCENARIOS.md`](SCENARIOS.md). For the scenario file format and field reference, see [`SCHEMA.md`](SCHEMA.md). For the monitor adapter interface, see [`ADAPTER.md`](ADAPTER.md). For the event log and output schema, see [`EVENTS.md`](EVENTS.md). For known future work, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
