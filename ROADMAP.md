@@ -3,10 +3,14 @@
 Deferred features that are intentionally not yet implemented. Items below the active line are accommodated in the schema and data model so they can be added without breaking changes — but the implementation work is deferred. Items above the line are next-up. The completed section summarizes major shipped capabilities from the commit history so the roadmap shows how the current shape of the system came together.
 
 **Active priorities (next-up, in rough order):**
-1. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
-2. [TLS target implementation](#tls-target-implementation)
-3. [Automated randomized testing campaigns](#automated-randomized-testing-campaigns)
-4. [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
+1. [Jetmon v2 deployed scenario smoke](#jetmon-v2-deployed-scenario-smoke)
+2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs)
+3. [TLS monitor-facing validation](#tls-monitor-facing-validation)
+4. [Live maintenance-window validation](#live-maintenance-window-validation)
+5. [Campaign hardening dry run](#campaign-hardening-dry-run)
+
+**Lower-priority follow-ups:**
+- [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
 
 **Recently completed but kept here for audit context:**
 - [Keyword-monitoring capability is dead-wired](#keyword-monitoring-capability-is-dead-wired)
@@ -82,6 +86,25 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 
 # Active priorities
 
+## Jetmon v2 deployed scenario smoke
+
+**Status:** Next. Direct deployed target/DNS smoke passed on 2026-04-28; the next proof point is the full harness path against Jetmon v2.
+
+Run a small monitor-facing scenario set through the real deployed fleet and the Jetmon v2 adapter before broadening to cross-vendor campaigns. This should validate the complete loop: harness provisioning, Jetmon v2 API calls, monitor behavior against injected target failures, retrieval, metric derivation, cleanup, and no remaining active fleet failures.
+
+Initial scenario set:
+
+- HEAD/GET mismatch cases: `http-head-405-get-200.toml` and `http-head-200-get-503.toml`.
+- Basic outage and timing cases: `http-503.toml`, `http-timeout-ttfb.toml`, and `http-partial.toml`.
+- Content/keyword cases: `content-keyword-missing.toml`, `content-keyword-injected.toml`, and one high-signal compromise page such as `content-defacement.toml`.
+
+Acceptance:
+
+- Every run records `scenario_runs`, `ground_truth_events`, `monitor_reports`, and derived metrics without adapter errors.
+- Jetmon v2 monitor provisioning and cleanup leave no orphaned test sites.
+- Target and DNS control registries are clean after every run.
+- The HEAD/GET mismatch scenarios specifically exercise the false-down and false-up risks that Jetmon v1 is expected to fail and Jetmon v2 should not fail.
+
 ## Keyword-monitoring capability is dead-wired
 
 **Status:** Implemented. Design locked 2026-04-25; end-to-end wiring, capability gating, adapter keyword branches, and tests are now in place.
@@ -117,7 +140,7 @@ Remaining follow-up: broaden live API smoke coverage for each vendor's keyword b
 
 ---
 
-## TLS target implementation
+## TLS monitor-facing validation
 
 **Status:** Target/DNS direct acceptance is implemented; aged-certificate and monitor-facing TLS validation remain active priorities.
 
@@ -163,6 +186,19 @@ Deployed direct acceptance now covers healthy HTTP/HTTPS, method-sensitive HEAD/
 Required by Phase 1 once we have multiple virtual hosts, but ordering with the phased work above is flexible. The TLS listener inspects SNI and serves the matching cert; without this, multi-site scenarios run only on whichever cert was bound to the listener default.
 
 ---
+
+## Campaign hardening dry run
+
+**Status:** Next after Jetmon v2 scenario smoke, cooldown, TLS validation, and maintenance validation. The campaign runner is implemented for serial single-target execution, but it still needs a small live dry run before it is trusted for publishable data.
+
+Run a deliberately small campaign against Jetmon v2 only, using a single target and a narrow scenario mix. The point is not statistical power yet; it is to expose long-run cleanup, scheduling, rate-limit, retry/error, database, and reporting problems while the blast radius is small.
+
+Acceptance:
+
+- Campaign preflight accepts the config without exceeding service run-rate budgets.
+- Every replay either produces usable metrics or a classified, queryable reason such as `capability_mismatch`, `adapter_error`, `cooldown_suppressed`, or `cooldown_uncertain`.
+- `uptime-bench-report` produces table, TSV, and JSON output from the resulting campaign run.
+- No monitor, target, or DNS state is left active after the dry run.
 
 ## Automated randomized testing campaigns
 
@@ -432,6 +468,18 @@ Monitors commonly support scheduled maintenance windows during which alerts are 
 - *Jetmon v1* — still no first-class bridge/API support; maintenance scenarios gate as `capability_mismatch`.
 
 Remaining follow-up: run true live fail-during-maintenance scenarios against each vendor to verify suppression behavior, not just API request shape and metric classification.
+
+## Live maintenance-window validation
+
+**Status:** Active validation item. Implementation and unit/API-shape coverage are in place; true live fail-during-maintenance behavior still needs to be observed.
+
+After the Jetmon v2 baseline scenario smoke passes, run targeted maintenance-window scenarios against Jetmon v2 first, then broaden to vendors that claim `SupportsMaintenanceWindows`. The validation should cover at least one fully-covered maintenance window and one edge case where the maintenance window ends while the failure is still active.
+
+Acceptance:
+
+- Suppressed alerts during fully covered maintenance windows become `maintenance_suppressed`, not false negatives.
+- Failures that continue after the maintenance window closes still produce alerts when the service supports that behavior.
+- Unsupported services remain explicitly gated as `capability_mismatch`.
 
 ---
 
