@@ -50,6 +50,8 @@ Two DNS VMs are the minimum — `dns_ns_unavailable` scenarios require at least 
 
 Add more target VMs as your scenario library grows. Each target VM hosts multiple virtual sites, but separating them across VMs lets you run unrelated scenarios simultaneously without state interference.
 
+Add a **certmint VM** (1 vCPU, 1 GB RAM, 25 GB disk) to mint publicly-trusted Let's Encrypt certificates for `tls_expired` / `tls_expiring` scenarios. Optional — fleets without certmint fall back to fleet-CA / generated certs and skip real-CA TLS scenarios. The certmint daemon mints on a low cadence (~16 issuances/day default) and exposes a read-only HTTP cert-library API targets poll for new manifest entries.
+
 ### OS
 
 All VPSs must run **Ubuntu Server 24.04 LTS**. The provisioning scripts target this OS specifically.
@@ -68,6 +70,7 @@ Example (replace with your actual IPs):
 | target-01 | `203.0.113.20` |
 | ns-01 | `203.0.113.10` |
 | ns-02 | `203.0.113.11` |
+| certmint-01 (optional) | `203.0.113.30` |
 
 ---
 
@@ -190,6 +193,9 @@ make provision-target TARGET_HOST=203.0.113.20 HARNESS_IP=203.0.113.5
 # DNS VMs
 make provision-dns DNS_HOST=203.0.113.10 HARNESS_IP=203.0.113.5
 make provision-dns DNS_HOST=203.0.113.11 HARNESS_IP=203.0.113.5
+
+# Certmint VM (optional — only if running real-CA TLS scenarios)
+make provision-certmint CERTMINT_HOST=203.0.113.30 TARGET_IPS=203.0.113.20
 ```
 
 Each provisioning run:
@@ -220,7 +226,7 @@ Copy each skeleton to its real name and fill in the values. The pattern is the s
 ```sh
 ssh <user>@<vm-ip>
 
-# Replace TYPE with harness, target, or dns to match the role.
+# Replace TYPE with harness, target, dns, or certmint to match the role.
 sudo cp /etc/uptime-bench/TYPE.env.example /etc/uptime-bench/TYPE.env
 sudo chown root:uptime-bench /etc/uptime-bench/TYPE.env
 sudo chmod 640 /etc/uptime-bench/TYPE.env
@@ -364,10 +370,11 @@ The other four adapters create their monitors via API on every run and have no e
 Build and push all three binaries from your local machine. The `deploy-*` targets cross-compile for `linux/amd64`. As with `provision-*`, pass `DEPLOY_USER=<name>` if the SSH user is not `ubuntu`.
 
 ```sh
-make deploy-dns     DNS_HOST=203.0.113.10
-make deploy-dns     DNS_HOST=203.0.113.11
-make deploy-target  TARGET_HOST=203.0.113.20
-make deploy-harness HARNESS_HOST=203.0.113.5
+make deploy-dns      DNS_HOST=203.0.113.10
+make deploy-dns      DNS_HOST=203.0.113.11
+make deploy-target   TARGET_HOST=203.0.113.20
+make deploy-harness  HARNESS_HOST=203.0.113.5
+make deploy-certmint CERTMINT_HOST=203.0.113.30   # only if certmint VM is provisioned
 ```
 
 Each deploy:

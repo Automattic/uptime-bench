@@ -37,7 +37,7 @@ Adding a new adapter is a small, well-defined exercise — implement the [`adapt
 
 The end-to-end pipeline runs: target server, DNS server, control plane, harness, runner, MySQL event log, metric derivation, and reporting. Five service adapters are implemented and live-tested against their public APIs where applicable: Jetmon 1, UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. Jetmon 2 is present as a stub until a public API is available.
 
-Eleven shipped scenarios across HTTP, TCP, DNS, and content failures are defined and runnable. TLS scenarios are schema-defined and target-backed: the target has an HTTPS listener, SNI-aware certificate selection, certmint manifest loading for `tls_expired` / `tls_expiring`, self-signed and hostname-mismatch variants for `tls_invalid`, TLS 1.0 / 1.1 clamping for `tls_deprecated`, and deterministic handshake aborts for `tls_handshake`. Remaining TLS work is mostly external probe acceptance coverage and production cert-library operations; see [`ROADMAP.md`](ROADMAP.md) and [`docs/certmint-dns01-handoff.md`](docs/certmint-dns01-handoff.md).
+Eleven shipped scenarios across HTTP, TCP, DNS, and content failures are defined and runnable. TLS scenarios are schema-defined and target-backed: the target has an HTTPS listener, SNI-aware certificate selection, certmint manifest loading for `tls_expired` / `tls_expiring`, self-signed and hostname-mismatch variants for `tls_invalid`, TLS 1.0 / 1.1 clamping for `tls_deprecated`, and deterministic handshake aborts for `tls_handshake`. The `cmd/certmint` daemon mints publicly-trusted Let's Encrypt certificates that feed the cert library, using DNS-01 challenges fanned out to the in-fleet `cmd/dns` members. Remaining TLS work is mostly external probe acceptance coverage and dynamic library reload on the target; see [`ROADMAP.md`](ROADMAP.md).
 
 Campaign mode is implemented for serial execution: the harness accepts `-campaign=<config.toml>`, records a `campaign_runs` audit row, runs scheduled scenario replays, derives campaign metrics, and `uptime-bench-report` summarizes results as table, TSV, or JSON. Multi-host campaign designs are still deferred because the scenario format is single-target; for now, practical campaigns should use `patterns = ["single"]`.
 
@@ -60,8 +60,8 @@ Notable design choices, all enforced by the code or the tests:
 - [`TESTING.md`](TESTING.md) — local POC quick-start
 - [`ROADMAP.md`](ROADMAP.md) — deferred features and unfinished work
 - [`docs/inter-run-state-design.md`](docs/inter-run-state-design.md) — maintenance windows and cooldown reset design
-- [`docs/certmint-dns01-handoff.md`](docs/certmint-dns01-handoff.md) — certmint / DNS-01 integration notes
-- [`deploy/acme-hooks/README.md`](deploy/acme-hooks/README.md) — certbot manual DNS hook scripts for certmint
+- [`docs/certmint-operator.md`](docs/certmint-operator.md) — operating the certmint daemon
+- [`deploy/acme-hooks/README.md`](deploy/acme-hooks/README.md) — certbot manual DNS hook scripts certmint drives
 
 ## Local development
 

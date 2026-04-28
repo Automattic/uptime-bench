@@ -1,7 +1,7 @@
 # Certbot manual hooks for uptime-bench DNS-01
 
 These scripts wire `certbot --manual --preferred-challenges dns` to the
-authoritative `uptime-bench-dns` fleet so `uptime-bench-certmint` can
+authoritative `uptime-bench-dns` fleet so `cmd/certmint` can
 mint Let's Encrypt certificates whose domains resolve through the
 benchmark's own nameservers. They install the validation TXT record on
 every DNS member before Let's Encrypt queries it, then remove it once
@@ -62,7 +62,7 @@ DNS queries for `_acme-challenge.<name>` answer from that store and
 bypass any active failure scenario, so cert minting can run while a
 benchmark is in flight. `DELETE /acme/txt` removes only the matching
 (name, value) pair, leaving sibling values intact. See
-[`docs/certmint-dns01-handoff.md`](../../docs/certmint-dns01-handoff.md)
+[`docs/certmint-operator.md`](../../docs/certmint-operator.md)
 for the full design.
 
 ## Manual smoke test
