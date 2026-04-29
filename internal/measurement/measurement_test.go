@@ -24,6 +24,15 @@ func typedWindow(kind string, start, end time.Time) failureWindow {
 	return failureWindow{kind: kind, start: start, end: end}
 }
 
+func timeoutWindow(delay string, start, end time.Time) failureWindow {
+	return failureWindow{
+		kind:    failureHTTPTimeout,
+		start:   start,
+		end:     end,
+		details: map[string]any{"delay": delay},
+	}
+}
+
 func methodWindow(method string, start, end time.Time) failureWindow {
 	return failureWindow{
 		kind:    failureHTTPMethodStatus,
@@ -88,6 +97,45 @@ func TestComputeMetrics_FalsePositive(t *testing.T) {
 	}
 	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
 		t.Fatalf("true_positive = %v, want 0", v)
+	}
+}
+
+func TestComputeMetrics_HTTPTimeoutAlertInDelayTailIsTruePositive(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	sr := &serviceData{alerts: []db.MonitorReportRow{alertAt(end.Add(5 * time.Second))}}
+
+	out := computeMetrics(sr, []failureWindow{timeoutWindow("35s", start, end)}, nil)
+
+	if v := out["true_positive"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("true_positive = %v, want 1", v)
+	}
+	if v := out["false_negative"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_negative = %v, want 0", v)
+	}
+	if v := out["false_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_positive = %v, want 0", v)
+	}
+	if v := out["detection_latency_s"].MetricValue; v == nil || *v != 65 {
+		t.Fatalf("detection_latency_s = %v, want 65", v)
+	}
+}
+
+func TestComputeMetrics_HTTPTimeoutAlertAfterDelayTailIsStillLate(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	sr := &serviceData{alerts: []db.MonitorReportRow{alertAt(end.Add(40 * time.Second))}}
+
+	out := computeMetrics(sr, []failureWindow{timeoutWindow("35s", start, end)}, nil)
+
+	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("true_positive = %v, want 0", v)
+	}
+	if v := out["false_negative"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("false_negative = %v, want 1", v)
+	}
+	if v := out["false_positive"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("false_positive = %v, want 1", v)
 	}
 }
 

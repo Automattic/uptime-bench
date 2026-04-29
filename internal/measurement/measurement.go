@@ -21,6 +21,7 @@ import (
 
 const (
 	failureHTTPMethodStatus   = "http_method_status"
+	failureHTTPTimeout        = "http_timeout"
 	failureTLSDeprecated      = "tls_deprecated"
 	classificationTLSAdvisory = "tls_advisory"
 )
@@ -301,7 +302,18 @@ func isHealthyGETMethodTrap(w failureWindow) bool {
 }
 
 func containsTime(w failureWindow, t time.Time) bool {
-	return !t.Before(w.start) && !t.After(w.end)
+	return !t.Before(w.start) && !t.After(effectiveFailureEnd(w))
+}
+
+func effectiveFailureEnd(w failureWindow) time.Time {
+	if w.kind != failureHTTPTimeout {
+		return w.end
+	}
+	delay, err := time.ParseDuration(rawString(w.details["delay"]))
+	if err != nil || delay <= 0 {
+		return w.end
+	}
+	return w.end.Add(delay)
 }
 
 func cooldownState(r db.MonitorReportRow) (state string, explanation string) {

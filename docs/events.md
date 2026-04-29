@@ -125,6 +125,10 @@ For `http_method_status`, uptime-bench scores against the user-visible `GET` pat
 
 This is why the HEAD/GET mismatch scenarios can test both failure directions without treating "no alert" as a miss when the page a visitor loads remains healthy.
 
+### Timeout Tail Scoring
+
+For `http_timeout` scenarios, the detection window extends past `failure_end` by the scenario's configured `delay`. A monitor probe can start while the timeout failure is active but only emit an incident after the request times out. That is a real detection, not a post-recovery false positive.
+
 Never count Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppressed, cooldown_uncertain, or TLS advisory outcomes as a false negative in accuracy calculations. Reports that aggregate without filtering these categories will conflate "the service missed the failure" with "the service was never asked, was intentionally/possibly suppressed, or saw a successful request with an advisory-level TLS concern," which is the central data-integrity hazard the harness is built to avoid.
 
 `cmd/uptime-bench-report` loads `monitor_reports.reason_code` alongside
