@@ -227,6 +227,44 @@ func TestRun_NonEmptyResolutionReason_AlwaysTrue(t *testing.T) {
 	}
 }
 
+func TestRun_AllAdaptersCapabilityMismatchedSkipsFailureInjection(t *testing.T) {
+	f := runtest.NewFixture(t)
+	f.Scenario.Keyword = "HACKED"
+	f.Scenario.KeywordCheck = adapter.KeywordCheckAbsent
+	f.Adapters = []adapter.Adapter{
+		&runtest.SimpleAdapter{
+			ID: "jetmon-v2",
+			Caps: adapter.Capabilities{
+				MinCheckFrequency:       30 * time.Second,
+				SupportsKeyword:         true,
+				SupportsInvertedKeyword: false,
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := f.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, eventType := range f.Recorder.GroundTruthEventLog {
+		if eventType == "failure_start" || eventType == "failure_end" {
+			t.Fatalf("ground-truth events = %v, want no failure injection when every adapter is capability-gated", f.Recorder.GroundTruthEventLog)
+		}
+	}
+	if len(f.Recorder.MonitorReports) != 1 {
+		t.Fatalf("MonitorReports = %d, want 1 capability_mismatch row", len(f.Recorder.MonitorReports))
+	}
+	row := f.Recorder.MonitorReports[0]
+	if row.ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Fatalf("ReasonCode = %q, want %q", row.ReasonCode, adapter.ReasonCapabilityMismatch)
+	}
+	if f.Recorder.CloseRunReason != "planned_completion" {
+		t.Fatalf("CloseRunReason = %q, want planned_completion", f.Recorder.CloseRunReason)
+	}
+}
+
 // failingProvisionAdapter satisfies adapter.Adapter but fails its
 // Provision call, exercising the resolution_reason="adapter_error"
 // path through Run().

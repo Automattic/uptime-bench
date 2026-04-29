@@ -192,6 +192,11 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		}
 	}()
 
+	if len(handles) == 0 {
+		log.Printf("runner: no provisioned adapters; skipping failure injection")
+		return runID, nil
+	}
+
 	// Walk the failure event timeline. Each failure produces one activate
 	// event at start+offset and one deactivate event after its effective
 	// duration; scheduleFailureEvents sorts them all into a single
