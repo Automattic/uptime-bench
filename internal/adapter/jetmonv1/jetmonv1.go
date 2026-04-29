@@ -31,8 +31,13 @@ import (
 	"github.com/Automattic/uptime-bench/internal/adapter"
 )
 
-// statusConfirmedDown is Jetmon's site_status value for a confirmed outage.
-const statusConfirmedDown = 2
+const (
+	// Jetmon v1 site_status values. SITE_DOWN is the initial peer-confirmed
+	// outage state; SITE_CONFIRMED_DOWN is used later for still-down notices.
+	statusDown          = 0
+	statusRunning       = 1
+	statusConfirmedDown = 2
+)
 
 // classification maps Jetmon 1's raw site_status / report labels to
 // uptime-bench's normalized vocabulary. Lives next to the adapter so
@@ -242,12 +247,16 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 
 		var eventType adapter.ReportEventType
 		var rawClass string
-		if *e.NewStatus == statusConfirmedDown {
+		switch *e.NewStatus {
+		case statusDown, statusConfirmedDown:
 			eventType = adapter.EventAlertFired
 			rawClass = "down"
-		} else {
+		case statusRunning:
 			eventType = adapter.EventAlertResolved
 			rawClass = "up"
+		default:
+			eventType = adapter.EventStatusChange
+			rawClass = "unknown"
 		}
 
 		meta := map[string]any{

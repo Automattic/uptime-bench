@@ -30,6 +30,7 @@ package uptimerobot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -136,6 +137,39 @@ type apiError struct {
 	Message string `json:"message"`
 }
 
+type apiFailure struct {
+	op  string
+	err *apiError
+}
+
+func (e *apiFailure) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.err == nil {
+		return e.op + ": API returned stat=fail without an error payload"
+	}
+	return e.op + ": " + e.err.String()
+}
+
+type createMonitorUncertainError struct {
+	err error
+}
+
+func (e *createMonitorUncertainError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *createMonitorUncertainError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 func (e *apiError) String() string {
 	if e == nil {
 		return ""
@@ -159,15 +193,73 @@ func intervalSeconds(d time.Duration) int {
 	return s
 }
 
+func friendlyName(target adapter.Target) string {
+	return "uptime-bench: " + target.ID
+}
+
 func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
 	if a.apiKey == "" {
 		return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: api_key is not configured")
 	}
 
+	name := friendlyName(target)
+	monitorID, err := a.createMonitor(ctx, target, config, name)
+	if err != nil {
+		var uncertain *createMonitorUncertainError
+		switch {
+		case isAlreadyExists(err):
+			if cleanupErr := a.deleteMatchingBenchmarkMonitors(ctx, target, name); cleanupErr != nil {
+				return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: newMonitor already_exists cleanup: %w", cleanupErr)
+			}
+			monitorID, err = a.createMonitor(ctx, target, config, name)
+			if err != nil {
+				return adapter.MonitorHandle{}, err
+			}
+		case errors.As(err, &uncertain):
+			recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			recoveredID, recoveryErr := a.adoptSingleMatchingBenchmarkMonitor(recoveryCtx, target, name)
+			if recoveryErr != nil {
+				return adapter.MonitorHandle{}, err
+			}
+			monitorID = recoveredID
+		default:
+			return adapter.MonitorHandle{}, err
+		}
+	}
+
+	handle := adapter.MonitorHandle{
+		ServiceID: a.id,
+		MonitorID: strconv.FormatInt(monitorID, 10),
+		Fields: map[string]string{
+			"url": target.URL,
+		},
+	}
+
+	if config.MaintenanceWindow != nil {
+		mwID, err := a.createMWindow(ctx, target.ID, config.MaintenanceWindow)
+		if err != nil {
+			// Roll back the just-created or recovered monitor.
+			_ = a.deleteMonitor(context.Background(), monitorID)
+			return adapter.MonitorHandle{}, err
+		}
+		if err := a.attachMWindow(ctx, monitorID, mwID); err != nil {
+			// Roll back both.
+			_ = a.deleteMWindow(context.Background(), mwID)
+			_ = a.deleteMonitor(context.Background(), monitorID)
+			return adapter.MonitorHandle{}, err
+		}
+		handle.Fields["maintenance_id"] = strconv.FormatInt(mwID, 10)
+	}
+
+	return handle, nil
+}
+
+func (a *Adapter) createMonitor(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig, name string) (int64, error) {
 	form := url.Values{}
 	form.Set("api_key", a.apiKey)
 	form.Set("format", "json")
-	form.Set("friendly_name", "uptime-bench: "+target.ID)
+	form.Set("friendly_name", name)
 	form.Set("url", target.URL)
 	form.Set("interval", strconv.Itoa(intervalSeconds(config.CheckFrequency)))
 	if config.Keyword != "" {
@@ -186,7 +278,7 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 			// Keyword expected absent; alert when present.
 			form.Set("keyword_type", "1")
 		default:
-			return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: unsupported KeywordCheck %q", config.KeywordCheck)
+			return 0, fmt.Errorf("uptimerobot: unsupported KeywordCheck %q", config.KeywordCheck)
 		}
 	} else {
 		form.Set("type", strconv.Itoa(monitorTypeHTTP))
@@ -194,40 +286,24 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 
 	var resp newMonitorResponse
 	if err := a.postJSON(ctx, "/newMonitor", form, &resp); err != nil {
-		return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: newMonitor: %w", err)
+		return 0, &createMonitorUncertainError{err: fmt.Errorf("uptimerobot: newMonitor: %w", err)}
 	}
 	if resp.Stat != "ok" {
-		return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: newMonitor: %s", resp.Error)
+		return 0, &apiFailure{op: "uptimerobot: newMonitor", err: resp.Error}
 	}
 	if resp.Monitor.ID == 0 {
-		return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: newMonitor: response missing monitor id")
+		return 0, fmt.Errorf("uptimerobot: newMonitor: response missing monitor id")
 	}
-	monitorID := resp.Monitor.ID
-	handle := adapter.MonitorHandle{
-		ServiceID: a.id,
-		MonitorID: strconv.FormatInt(monitorID, 10),
-		Fields: map[string]string{
-			"url": target.URL,
-		},
-	}
+	return resp.Monitor.ID, nil
+}
 
-	if config.MaintenanceWindow != nil {
-		mwID, err := a.createMWindow(ctx, target.ID, config.MaintenanceWindow)
-		if err != nil {
-			// Roll back the just-created monitor.
-			_ = a.deleteMonitor(context.Background(), monitorID)
-			return adapter.MonitorHandle{}, err
-		}
-		if err := a.attachMWindow(ctx, monitorID, mwID); err != nil {
-			// Roll back both.
-			_ = a.deleteMWindow(context.Background(), mwID)
-			_ = a.deleteMonitor(context.Background(), monitorID)
-			return adapter.MonitorHandle{}, err
-		}
-		handle.Fields["maintenance_id"] = strconv.FormatInt(mwID, 10)
+func isAlreadyExists(err error) bool {
+	var failure *apiFailure
+	if !errors.As(err, &failure) || failure.err == nil {
+		return false
 	}
-
-	return handle, nil
+	text := strings.ToLower(failure.err.Type + " " + failure.err.Message)
+	return strings.Contains(text, "already_exists") || strings.Contains(text, "already exists")
 }
 
 // newMWindowResponse mirrors POST /v2/newMWindow.
@@ -349,9 +425,11 @@ type getMonitorsResponse struct {
 }
 
 type monitor struct {
-	ID     int64    `json:"id"`
-	Status int      `json:"status"`
-	Logs   []logRow `json:"logs"`
+	ID           int64    `json:"id"`
+	FriendlyName string   `json:"friendly_name"`
+	URL          string   `json:"url"`
+	Status       int      `json:"status"`
+	Logs         []logRow `json:"logs"`
 }
 
 // logRow is one entry from monitor.logs. The `type` values that matter to
@@ -465,6 +543,62 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 		Status:  adapter.RetrieveKnown,
 		Reports: reports,
 	}, nil
+}
+
+func (a *Adapter) adoptSingleMatchingBenchmarkMonitor(ctx context.Context, target adapter.Target, name string) (int64, error) {
+	matches, err := a.matchingBenchmarkMonitors(ctx, target, name)
+	if err != nil {
+		return 0, err
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0].ID, nil
+	case 0:
+		return 0, fmt.Errorf("uptimerobot: no matching monitor found after newMonitor uncertainty")
+	default:
+		return 0, fmt.Errorf("uptimerobot: %d matching monitors found after newMonitor uncertainty", len(matches))
+	}
+}
+
+func (a *Adapter) deleteMatchingBenchmarkMonitors(ctx context.Context, target adapter.Target, name string) error {
+	matches, err := a.matchingBenchmarkMonitors(ctx, target, name)
+	if err != nil {
+		return err
+	}
+	for _, mon := range matches {
+		if err := a.Deprovision(ctx, adapter.MonitorHandle{MonitorID: strconv.FormatInt(mon.ID, 10)}); err != nil {
+			return fmt.Errorf("delete stale monitor %d: %w", mon.ID, err)
+		}
+	}
+	return nil
+}
+
+func (a *Adapter) matchingBenchmarkMonitors(ctx context.Context, target adapter.Target, name string) ([]monitor, error) {
+	form := url.Values{}
+	form.Set("api_key", a.apiKey)
+	form.Set("format", "json")
+	form.Set("logs", "0")
+	form.Set("response_times", "0")
+	form.Set("search", name)
+
+	var resp getMonitorsResponse
+	if err := a.postJSON(ctx, "/getMonitors", form, &resp); err != nil {
+		return nil, fmt.Errorf("uptimerobot: find matching monitors: %w", err)
+	}
+	if resp.Stat != "ok" {
+		return nil, fmt.Errorf("uptimerobot: find matching monitors: %s", resp.Error)
+	}
+	var matches []monitor
+	for _, mon := range resp.Monitors {
+		if mon.FriendlyName == name && sameURL(mon.URL, target.URL) {
+			matches = append(matches, mon)
+		}
+	}
+	return matches, nil
+}
+
+func sameURL(a, b string) bool {
+	return strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
 }
 
 // classifyLog turns a log row into the (EventType, raw classification) pair

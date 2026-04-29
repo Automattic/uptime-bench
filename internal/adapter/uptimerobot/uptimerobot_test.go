@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,6 +258,156 @@ func TestProvision_APIErrorReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "url already exists") {
 		t.Fatalf("error = %v, want it to surface the API message", err)
+	}
+}
+
+func TestProvision_APIErrorWithoutPayloadReturnsError(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"stat":"fail"}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "k")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "x", URL: "http://x/"},
+		adapter.ProvisionConfig{CheckFrequency: 5 * time.Minute},
+	)
+	if err == nil {
+		t.Fatal("expected error from malformed stat=fail response")
+	}
+	if !strings.Contains(err.Error(), "without an error payload") {
+		t.Fatalf("error = %v, want missing payload context", err)
+	}
+}
+
+func TestProvision_LocalValidationErrorDoesNotAttemptRecovery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected API request for local validation error: %s", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "k")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "x", URL: "http://x/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: 5 * time.Minute,
+			Keyword:        "uptime-bench-canary",
+			KeywordCheck:   "unsupported",
+		},
+	)
+	if err == nil {
+		t.Fatal("expected unsupported KeywordCheck error")
+	}
+	if !strings.Contains(err.Error(), "unsupported KeywordCheck") {
+		t.Fatalf("error = %v, want unsupported KeywordCheck context", err)
+	}
+}
+
+func TestProvision_AlreadyExistsDeletesMatchingMonitorAndRetries(t *testing.T) {
+	var newMonitorCalls int
+	var requests []adaptertest.RequestRecord
+	var requestsMu sync.Mutex
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestsMu.Lock()
+		requests = append(requests, adaptertest.RequestRecord{Method: r.Method, Path: r.URL.Path, Body: body})
+		requestsMu.Unlock()
+		switch r.URL.Path {
+		case "/newMonitor":
+			newMonitorCalls++
+			if newMonitorCalls == 1 {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"stat":"fail","error":{"type":"already_exists","message":"monitor already exists."}}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"stat":"ok","monitor":{"id":777,"status":1}}`))
+		case "/getMonitors":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"stat":"ok","monitors":[{"id":555,"friendly_name":"uptime-bench: bench-a","url":"http://bench-a.example/","status":2}]}`))
+		case "/deleteMonitor":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"stat":"ok","monitor":{"id":555}}`))
+		default:
+			t.Errorf("unexpected request path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv2.Close()
+
+	a := newTestAdapter(srv2.URL, "k")
+	handle, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{CheckFrequency: 5 * time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if handle.MonitorID != "777" {
+		t.Fatalf("MonitorID = %q, want retried monitor 777", handle.MonitorID)
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	gotOrder := make([]string, 0, len(requests))
+	for _, r := range requests {
+		gotOrder = append(gotOrder, r.Path)
+	}
+	wantOrder := []string{"/newMonitor", "/getMonitors", "/deleteMonitor", "/newMonitor"}
+	if strings.Join(gotOrder, ",") != strings.Join(wantOrder, ",") {
+		t.Fatalf("request order = %v, want %v", gotOrder, wantOrder)
+	}
+	if formOf(requests[2]).Get("id") != "555" {
+		t.Fatalf("deleteMonitor id = %q, want stale monitor 555", formOf(requests[2]).Get("id"))
+	}
+}
+
+func TestProvision_TimeoutAfterCreateAdoptsMatchingMonitor(t *testing.T) {
+	var created atomic.Bool
+	var requests []adaptertest.RequestRecord
+	var requestsMu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestsMu.Lock()
+		requests = append(requests, adaptertest.RequestRecord{Method: r.Method, Path: r.URL.Path, Body: body})
+		requestsMu.Unlock()
+		switch r.URL.Path {
+		case "/newMonitor":
+			created.Store(true)
+			time.Sleep(80 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"stat":"ok","monitor":{"id":888,"status":1}}`))
+		case "/getMonitors":
+			if !created.Load() {
+				t.Error("getMonitors called before simulated server-side create")
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"stat":"ok","monitors":[{"id":888,"friendly_name":"uptime-bench: bench-a","url":"http://bench-a.example/","status":1}]}`))
+		default:
+			t.Errorf("unexpected request path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	a := New("uptimerobot", srv.URL, "k")
+	a.client = &http.Client{Timeout: 20 * time.Millisecond}
+	handle, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{CheckFrequency: 5 * time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if handle.MonitorID != "888" {
+		t.Fatalf("MonitorID = %q, want adopted monitor 888", handle.MonitorID)
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	gotOrder := make([]string, 0, len(requests))
+	for _, r := range requests {
+		gotOrder = append(gotOrder, r.Path)
+	}
+	if strings.Join(gotOrder, ",") != "/newMonitor,/getMonitors" {
+		t.Fatalf("request order = %v, want newMonitor then getMonitors", gotOrder)
 	}
 }
 
