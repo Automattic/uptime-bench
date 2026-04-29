@@ -67,6 +67,23 @@ Monitor report events record what each monitoring service under test reported. W
 
 ---
 
+## Normalized classification vocabulary
+
+`normalized_classification` values used for cross-service comparisons:
+
+- `http_failure`
+- `dns_failure`
+- `tls_failure`
+- `tls_advisory`
+- `timeout`
+- `content_failure`
+- `partial_response` — truncated/partial HTTP body integrity failure.
+- `recovered`
+- `unknown`
+- `unrecognized`
+
+---
+
 ## Derived metrics
 
 Metrics are computed from the event log. They are never stored in the primary event tables — they are outputs of the measurement engine, regenerable from the log at any time.

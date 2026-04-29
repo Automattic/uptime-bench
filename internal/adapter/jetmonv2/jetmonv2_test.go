@@ -97,6 +97,7 @@ func TestNormalize(t *testing.T) {
 		"tls_expiry":     "tls_advisory",
 		"tls_deprecated": "tls_advisory",
 		"keyword":        "content_failure",
+		"partial_response": "partial_response",
 		"Down":           "http_failure",
 		"Seems Down":     "http_failure",
 		"Degraded":       "http_failure",
@@ -606,22 +607,34 @@ func TestRetrieve_ClassifiesJetmonMetadata(t *testing.T) {
 			{
 				"id": 5,
 				"site_id": 8000000000000123,
-				"check_type": "tls_expiry",
-				"severity": 1,
-				"state": "Warning",
+				"check_type": "http",
+				"severity": 3,
+				"state": "Seems Down",
 				"started_at": "2026-04-25T08:04:00Z",
 				"ended_at": null,
-				"metadata": {"days_until": 5},
+				"metadata": {"http_code": 200, "error_code": 8},
 				"duration_ms": 1000,
 				"transition_count": 1
 			},
 			{
 				"id": 6,
 				"site_id": 8000000000000123,
+				"check_type": "tls_expiry",
+				"severity": 1,
+				"state": "Warning",
+				"started_at": "2026-04-25T08:05:00Z",
+				"ended_at": null,
+				"metadata": {"days_until": 5},
+				"duration_ms": 1000,
+				"transition_count": 1
+			},
+			{
+				"id": 7,
+				"site_id": 8000000000000123,
 				"check_type": "http",
 				"severity": 4,
 				"state": "Down",
-				"started_at": "2026-04-25T08:05:00Z",
+				"started_at": "2026-04-25T08:06:00Z",
 				"ended_at": null,
 				"metadata": {"http_code": "403", "error_code": "0"},
 				"duration_ms": 1000,
@@ -644,12 +657,12 @@ func TestRetrieve_ClassifiesJetmonMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Reports) != 6 {
-		t.Fatalf("reports = %d, want 6", len(res.Reports))
+	if len(res.Reports) != 7 {
+		t.Fatalf("reports = %d, want 7", len(res.Reports))
 	}
 
-	wantRaw := []string{"ssl", "timeout", "keyword", "tls_deprecated", "tls_expiry", "blocked"}
-	wantNormalized := []string{"tls_failure", "timeout", "content_failure", "tls_advisory", "tls_advisory", "http_failure"}
+	wantRaw := []string{"ssl", "timeout", "keyword", "tls_deprecated", "partial_response", "tls_expiry", "blocked"}
+	wantNormalized := []string{"tls_failure", "timeout", "content_failure", "tls_advisory", "partial_response", "tls_advisory", "http_failure"}
 	for i := range wantRaw {
 		if res.Reports[i].RawClassification != wantRaw[i] {
 			t.Fatalf("Reports[%d].RawClassification = %q, want %q", i, res.Reports[i].RawClassification, wantRaw[i])

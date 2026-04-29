@@ -54,6 +54,7 @@ const (
 	jetmonErrorKeyword       = 5
 	jetmonErrorTLSExpired    = 6
 	jetmonErrorTLSDeprecated = 7
+	jetmonErrorTruncatedBody = 8
 )
 
 // classification maps Jetmon v2 event states and metadata-derived reason
@@ -75,6 +76,7 @@ var classification = map[string]string{
 	"tls_expired":    "tls_failure",
 	"tls_expiry":     "tls_advisory",
 	"keyword":        "content_failure",
+	"partial_response": "partial_response",
 	"up":             "recovered",
 	"resolved":       "recovered",
 	"tls_deprecated": "tls_advisory",
@@ -97,6 +99,7 @@ var classification = map[string]string{
 	"TLS Expired":    "tls_failure",
 	"TLS Expiry":     "tls_advisory",
 	"Keyword":        "content_failure",
+	"Partial Response": "partial_response",
 	"Up":             "recovered",
 	"Resolved":       "recovered",
 	"TLS Deprecated": "tls_advisory",
@@ -596,6 +599,8 @@ func rawClassification(ev eventResponse) string {
 			return "tls_expired"
 		case jetmonErrorTLSDeprecated:
 			return "tls_deprecated"
+		case jetmonErrorTruncatedBody:
+			return "partial_response"
 		}
 	}
 	if httpCode, ok := metadataInt(ev.Metadata, "http_code"); ok {

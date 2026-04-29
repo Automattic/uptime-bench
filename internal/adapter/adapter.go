@@ -50,6 +50,7 @@ type Adapter interface {
 	//	"tls_advisory"    — TLS concern where the HTTP request can still succeed
 	//	"timeout"         — response timeout (any phase)
 	//	"content_failure" — body content check failed
+	//	"partial_response" — truncated/partial HTTP body integrity failure
 	//	"recovered"       — incident resolved
 	//	"unknown"         — service could not determine state (monitor-side)
 	//	"unrecognized"    — raw label unknown to this adapter; use UnrecognizedClassification
