@@ -8,6 +8,7 @@
 #   url          — API root URL; omit to use the service's default public endpoint
 #   auth         — credential key=value pairs; required keys vary by type (see below)
 #   enabled      — set false to skip this service without removing its config
+#   capacity     — optional account/service caps used when planning parallel runs
 #   probe_ranges — maps region name → list of CIDR blocks used by this service's probes
 #                  in that region. Used to expand `regions` in scenario failure blocks
 #                  into source IP ranges for geographic failure injection.
@@ -42,6 +43,16 @@ url     = "http://localhost:7400"
 enabled = false
 auth    = { token = "replace-with-your-token", write_mode = "false" }
 
+[services.capacity]
+unlimited                 = true
+max_active_monitors       = 0
+reserved_monitors         = 0
+max_parallel_runs         = 0
+api_rate_limit_per_minute = 0
+billing_model             = "self_hosted"
+source                    = "Self-hosted Jetmon v1 instance"
+notes                     = "Use pre-seeded benchmark URLs or enable write_mode before large runs."
+
 # -----------------------------------------------------------------------------
 # Jetmon 2
 # Required: url (Jetmon 2 internal REST API root; either server root or /api/v1)
@@ -58,6 +69,16 @@ url     = "http://localhost:8081/api/v1"
 enabled = false
 auth    = { token = "replace-with-your-token", bucket_no = "0" }
 
+[services.capacity]
+unlimited                 = true
+max_active_monitors       = 0
+reserved_monitors         = 0
+max_parallel_runs         = 0
+api_rate_limit_per_minute = 0
+billing_model             = "self_hosted"
+source                    = "Self-hosted Jetmon v2 instance"
+notes                     = "Practical cap is the host/operator policy rather than a SaaS monitor quota."
+
 # -----------------------------------------------------------------------------
 # Pingdom
 # Default URL: https://api.pingdom.com/api/3.1
@@ -70,6 +91,15 @@ type    = "pingdom"
 enabled = false
 auth    = { token = "replace-with-your-token" }
 
+[services.capacity]
+max_active_monitors       = 10
+reserved_monitors         = 0
+max_parallel_runs         = 10
+api_rate_limit_per_minute = 0
+billing_model             = "monitor"
+source                    = "Live /credits API or account plan"
+notes                     = "Set to the default check limit reported by your account."
+
 [services.probe_ranges]
 # Replace these example CIDRs with current values from Pingdom's published probe list.
 us-east  = ["212.84.74.0/24", "46.246.93.0/24"]
@@ -81,17 +111,52 @@ ap-sea   = ["43.251.28.0/24"]
 # -----------------------------------------------------------------------------
 # UptimeRobot
 # Default URL: https://api.uptimerobot.com/v2
-# Auth keys: api_key
+# Auth keys:
+#   api_key             — account API key
+#   http_method         — "GET" for the primary website-availability lane, or
+#                         "HEAD" for a HEAD-specific capability lane
+#   min_check_frequency — account-plan minimum, e.g. "60s" for Solo/paid or "5m" for free
 # Probe IP list: https://uptimerobot.com/inc/files/ips/IPv4andIPv6.txt
 # -----------------------------------------------------------------------------
 [[services]]
 id      = "uptimerobot"
 type    = "uptimerobot"
 enabled = false
-auth    = { api_key = "replace-with-your-key" }
+auth    = { api_key = "replace-with-your-key", http_method = "GET", min_check_frequency = "60s" }
+
+[services.capacity]
+max_active_monitors       = 50
+reserved_monitors         = 1
+max_parallel_runs         = 49
+api_rate_limit_per_minute = 100
+billing_model             = "monitor"
+source                    = "Solo 50 plan: monitor cap 50; paid API rate limit is monitor limit * 2/min"
+notes                     = "Canonical GET lane. If enabling the HEAD lane at the same time, keep combined UptimeRobot active monitors within the shared account cap."
 
 [services.probe_ranges]
 # Replace these example CIDRs with current values from UptimeRobot's published IP list.
+us-east  = ["216.144.248.0/24"]
+us-west  = ["208.115.199.0/24"]
+eu-west  = ["178.63.112.0/24"]
+ap-sea   = ["103.253.145.0/24"]
+
+[[services]]
+id      = "uptimerobot-head"
+type    = "uptimerobot"
+enabled = false
+auth    = { api_key = "replace-with-your-key", http_method = "HEAD", min_check_frequency = "60s" }
+
+[services.capacity]
+max_active_monitors       = 50
+reserved_monitors         = 1
+max_parallel_runs         = 24
+api_rate_limit_per_minute = 100
+billing_model             = "monitor"
+source                    = "Solo 50 plan: monitor cap 50; paid API rate limit is monitor limit * 2/min"
+notes                     = "Secondary HEAD capability lane. Keep disabled for primary GET-scored comparisons unless explicitly testing HEAD behavior."
+
+[services.probe_ranges]
+# Same UptimeRobot probe pool as the GET lane.
 us-east  = ["216.144.248.0/24"]
 us-west  = ["208.115.199.0/24"]
 eu-west  = ["178.63.112.0/24"]
@@ -108,6 +173,15 @@ id      = "datadog-synthetics"
 type    = "datadog-synthetics"
 enabled = false
 auth    = { api_key = "replace-with-your-key", app_key = "replace-with-your-key" }
+
+[services.capacity]
+max_active_monitors       = 0
+reserved_monitors         = 0
+max_parallel_runs         = 50
+api_rate_limit_per_minute = 0
+billing_model             = "test_run"
+source                    = "Account policy and live API rate-limit headers"
+notes                     = "No fixed monitor cap may be exposed; choose a parallel limit from budget."
 
 [services.probe_ranges]
 # Replace these example CIDRs with current values from Datadog's ip-ranges endpoint.
@@ -128,6 +202,15 @@ id      = "better-uptime"
 type    = "better-uptime"
 enabled = false
 auth    = { token = "replace-with-your-token" }
+
+[services.capacity]
+max_active_monitors       = 10
+reserved_monitors         = 0
+max_parallel_runs         = 10
+api_rate_limit_per_minute = 60
+billing_model             = "monitor"
+source                    = "Account plan or operator policy"
+notes                     = "Provider API may not expose quota; set this from the account UI."
 
 [services.probe_ranges]
 # Replace these example CIDRs with current values from Better Stack's documentation.

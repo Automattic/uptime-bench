@@ -70,7 +70,21 @@ var registry = map[string]adapterFactory{
 		if key == "" {
 			return nil, fmt.Errorf("uptimerobot: auth.api_key is required")
 		}
-		return uptimerobot.New(id, apiURL, key), nil
+		var opts []uptimerobot.Option
+		if method := strings.TrimSpace(auth["http_method"]); method != "" {
+			if _, err := uptimerobot.HTTPMethodCode(method); err != nil {
+				return nil, err
+			}
+			opts = append(opts, uptimerobot.WithHTTPMethod(method))
+		}
+		if raw := strings.TrimSpace(auth["min_check_frequency"]); raw != "" {
+			d, err := time.ParseDuration(raw)
+			if err != nil {
+				return nil, fmt.Errorf("uptimerobot: auth.min_check_frequency must be a duration: %w", err)
+			}
+			opts = append(opts, uptimerobot.WithMinCheckFrequency(d))
+		}
+		return uptimerobot.New(id, apiURL, key, opts...), nil
 	},
 	"pingdom": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
 		token := auth["token"]

@@ -43,6 +43,46 @@ type Service struct {
 	// concrete source IP ranges for geographic failure injection.
 	// Example: probe_ranges.us-east = ["74.125.0.0/16", "198.51.100.0/24"]
 	ProbeRanges map[string][]string
+
+	// Capacity documents practical service limits the scheduler can use when
+	// deciding how many benchmark monitors may run in parallel.
+	Capacity ServiceCapacity
+}
+
+// ServiceCapacity describes the monitor/account capacity available for a
+// configured service. Values are advisory today, but are parsed as first-class
+// config so campaign generation can use them.
+type ServiceCapacity struct {
+	// Unlimited means the service has no practical monitor-count cap for this
+	// harness. Self-hosted Jetmon instances should normally set this true.
+	Unlimited bool `toml:"unlimited"`
+
+	// MaxActiveMonitors is the account/service cap for simultaneously active
+	// monitors. Zero means unknown unless Unlimited is true.
+	MaxActiveMonitors int `toml:"max_active_monitors"`
+
+	// ReservedMonitors is the count held back for non-benchmark use.
+	ReservedMonitors int `toml:"reserved_monitors"`
+
+	// MaxParallelRuns is the benchmarker's chosen limit for simultaneous runs
+	// using this service after accounting for reservations and risk.
+	MaxParallelRuns int `toml:"max_parallel_runs"`
+
+	// APIRateLimitPerMinute is the known API request limit, if any. Zero means
+	// unknown or not relevant.
+	APIRateLimitPerMinute int `toml:"api_rate_limit_per_minute"`
+
+	// BillingModel records the operator-facing constraint, for example
+	// "monitor", "test_run", or "self_hosted".
+	BillingModel string `toml:"billing_model"`
+
+	// Source records how the cap was determined, such as a live API endpoint,
+	// account UI, plan docs, or operator policy.
+	Source string `toml:"source"`
+
+	// Notes holds short operator context that is useful when planning large
+	// matrix runs.
+	Notes string `toml:"notes"`
 }
 
 // Load reads and parses a services config file.
@@ -64,6 +104,7 @@ func Parse(data []byte) (*Config, error) {
 			Auth        map[string]string   `toml:"auth"`
 			Enabled     bool                `toml:"enabled"`
 			ProbeRanges map[string][]string `toml:"probe_ranges"`
+			Capacity    ServiceCapacity     `toml:"capacity"`
 		} `toml:"services"`
 	}
 	if err := toml.Unmarshal(data, &raw); err != nil {
@@ -93,6 +134,9 @@ func Parse(data []byte) (*Config, error) {
 				}
 			}
 		}
+		if err := validateCapacity(s.ID, s.Capacity); err != nil {
+			return nil, err
+		}
 
 		c.Services = append(c.Services, Service{
 			ID:          s.ID,
@@ -101,7 +145,32 @@ func Parse(data []byte) (*Config, error) {
 			Auth:        s.Auth,
 			Enabled:     s.Enabled,
 			ProbeRanges: s.ProbeRanges,
+			Capacity:    s.Capacity,
 		})
 	}
 	return c, nil
+}
+
+func validateCapacity(id string, c ServiceCapacity) error {
+	if c.MaxActiveMonitors < 0 {
+		return fmt.Errorf("services: %q: capacity.max_active_monitors must be non-negative", id)
+	}
+	if c.ReservedMonitors < 0 {
+		return fmt.Errorf("services: %q: capacity.reserved_monitors must be non-negative", id)
+	}
+	if c.MaxParallelRuns < 0 {
+		return fmt.Errorf("services: %q: capacity.max_parallel_runs must be non-negative", id)
+	}
+	if c.APIRateLimitPerMinute < 0 {
+		return fmt.Errorf("services: %q: capacity.api_rate_limit_per_minute must be non-negative", id)
+	}
+	if !c.Unlimited && c.MaxActiveMonitors > 0 {
+		if c.ReservedMonitors > c.MaxActiveMonitors {
+			return fmt.Errorf("services: %q: capacity.reserved_monitors exceeds max_active_monitors", id)
+		}
+		if c.MaxParallelRuns > c.MaxActiveMonitors-c.ReservedMonitors {
+			return fmt.Errorf("services: %q: capacity.max_parallel_runs exceeds available monitor capacity", id)
+		}
+	}
+	return nil
 }

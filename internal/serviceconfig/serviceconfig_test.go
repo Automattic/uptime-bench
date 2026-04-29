@@ -80,13 +80,22 @@ us-east = ["1.2.3.0/24", "not-a-cidr"]
 	}
 }
 
-func TestParse_RoundTripsAuthAndProbeRanges(t *testing.T) {
+func TestParse_RoundTripsAuthProbeRangesAndCapacity(t *testing.T) {
 	in := `
 [[services]]
 id      = "p"
 type    = "pingdom"
 enabled = true
 auth    = { token = "abc" }
+
+[services.capacity]
+max_active_monitors      = 10
+reserved_monitors        = 1
+max_parallel_runs        = 9
+api_rate_limit_per_minute = 60
+billing_model            = "monitor"
+source                   = "live /credits"
+notes                    = "free-tier account"
 
 [services.probe_ranges]
 us-east = ["1.2.3.0/24", "4.5.6.0/24"]
@@ -102,5 +111,30 @@ us-east = ["1.2.3.0/24", "4.5.6.0/24"]
 	got := s.ProbeRanges["us-east"]
 	if len(got) != 2 || got[0] != "1.2.3.0/24" || got[1] != "4.5.6.0/24" {
 		t.Fatalf("probe_ranges.us-east = %v", got)
+	}
+	if s.Capacity.MaxActiveMonitors != 10 ||
+		s.Capacity.ReservedMonitors != 1 ||
+		s.Capacity.MaxParallelRuns != 9 ||
+		s.Capacity.APIRateLimitPerMinute != 60 ||
+		s.Capacity.BillingModel != "monitor" ||
+		s.Capacity.Source != "live /credits" ||
+		s.Capacity.Notes != "free-tier account" {
+		t.Fatalf("capacity = %+v", s.Capacity)
+	}
+}
+
+func TestParse_RejectsInvalidCapacity(t *testing.T) {
+	_, err := Parse([]byte(`
+[[services]]
+id   = "p"
+type = "pingdom"
+
+[services.capacity]
+max_active_monitors = 10
+reserved_monitors   = 2
+max_parallel_runs   = 9
+`))
+	if err == nil || !strings.Contains(err.Error(), "max_parallel_runs exceeds available monitor capacity") {
+		t.Fatalf("got err=%v, want one mentioning capacity", err)
 	}
 }

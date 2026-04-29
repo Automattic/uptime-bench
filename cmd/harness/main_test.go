@@ -170,7 +170,11 @@ func TestRegistry_UptimeRobotRequiresAPIKey(t *testing.T) {
 // TestRegistry_UptimeRobotBuilds — happy path with api_key set.
 func TestRegistry_UptimeRobotBuilds(t *testing.T) {
 	factory := registry["uptimerobot"]
-	a, err := factory("ur", "", map[string]string{"api_key": "u123-XXX"})
+	a, err := factory("ur", "", map[string]string{
+		"api_key":             "u123-XXX",
+		"http_method":         "GET",
+		"min_check_frequency": "60s",
+	})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
@@ -179,6 +183,28 @@ func TestRegistry_UptimeRobotBuilds(t *testing.T) {
 	}
 	if a.ServiceID() != "ur" {
 		t.Fatalf("ServiceID = %q", a.ServiceID())
+	}
+}
+
+func TestRegistry_UptimeRobotRejectsInvalidHTTPMethod(t *testing.T) {
+	factory := registry["uptimerobot"]
+	_, err := factory("ur", "", map[string]string{"api_key": "u123-XXX", "http_method": "TRACE"})
+	if err == nil {
+		t.Fatal("expected invalid http_method error")
+	}
+	if !strings.Contains(err.Error(), "http_method") {
+		t.Fatalf("err = %v, want http_method", err)
+	}
+}
+
+func TestRegistry_UptimeRobotRejectsInvalidMinCheckFrequency(t *testing.T) {
+	factory := registry["uptimerobot"]
+	_, err := factory("ur", "", map[string]string{"api_key": "u123-XXX", "min_check_frequency": "soon"})
+	if err == nil {
+		t.Fatal("expected invalid min_check_frequency error")
+	}
+	if !strings.Contains(err.Error(), "min_check_frequency") {
+		t.Fatalf("err = %v, want min_check_frequency", err)
 	}
 }
 

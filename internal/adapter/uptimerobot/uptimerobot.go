@@ -17,7 +17,13 @@
 //	id      = "uptimerobot"
 //	type    = "uptimerobot"
 //	enabled = true
-//	auth    = { api_key = "u123-XXXXXXX" }
+//	auth    = { api_key = "u123-XXXXXXX", http_method = "GET", min_check_frequency = "60s" }
+//
+// Optional auth keys:
+//
+//	http_method         — explicit HTTP method for HTTP monitors: "GET" or "HEAD".
+//	min_check_frequency — account-plan minimum interval, e.g. "60s" for Solo/paid
+//	                      plans or "5m" for free-tier accounts.
 //
 // `url` is optional; the default endpoint is https://api.uptimerobot.com/v2.
 //
@@ -52,6 +58,16 @@ const (
 	monitorTypeKeyword = 2
 )
 
+const (
+	httpMethodHEAD = "HEAD"
+	httpMethodGET  = "GET"
+)
+
+var httpMethodCodes = map[string]string{
+	httpMethodHEAD: "1",
+	httpMethodGET:  "2",
+}
+
 // UptimeRobot status codes returned by getMonitors.status.
 const (
 	statusPaused     = 0
@@ -73,34 +89,59 @@ var classification = map[string]string{
 
 // Adapter implements adapter.Adapter for UptimeRobot.
 type Adapter struct {
-	id     string
-	apiURL string
-	apiKey string
-	client *http.Client
+	id                string
+	apiURL            string
+	apiKey            string
+	httpMethod        string
+	minCheckFrequency time.Duration
+	client            *http.Client
+}
+
+type Option func(*Adapter)
+
+func WithHTTPMethod(method string) Option {
+	return func(a *Adapter) {
+		a.httpMethod = normalizeHTTPMethod(method)
+	}
+}
+
+func WithMinCheckFrequency(d time.Duration) Option {
+	return func(a *Adapter) {
+		if d > 0 {
+			a.minCheckFrequency = d
+		}
+	}
 }
 
 // New creates an UptimeRobot adapter.
-func New(id, apiURL, apiKey string) *Adapter {
+func New(id, apiURL, apiKey string, opts ...Option) *Adapter {
 	if apiURL == "" {
 		apiURL = DefaultAPIURL
 	}
-	return &Adapter{
-		id:     id,
-		apiURL: strings.TrimRight(apiURL, "/"),
-		apiKey: apiKey,
-		client: &http.Client{Timeout: 30 * time.Second},
+	a := &Adapter{
+		id:                id,
+		apiURL:            strings.TrimRight(apiURL, "/"),
+		apiKey:            apiKey,
+		minCheckFrequency: 5 * time.Minute,
+		client:            &http.Client{Timeout: 30 * time.Second},
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 func (a *Adapter) ServiceID() string { return a.id }
 
 func (a *Adapter) Capabilities() adapter.Capabilities {
+	supportsKeyword := !strings.EqualFold(a.httpMethod, httpMethodHEAD)
 	return adapter.Capabilities{
 		// Free tier is 5 min; paid plans go down to 30s. 5 min is the safe
-		// default so a free-tier scenario doesn't fail capability check.
-		MinCheckFrequency:          5 * time.Minute,
-		SupportsKeyword:            true,
-		SupportsInvertedKeyword:    true, // keyword_type=1 (alert when present)
+		// default so a free-tier scenario doesn't fail capability check. Paid
+		// accounts can lower this with auth.min_check_frequency.
+		MinCheckFrequency:          a.minCheckFrequency,
+		SupportsKeyword:            supportsKeyword,
+		SupportsInvertedKeyword:    supportsKeyword, // keyword_type=1 (alert when present)
 		SupportsAgentChecks:        false,
 		SupportsMaintenanceWindows: true,
 		// Cooldown resets naturally because Deprovision deletes the
@@ -193,7 +234,11 @@ func intervalSeconds(d time.Duration) int {
 	return s
 }
 
-func friendlyName(target adapter.Target) string {
+func (a *Adapter) friendlyName(target adapter.Target) string {
+	return "uptime-bench: " + a.id + ": " + target.ID
+}
+
+func legacyFriendlyName(target adapter.Target) string {
 	return "uptime-bench: " + target.ID
 }
 
@@ -202,7 +247,7 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: api_key is not configured")
 	}
 
-	name := friendlyName(target)
+	name := a.friendlyName(target)
 	monitorID, err := a.createMonitor(ctx, target, config, name)
 	if err != nil {
 		var uncertain *createMonitorUncertainError
@@ -235,6 +280,9 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 			"url": target.URL,
 		},
 	}
+	if a.httpMethod != "" {
+		handle.Fields["http_method"] = a.httpMethod
+	}
 
 	if config.MaintenanceWindow != nil {
 		mwID, err := a.createMWindow(ctx, target.ID, config.MaintenanceWindow)
@@ -262,7 +310,15 @@ func (a *Adapter) createMonitor(ctx context.Context, target adapter.Target, conf
 	form.Set("friendly_name", name)
 	form.Set("url", target.URL)
 	form.Set("interval", strconv.Itoa(intervalSeconds(config.CheckFrequency)))
+	if code, err := httpMethodCode(a.httpMethod); err != nil {
+		return 0, err
+	} else if code != "" {
+		form.Set("http_method", code)
+	}
 	if config.Keyword != "" {
+		if strings.EqualFold(a.httpMethod, httpMethodHEAD) {
+			return 0, fmt.Errorf("uptimerobot: keyword monitoring requires a response body; http_method HEAD is not supported")
+		}
 		// Keyword monitors are a distinct type. keyword_type encodes
 		// presence (1 = exists; alert when found) vs. absence (2 = not
 		// exists; alert when missing). We invert the project-level
@@ -295,6 +351,28 @@ func (a *Adapter) createMonitor(ctx context.Context, target adapter.Target, conf
 		return 0, fmt.Errorf("uptimerobot: newMonitor: response missing monitor id")
 	}
 	return resp.Monitor.ID, nil
+}
+
+func normalizeHTTPMethod(method string) string {
+	return strings.ToUpper(strings.TrimSpace(method))
+}
+
+func httpMethodCode(method string) (string, error) {
+	method = normalizeHTTPMethod(method)
+	if method == "" {
+		return "", nil
+	}
+	code, ok := httpMethodCodes[method]
+	if !ok {
+		return "", fmt.Errorf("uptimerobot: unsupported auth.http_method %q (supported: GET, HEAD)", method)
+	}
+	return code, nil
+}
+
+// HTTPMethodCode validates and returns UptimeRobot's v2 http_method code.
+// It is exported so the harness can fail fast on invalid services.toml values.
+func HTTPMethodCode(method string) (string, error) {
+	return httpMethodCode(method)
 }
 
 func isAlreadyExists(err error) bool {
@@ -535,6 +613,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 				"reason_text":  lg.Reason.Detail,
 				"monitor_id":   mon.ID,
 				"final_status": mon.Status,
+				"http_method":  a.httpMethod,
 			},
 		})
 	}
@@ -590,7 +669,7 @@ func (a *Adapter) matchingBenchmarkMonitors(ctx context.Context, target adapter.
 	}
 	var matches []monitor
 	for _, mon := range resp.Monitors {
-		if mon.FriendlyName == name && sameURL(mon.URL, target.URL) {
+		if (mon.FriendlyName == name || mon.FriendlyName == legacyFriendlyName(target)) && sameURL(mon.URL, target.URL) {
 			matches = append(matches, mon)
 		}
 	}

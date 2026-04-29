@@ -52,6 +52,12 @@ func newTestAdapter(srvURL, apiKey string) *Adapter {
 	return a
 }
 
+func newTestAdapterWithOptions(srvURL, apiKey string, opts ...Option) *Adapter {
+	a := New("uptimerobot", srvURL, apiKey, opts...)
+	a.client = http.DefaultClient // bypass the 30s timeout for tests
+	return a
+}
+
 // formOf parses a routedFake-captured form-encoded request body into
 // url.Values. Adapter is form-encoded throughout, so test sites that
 // need to inspect form fields go through this helper rather than
@@ -80,6 +86,23 @@ func TestCapabilities(t *testing.T) {
 	}
 	if caps.SupportsAgentChecks {
 		t.Fatal("SupportsAgentChecks should be false (probe-based service)")
+	}
+}
+
+func TestCapabilities_PaidMinimumAndHEADMethod(t *testing.T) {
+	a := newTestAdapterWithOptions("http://x", "k",
+		WithHTTPMethod("HEAD"),
+		WithMinCheckFrequency(time.Minute),
+	)
+	caps := a.Capabilities()
+	if caps.MinCheckFrequency != time.Minute {
+		t.Fatalf("MinCheckFrequency = %v, want 1m", caps.MinCheckFrequency)
+	}
+	if caps.SupportsKeyword {
+		t.Fatal("HEAD monitor should not claim keyword support")
+	}
+	if caps.SupportsInvertedKeyword {
+		t.Fatal("HEAD monitor should not claim inverted keyword support")
 	}
 }
 
@@ -163,9 +186,15 @@ func TestProvision_RequestShape(t *testing.T) {
 	if c.form.Get("interval") != strconv.Itoa(int((5 * time.Minute).Seconds())) {
 		t.Errorf("interval field = %q, want %d", c.form.Get("interval"), int((5 * time.Minute).Seconds()))
 	}
+	if c.form.Get("http_method") != "" {
+		t.Errorf("http_method field = %q, want empty when auth.http_method is omitted", c.form.Get("http_method"))
+	}
 	// friendly_name should include the target ID so the operator can find it.
 	if !strings.Contains(c.form.Get("friendly_name"), "bench-a") {
 		t.Errorf("friendly_name = %q, should contain target id", c.form.Get("friendly_name"))
+	}
+	if !strings.Contains(c.form.Get("friendly_name"), "uptimerobot") {
+		t.Errorf("friendly_name = %q, should contain service id", c.form.Get("friendly_name"))
 	}
 
 	if handle.ServiceID != "uptimerobot" {
@@ -181,6 +210,67 @@ func TestProvision_RequestShape(t *testing.T) {
 	if c.form.Get("keyword_value") != "" || c.form.Get("keyword_type") != "" {
 		t.Errorf("status check should not set keyword fields, got value=%q type=%q",
 			c.form.Get("keyword_value"), c.form.Get("keyword_type"))
+	}
+}
+
+func TestProvision_HTTPMethodGET(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"stat":"ok","monitor":{"id":1,"status":1}}`)
+	defer srv.Close()
+
+	a := newTestAdapterWithOptions(srv.URL, "u123-XXX", WithHTTPMethod("get"))
+	handle, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{CheckFrequency: time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if c.form.Get("http_method") != "2" {
+		t.Errorf("http_method = %q, want 2 (GET)", c.form.Get("http_method"))
+	}
+	if handle.Fields["http_method"] != "GET" {
+		t.Errorf("handle.Fields[http_method] = %q, want GET", handle.Fields["http_method"])
+	}
+}
+
+func TestProvision_HTTPMethodHEAD(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"stat":"ok","monitor":{"id":1,"status":1}}`)
+	defer srv.Close()
+
+	a := newTestAdapterWithOptions(srv.URL, "u123-XXX", WithHTTPMethod("HEAD"))
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{CheckFrequency: time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if c.form.Get("http_method") != "1" {
+		t.Errorf("http_method = %q, want 1 (HEAD)", c.form.Get("http_method"))
+	}
+}
+
+func TestProvision_HTTPMethodHEADRejectsKeyword(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"stat":"ok","monitor":{"id":1,"status":1}}`)
+	defer srv.Close()
+
+	a := newTestAdapterWithOptions(srv.URL, "u123-XXX", WithHTTPMethod("HEAD"))
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: time.Minute,
+			Keyword:        "uptime-bench-canary",
+			KeywordCheck:   adapter.KeywordCheckPresent,
+		},
+	)
+	if err == nil {
+		t.Fatal("expected HEAD keyword provisioning to fail")
+	}
+	if c.form != nil {
+		t.Fatal("HEAD keyword provisioning should fail before calling the API")
 	}
 }
 
