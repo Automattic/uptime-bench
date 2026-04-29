@@ -126,17 +126,22 @@ control_port = 9000
 # failure injection and recovery propagate quickly to resolvers.
 #
 # nameservers must match [[nameservers]] ids defined above.
+# nameserver_hosts is optional. Use it when the parent zone delegates to
+# out-of-zone NS hostnames, or when one nameserver member has multiple public
+# hostnames and a domain should publish only a specific pair.
 
 [[domains]]
 name        = "bench.example.com"
 registrar   = "Namecheap"
 nameservers = ["ns-01", "ns-02"]
+nameserver_hosts = ["ns1.bench.example.com", "ns2.bench.example.com"]
 ttl         = 30
 
 [[domains]]
 name        = "probe.example.net"
 registrar   = "Namecheap"
 nameservers = ["ns-01", "ns-02"]
+nameserver_hosts = ["ns1.probe.example.net", "ns2.probe.example.net"]
 ttl         = 30
 
 # ---------------------------------------------------------------------------

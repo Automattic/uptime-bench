@@ -97,10 +97,11 @@ type Site struct {
 
 // Domain holds domain-level configuration.
 type Domain struct {
-	Name        string
-	Registrar   string
-	Nameservers []string
-	TTL         int
+	Name            string
+	Registrar       string
+	Nameservers     []string
+	NameserverHosts []string
+	TTL             int
 }
 
 // Load reads and parses a fleet config file.
@@ -190,10 +191,11 @@ func convert(r rawConfig) (*Config, error) {
 
 	for _, d := range r.Domains {
 		c.Domains = append(c.Domains, Domain{
-			Name:        d.Name,
-			Registrar:   d.Registrar,
-			Nameservers: d.Nameservers,
-			TTL:         d.TTL,
+			Name:            d.Name,
+			Registrar:       d.Registrar,
+			Nameservers:     d.Nameservers,
+			NameserverHosts: d.NameserverHosts,
+			TTL:             d.TTL,
 		})
 	}
 
@@ -263,8 +265,9 @@ type rawSite struct {
 }
 
 type rawDomain struct {
-	Name        string   `toml:"name"`
-	Registrar   string   `toml:"registrar"`
-	Nameservers []string `toml:"nameservers"`
-	TTL         int      `toml:"ttl"`
+	Name            string   `toml:"name"`
+	Registrar       string   `toml:"registrar"`
+	Nameservers     []string `toml:"nameservers"`
+	NameserverHosts []string `toml:"nameserver_hosts"`
+	TTL             int      `toml:"ttl"`
 }

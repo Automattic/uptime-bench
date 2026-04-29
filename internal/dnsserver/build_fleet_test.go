@@ -99,6 +99,59 @@ func TestBuildFromFleet_NameserverHostsRespectServedDomains(t *testing.T) {
 	}
 }
 
+func TestBuildFromFleet_UsesDomainNameserverHostsForOutOfZoneDelegation(t *testing.T) {
+	cfg := &fleet.Config{
+		Nameservers: []fleet.Nameserver{
+			{
+				ID:          "ns-01",
+				Address:     "10.0.0.1",
+				ControlPort: 9100,
+				DNSPort:     53,
+				Domains:     []string{"example.org"},
+				Hosts:       []string{"ns1.example.com"},
+			},
+			{
+				ID:          "ns-02",
+				Address:     "10.0.0.2",
+				ControlPort: 9100,
+				DNSPort:     53,
+				Domains:     []string{"example.org"},
+				Hosts:       []string{"ns2.example.com"},
+			},
+		},
+		Targets: []fleet.Target{
+			{
+				ID:      "target-01",
+				Address: "10.0.0.10",
+				Sites:   []fleet.Site{{ID: "bench-a", Host: "bench-a.example.org"}},
+			},
+		},
+		Domains: []fleet.Domain{
+			{
+				Name:            "example.org",
+				Nameservers:     []string{"ns-01", "ns-02"},
+				NameserverHosts: []string{"ns1.example.com", "ns2.example.com"},
+				TTL:             30,
+			},
+		},
+	}
+
+	z, err := BuildFromFleet(cfg, "ns-01", 1700000000)
+	if err != nil {
+		t.Fatalf("BuildFromFleet: %v", err)
+	}
+	apex := z.Apex["example.org"]
+	if len(apex.NSHostnames) != 2 || apex.NSHostnames[0] != "ns1.example.com" || apex.NSHostnames[1] != "ns2.example.com" {
+		t.Fatalf("NSHostnames = %v, want out-of-zone harmonic-style hosts", apex.NSHostnames)
+	}
+	if _, ok := z.Records["bench-a.example.org"]; !ok {
+		t.Fatal("target A record missing for out-of-zone delegation domain")
+	}
+	if _, ok := z.Records["ns1.example.com"]; ok {
+		t.Fatal("out-of-zone nameserver A record should not be emitted into example.org")
+	}
+}
+
 func TestBuildFromFleet_NoHostsIsBackwardsCompatible(t *testing.T) {
 	cfg := &fleet.Config{
 		Nameservers: []fleet.Nameserver{

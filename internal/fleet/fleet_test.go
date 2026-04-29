@@ -88,6 +88,12 @@ address = "1.2.3.4"
 control_port = 9100
 domains = ["example.com"]
 hosts = ["ns1.example.com", "ns1.other.example"]
+
+[[domains]]
+name = "example.com"
+nameservers = ["ns-01"]
+nameserver_hosts = ["ns1.example.net"]
+ttl = 30
 `
 	cfg, err := Parse([]byte(in))
 	if err != nil {
@@ -96,6 +102,10 @@ hosts = ["ns1.example.com", "ns1.other.example"]
 	got := cfg.Nameservers[0].Hosts
 	if len(got) != 2 || got[0] != "ns1.example.com" || got[1] != "ns1.other.example" {
 		t.Fatalf("Hosts = %v, want [ns1.example.com ns1.other.example]", got)
+	}
+	domainHosts := cfg.Domains[0].NameserverHosts
+	if len(domainHosts) != 1 || domainHosts[0] != "ns1.example.net" {
+		t.Fatalf("Domain.NameserverHosts = %v, want [ns1.example.net]", domainHosts)
 	}
 }
 

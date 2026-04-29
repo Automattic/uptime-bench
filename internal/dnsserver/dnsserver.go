@@ -58,12 +58,20 @@ func BuildFromFleet(fl *fleet.Config, memberID string, serial uint32) (*Zones, e
 	}
 
 	domainTTL := make(map[string]uint32)
+	domainNSHosts := make(map[string][]string)
 	for _, d := range fl.Domains {
 		ttl := uint32(d.TTL)
 		if ttl == 0 {
 			ttl = 30
 		}
-		domainTTL[strings.ToLower(d.Name)] = ttl
+		name := strings.ToLower(d.Name)
+		domainTTL[name] = ttl
+		for _, host := range d.NameserverHosts {
+			h := strings.ToLower(strings.TrimSuffix(host, "."))
+			if h != "" {
+				domainNSHosts[name] = append(domainNSHosts[name], h)
+			}
+		}
 	}
 
 	servedDomains := make(map[string]uint32)
@@ -125,13 +133,15 @@ func BuildFromFleet(fl *fleet.Config, memberID string, serial uint32) (*Zones, e
 	// hitting either one sees the same primary.
 	apex := make(map[string]ZoneApex, len(servedDomains))
 	for domain, ttl := range servedDomains {
-		var nsHosts []string
-		for _, ns := range fl.Nameservers {
-			for _, host := range ns.Hosts {
-				h := strings.ToLower(host)
-				if h == domain || strings.HasSuffix(h, "."+domain) {
-					nsHosts = append(nsHosts, h)
-					break
+		nsHosts := append([]string(nil), domainNSHosts[domain]...)
+		if len(nsHosts) == 0 {
+			for _, ns := range fl.Nameservers {
+				for _, host := range ns.Hosts {
+					h := strings.ToLower(host)
+					if h == domain || strings.HasSuffix(h, "."+domain) {
+						nsHosts = append(nsHosts, h)
+						break
+					}
 				}
 			}
 		}
