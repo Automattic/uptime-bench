@@ -46,6 +46,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 - **Implemented adapters** — Jetmon v1, Jetmon v2, UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime all have concrete adapters.
 - **Live API smoke coverage** — the public probe-based adapters, Jetmon v1 bridge, and Jetmon v2 API have build-tagged live smoke tests or live-test history captured in docs.
 - **Per-adapter normalization** — each adapter owns raw classification mapping into uptime-bench's common vocabulary.
+- **Adapter live-run hardening** — Jetmon v1 retrieval now treats its initial `SITE_DOWN` transition as an outage report, and UptimeRobot provisioning can clean up duplicate harness-owned monitors or adopt the single matching monitor after a timed-out create call.
 
 ## Failure-injection fleet
 
@@ -79,6 +80,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 - **Fleet provisioning and deploy flow** — scripts create config skeletons, install systemd units, handle DNS port conflicts, deploy binaries, and cover target, DNS, harness, and certmint roles.
 - **Deployed fleet smoke tooling** — `deploy/target-smoke.sh` and `deploy/dns-smoke.sh` exercise target HTTP/TCP/TLS injection and DNS-member injection through the real deployed control APIs, including cleanup checks that fail if active failures remain.
 - **Adapter smoke ergonomics** — the harness supports a `-monitors` override for single-scenario runs, so operators can reuse the checked-in scenario corpus against a specific adapter without creating temporary scenario copies.
+- **HEAD/GET multi-service comparison** — `reports/headget-20260429-030809Z/` preserves the first long-form run across the HTTP 503 control and HEAD/GET mismatch matrix, including raw TSV exports, derived JSON, a redacted service snapshot, and analysis notes.
 - **Documentation front door** — the root README is now a concise project overview, while detailed design, operation, scenario, adapter, event, and roadmap references live under `docs/`.
 - **Probe IP refresh automation** — `cmd/probe-ips-refresh` generates reviewable probe-range fragments, `make refresh-probe-ips` gives operators a local review command, and a weekly GitHub Action opens a PR with the latest generated fragment for operator review.
 - **Regression coverage** — tests cover parsers, runner error handling, adapter factories, DNS handlers, target handlers, cert selection, campaign anti-favoritism, reporting, and live-test compilation.
