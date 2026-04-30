@@ -7,7 +7,8 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs) — blocked on Jetmon v1 bridge write-mode provisioning.
 3. [TLS monitor-facing validation](#tls-monitor-facing-validation)
 4. [Live maintenance-window validation](#live-maintenance-window-validation)
-5. [Campaign hardening dry run](#campaign-hardening-dry-run)
+5. [Provider-state preflight cleanup](#provider-state-preflight-cleanup)
+6. [Campaign hardening dry run](#campaign-hardening-dry-run)
 
 **Lower-priority follow-ups:**
 - [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
@@ -230,6 +231,27 @@ Acceptance:
 - Every replay either produces usable metrics or a classified, queryable reason such as `capability_mismatch`, `adapter_error`, `cooldown_suppressed`, or `cooldown_uncertain`.
 - `uptime-bench-report` produces table, TSV, and JSON output from the resulting campaign run.
 - No monitor, target, or DNS state is left active after the dry run.
+
+## Provider-state preflight cleanup
+
+**Status:** Needed before unattended high-width or long-duration matrix runs. Runner teardown now retries deprovisioning and distinguishes `cleanup_error` from `adapter_error`, and UptimeRobot can recover from some duplicate harness-owned monitors during provisioning. The remaining gap is an explicit operator preflight that inspects provider state before a run starts.
+
+Add a cleanup command or harness preflight that lists harness-owned monitors/tests/checks for every enabled provider, filters only resources with uptime-bench-owned names/tags/URLs, and deletes stale resources left by an interrupted run, timed-out provider API call, or host reboot. The command should have a dry-run mode, print per-provider counts, fail closed when ownership is ambiguous, and leave non-benchmark monitors untouched.
+
+Provider-specific ownership signals:
+
+- **UptimeRobot**: `friendly_name` prefix `uptime-bench:` plus matching benchmark URL.
+- **Pingdom**: check name prefix `uptime-bench:` plus host/path match.
+- **Datadog Synthetics**: `uptime-bench` tag and `uptime-bench:<target_id>` tag.
+- **Better Uptime**: `pronounceable_name` prefix `uptime-bench:` plus benchmark URL.
+- **Jetmon v1/v2**: bridge/API-created synthetic benchmark sites only; read-only/pre-seeded Jetmon v1 monitors should not be deleted.
+
+Acceptance:
+
+- Preflight can run independently before a matrix batch and summarize `found`, `deleted`, `skipped`, and `error` counts per service.
+- Stale cleanup happens before provider capacity checks so leaked monitors do not consume Better Uptime/UptimeRobot/Pingdom caps.
+- Deletion uses the same idempotent deprovision paths as normal teardown where possible.
+- Ambiguous matches are reported but not deleted automatically.
 
 ## Automated randomized testing campaigns
 
