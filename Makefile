@@ -146,6 +146,9 @@ PROMETHEUS_URL ?= http://paprika.internal:9091
 CAPACITY_INSTANCES ?= jetmon-v1,jetmon-v2
 CAPACITY_DURATION ?= 15m
 CAPACITY_FORMAT ?= table
+CAPACITY_RUN_DIR ?=
+CAPACITY_OUTPUT_DIR ?=
+CAPACITY_POSTRUN_DURATION ?= 15m
 
 .PHONY: capacity-metrics
 capacity-metrics: $(BINARY_CAPACITY)
@@ -154,6 +157,15 @@ capacity-metrics: $(BINARY_CAPACITY)
 	  -instances=$(CAPACITY_INSTANCES) \
 	  -duration=$(CAPACITY_DURATION) \
 	  -format=$(CAPACITY_FORMAT)
+
+.PHONY: capacity-capture-run
+capacity-capture-run: $(BINARY_CAPACITY)
+	@test -n "$(CAPACITY_RUN_DIR)" || (echo "set CAPACITY_RUN_DIR=reports/<run-tag>" >&2; exit 1)
+	CAPACITY_BIN=$(BINARY_CAPACITY) \
+	  PROMETHEUS_URL=$(PROMETHEUS_URL) \
+	  CAPACITY_INSTANCES=$(CAPACITY_INSTANCES) \
+	  CAPACITY_POSTRUN_DURATION=$(CAPACITY_POSTRUN_DURATION) \
+	  deploy/capture-capacity-window.sh "$(CAPACITY_RUN_DIR)" "$(CAPACITY_OUTPUT_DIR)"
 
 PROBE_IPS_ARGS ?=
 
@@ -252,6 +264,8 @@ help:
 	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_FORMAT=table|tsv|json]"
 	@echo "  make capacity-metrics Summarize Jetmon v1/v2 Prometheus capacity metrics"
 	@echo "    [PROMETHEUS_URL=http://paprika.internal:9091] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
+	@echo "  make capacity-capture-run CAPACITY_RUN_DIR=reports/<run-tag>"
+	@echo "    Capture the exact run.meta.tsv window into reports/<run-tag>/capacity/"
 	@echo "  deploy/dockerstats-exporter.sh HOST [USER]  Deploy per-container Prometheus exporter"
 	@echo "  bin/uptime-bench-targetload -url-pattern=...  Probe generated target/DNS capacity"
 	@echo ""

@@ -41,6 +41,17 @@ bin/uptime-bench-capacity \
   -format=json
 ```
 
+For a finished scenario report directory, capture the exact run window from
+`run.meta.tsv` and write capacity artifacts into the report:
+
+```sh
+make capacity-capture-run CAPACITY_RUN_DIR=reports/unrun90m-20260430-191911Z
+```
+
+This writes `capacity/prometheus-window.{json,txt}` and, by default, a
+15-minute post-run baseline. Set `CAPACITY_POSTRUN_DURATION=0` to skip the
+post-run capture.
+
 ## Required Prometheus Targets
 
 The capacity collector expects these scrape labels:
