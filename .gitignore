@@ -75,6 +75,9 @@ temp/
 # Log files that may be written locally during development
 *.log
 
+# Generated benchmark reports
+reports/
+
 # Editor
 .idea/
 .vscode/
