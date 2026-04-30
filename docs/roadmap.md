@@ -9,9 +9,11 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 4. [Live maintenance-window validation](#live-maintenance-window-validation)
 5. [Provider-state preflight cleanup](#provider-state-preflight-cleanup)
 6. [Campaign hardening dry run](#campaign-hardening-dry-run)
+7. [Next-wave adapter expansion](#next-wave-adapter-expansion)
 
 **Lower-priority follow-ups:**
 - [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
+- [Additional self-hosted monitor adapters](#additional-self-hosted-monitor-adapters)
 
 **Recently completed but kept here for audit context:**
 - [Keyword-monitoring capability is dead-wired](#keyword-monitoring-capability-is-dead-wired)
@@ -232,9 +234,30 @@ Acceptance:
 - `uptime-bench-report` produces table, TSV, and JSON output from the resulting campaign run.
 - No monitor, target, or DNS state is left active after the dry run.
 
+## Next-wave adapter expansion
+
+**Status:** Planned after provider-state preflight cleanup and the first campaign hardening dry run. The next adapter wave should broaden comparison coverage without making the harness harder to trust.
+
+Recommended order:
+
+1. **Uptime Kuma** — first self-hosted UI-driven comparison point. Deploy on the same class of single-service host as `jetmon-v1`, pin the Uptime Kuma version in report metadata, and wrap its internal Socket.io API behind a stable uptime-bench adapter or small bridge if direct automation proves brittle. Start with HTTP status checks, then add keyword, HEAD/GET, TCP, DNS, TLS/cert, and maintenance support as validated.
+2. **Gatus** — second self-hosted comparison point. Its config-as-code model, hot reload, explicit concurrency, HTTP/TCP/ICMP/DNS support, condition language, and read APIs make it a good fit for uptime-bench. Start by managing a generated config fragment and reading endpoint status/history from the public API.
+3. **updown.io** — first additional third-party service. Its API is simple, supports create/update/delete checks, exposes downtimes, publishes node/IP APIs, supports HTTP/TCP/ICMP-like coverage, string matching, and configurable `GET/HEAD` behavior.
+4. **StatusCake** — useful market comparison with uptime APIs and period/history endpoints.
+5. **Checkly** — high-capability API checks with method/assertion support; valuable after the simpler API-shaped adapters prove out the expansion path.
+6. **Grafana Cloud Synthetic Monitoring** — useful blackbox-style synthetic monitor with a REST API, but setup/auth and result retrieval are more involved.
+
+Expansion acceptance:
+
+- Each new adapter implements provision, retrieve, deprovision, capability declaration, normalization, and stale-resource cleanup before it is enabled for campaign runs.
+- `services.example.toml` documents auth, capacity, and any probe-range/region fields for the service.
+- The first live smoke for each adapter covers at least `http-503`, one HEAD/GET mismatch, one content/keyword scenario if supported, and cleanup verification.
+- Self-hosted adapters are labeled as single-origin/self-hosted in reports so they are not confused with global SaaS probe networks.
+- Any adapter relying on an unstable or internal upstream API must pin the upstream version and document the automation risk.
+
 ## Provider-state preflight cleanup
 
-**Status:** Needed before unattended high-width or long-duration matrix runs. Runner teardown now retries deprovisioning and distinguishes `cleanup_error` from `adapter_error`, and UptimeRobot can recover from some duplicate harness-owned monitors during provisioning. The remaining gap is an explicit operator preflight that inspects provider state before a run starts.
+**Status:** MVP implemented for public API adapters. `cmd/uptime-bench-cleanup` can run independently before a matrix batch, loads the enabled services and fleet scope, supports dry-run/delete modes, summarizes per-service counts, and uses adapter-owned stale cleanup for UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. Jetmon v1/v2 intentionally remain unsupported by this generic provider cleanup until their synthetic benchmark-site ownership rules are explicit enough to delete safely.
 
 Add a cleanup command or harness preflight that lists harness-owned monitors/tests/checks for every enabled provider, filters only resources with uptime-bench-owned names/tags/URLs, and deletes stale resources left by an interrupted run, timed-out provider API call, or host reboot. The command should have a dry-run mode, print per-provider counts, fail closed when ownership is ambiguous, and leave non-benchmark monitors untouched.
 
@@ -248,10 +271,10 @@ Provider-specific ownership signals:
 
 Acceptance:
 
-- Preflight can run independently before a matrix batch and summarize `found`, `deleted`, `skipped`, and `error` counts per service.
+- ✅ Preflight can run independently before a matrix batch and summarize `found`, `deleted`, `skipped`, and `error` counts per service.
 - Stale cleanup happens before provider capacity checks so leaked monitors do not consume Better Uptime/UptimeRobot/Pingdom caps.
-- Deletion uses the same idempotent deprovision paths as normal teardown where possible.
-- Ambiguous matches are reported but not deleted automatically.
+- ✅ Deletion uses the same idempotent deprovision paths as normal teardown where possible.
+- ✅ Ambiguous matches are reported but not deleted automatically.
 
 ## Automated randomized testing campaigns
 
@@ -594,6 +617,22 @@ Remaining follow-up: fix or redeploy the Jetmon v1 bridge write-mode `POST /moni
 - Better Uptime publishes IPs in HTML prose with broad region annotations; the tool parses the current FAQ page best-effort and warns that mappings need review.
 
 **Remaining:** seed the UptimeRobot region map with verified prefixes. Pingdom stays `global` until an official tagged feed or a verified curated map exists.
+
+## Additional self-hosted monitor adapters
+
+**Status:** Lower-priority expansion backlog after Uptime Kuma and Gatus. These are useful comparison points, but each needs either heavier infrastructure or a less direct adapter model.
+
+Recommended order:
+
+1. **Prometheus + blackbox_exporter + Alertmanager** — best self-hosted reference baseline for probe-level behavior. Supports HTTP/HTTPS, DNS, TCP, ICMP, and gRPC probes with detailed timing, TLS, and cert-expiry metrics. Treat this as an observability-stack baseline rather than a product-style uptime monitor, and pin the rule/alerting configuration in report metadata.
+2. **Zabbix** — mature self-hosted monitoring with web scenarios, response-code checks, response-time data, string checks, triggers, and history. Valuable because it is widely deployed, but adapter work is heavier.
+3. **Monika** — CLI/config-driven synthetic monitoring with HTTP/TCP probes and flexible assertions over status, body, headers, timing, and size. Likely needs webhook or log ingestion for clean event retrieval.
+4. **Statping-ng** — lightweight uptime/status-page monitor with a REST API and HTTP/TCP/UDP/ICMP/gRPC coverage. Useful, but smaller ecosystem and lower priority than Uptime Kuma/Gatus.
+
+Deferred for different scenario lanes:
+
+- **Upptime** — useful zero-infrastructure/GitHub Actions monitor, but the normal five-minute cadence is a poor fit for minute-level detection comparisons. Consider later as a distinct "free/CI-backed monitor" category.
+- **Healthchecks.io self-hosted** — reverse heartbeat/dead-man-switch semantics belong with future heartbeat and agent-based reverse-check scenarios, not the current probe-based uptime matrix.
 
 ---
 

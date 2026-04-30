@@ -134,6 +134,23 @@ type monitorResource struct {
 	Errors []apiError `json:"errors,omitempty"`
 }
 
+type monitorsResponse struct {
+	Data   []monitorListResource `json:"data"`
+	Errors []apiError            `json:"errors,omitempty"`
+}
+
+type monitorListResource struct {
+	ID         string            `json:"id"`
+	Type       string            `json:"type"`
+	Attributes monitorAttributes `json:"attributes"`
+}
+
+type monitorAttributes struct {
+	URL               string `json:"url"`
+	Name              string `json:"name"`
+	PronounceableName string `json:"pronounceable_name"`
+}
+
 type apiError struct {
 	Detail string `json:"detail"`
 	Title  string `json:"title"`
@@ -404,6 +421,72 @@ func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle)
 		return fmt.Errorf("better-uptime: DELETE %s: %w", path, err)
 	}
 	return nil
+}
+
+func (a *Adapter) CleanupStale(ctx context.Context, opts adapter.CleanupOptions) (adapter.CleanupResult, error) {
+	if a.token == "" {
+		return adapter.CleanupResult{}, fmt.Errorf("better-uptime: token is not configured")
+	}
+
+	var resp monitorsResponse
+	if err := a.do(ctx, http.MethodGet, "/monitors", nil, &resp); err != nil {
+		return adapter.CleanupResult{}, fmt.Errorf("better-uptime: GET /monitors: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return adapter.CleanupResult{}, fmt.Errorf("better-uptime: GET /monitors: %s", errorsString(resp.Errors))
+	}
+
+	result := adapter.CleanupResult{}
+	for _, mon := range resp.Data {
+		name := betterMonitorName(mon.Attributes)
+		if !strings.HasPrefix(name, "uptime-bench:") {
+			continue
+		}
+		candidate := adapter.CleanupCandidate{
+			ServiceID:  a.id,
+			ResourceID: mon.ID,
+			Kind:       "monitor",
+			Name:       name,
+			URL:        mon.Attributes.URL,
+			Reason:     "benchmark-owned Better Uptime monitor",
+		}
+		if !opts.Scope.MatchesURL(mon.Attributes.URL) {
+			candidate.Ambiguous = true
+			candidate.Reason = "benchmark-owned monitor outside configured fleet scope"
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionSkipped,
+			})
+			continue
+		}
+		if opts.DryRun {
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionWouldDelete,
+			})
+			continue
+		}
+		if err := a.Deprovision(ctx, adapter.MonitorHandle{ServiceID: a.id, MonitorID: candidate.ResourceID}); err != nil {
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionError,
+				Error:     err.Error(),
+			})
+			continue
+		}
+		result.Actions = append(result.Actions, adapter.CleanupAction{
+			Candidate: candidate,
+			Action:    adapter.CleanupActionDeleted,
+		})
+	}
+	return result, nil
+}
+
+func betterMonitorName(attrs monitorAttributes) string {
+	if attrs.PronounceableName != "" {
+		return attrs.PronounceableName
+	}
+	return attrs.Name
 }
 
 // ─── HTTP plumbing ──────────────────────────────────────────────────────────

@@ -135,10 +135,18 @@ type checkEnvelope struct {
 	Error *apiError `json:"error,omitempty"`
 }
 
+type checksEnvelope struct {
+	Checks []checkInfo `json:"checks"`
+	Error  *apiError   `json:"error,omitempty"`
+}
+
 type checkInfo struct {
 	ID     int64  `json:"id"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	Type   string `json:"type"`
+	Host   string `json:"hostname"`
+	URL    string `json:"url"`
 }
 
 type apiError struct {
@@ -490,6 +498,79 @@ func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle)
 		return fmt.Errorf("pingdom: DELETE %s: %s", path, resp.Error)
 	}
 	return nil
+}
+
+func (a *Adapter) CleanupStale(ctx context.Context, opts adapter.CleanupOptions) (adapter.CleanupResult, error) {
+	if a.token == "" {
+		return adapter.CleanupResult{}, fmt.Errorf("pingdom: token is not configured")
+	}
+
+	var resp checksEnvelope
+	if err := a.do(ctx, http.MethodGet, "/checks", nil, &resp); err != nil {
+		return adapter.CleanupResult{}, fmt.Errorf("pingdom: GET /checks: %w", err)
+	}
+	if resp.Error != nil {
+		return adapter.CleanupResult{}, fmt.Errorf("pingdom: GET /checks: %s", resp.Error)
+	}
+
+	result := adapter.CleanupResult{}
+	for _, check := range resp.Checks {
+		if !strings.HasPrefix(check.Name, "uptime-bench:") {
+			continue
+		}
+		resourceURL := pingdomCheckURL(check)
+		candidate := adapter.CleanupCandidate{
+			ServiceID:  a.id,
+			ResourceID: strconv.FormatInt(check.ID, 10),
+			Kind:       "check",
+			Name:       check.Name,
+			URL:        resourceURL,
+			Reason:     "benchmark-owned Pingdom check",
+		}
+		if !opts.Scope.MatchesURL(resourceURL) {
+			candidate.Ambiguous = true
+			candidate.Reason = "benchmark-owned check outside configured fleet scope"
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionSkipped,
+			})
+			continue
+		}
+		if opts.DryRun {
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionWouldDelete,
+			})
+			continue
+		}
+		if err := a.Deprovision(ctx, adapter.MonitorHandle{ServiceID: a.id, MonitorID: candidate.ResourceID}); err != nil {
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionError,
+				Error:     err.Error(),
+			})
+			continue
+		}
+		result.Actions = append(result.Actions, adapter.CleanupAction{
+			Candidate: candidate,
+			Action:    adapter.CleanupActionDeleted,
+		})
+	}
+	return result, nil
+}
+
+func pingdomCheckURL(check checkInfo) string {
+	if check.Host == "" {
+		return check.URL
+	}
+	path := check.URL
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return "http://" + check.Host + path
 }
 
 // ─── HTTP plumbing ──────────────────────────────────────────────────────────

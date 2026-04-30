@@ -676,6 +676,90 @@ func (a *Adapter) matchingBenchmarkMonitors(ctx context.Context, target adapter.
 	return matches, nil
 }
 
+func (a *Adapter) CleanupStale(ctx context.Context, opts adapter.CleanupOptions) (adapter.CleanupResult, error) {
+	if a.apiKey == "" {
+		return adapter.CleanupResult{}, fmt.Errorf("uptimerobot: api_key is not configured")
+	}
+
+	monitors, err := a.listBenchmarkMonitors(ctx)
+	if err != nil {
+		return adapter.CleanupResult{}, err
+	}
+
+	result := adapter.CleanupResult{Actions: make([]adapter.CleanupAction, 0, len(monitors))}
+	for _, mon := range monitors {
+		candidate := adapter.CleanupCandidate{
+			ServiceID:  a.id,
+			ResourceID: strconv.FormatInt(mon.ID, 10),
+			Kind:       "monitor",
+			Name:       mon.FriendlyName,
+			URL:        mon.URL,
+			Reason:     "benchmark-owned UptimeRobot monitor",
+		}
+		if !opts.Scope.MatchesURL(mon.URL) {
+			candidate.Ambiguous = true
+			candidate.Reason = "benchmark-owned monitor outside configured fleet scope"
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionSkipped,
+			})
+			continue
+		}
+		if opts.DryRun {
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionWouldDelete,
+			})
+			continue
+		}
+		if err := a.Deprovision(ctx, adapter.MonitorHandle{ServiceID: a.id, MonitorID: candidate.ResourceID}); err != nil {
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionError,
+				Error:     err.Error(),
+			})
+			continue
+		}
+		result.Actions = append(result.Actions, adapter.CleanupAction{
+			Candidate: candidate,
+			Action:    adapter.CleanupActionDeleted,
+		})
+	}
+	return result, nil
+}
+
+func (a *Adapter) listBenchmarkMonitors(ctx context.Context) ([]monitor, error) {
+	const limit = 50
+	var monitors []monitor
+	for offset := 0; ; offset += limit {
+		form := url.Values{}
+		form.Set("api_key", a.apiKey)
+		form.Set("format", "json")
+		form.Set("logs", "0")
+		form.Set("response_times", "0")
+		form.Set("search", "uptime-bench:")
+		form.Set("limit", strconv.Itoa(limit))
+		form.Set("offset", strconv.Itoa(offset))
+
+		var resp getMonitorsResponse
+		if err := a.postJSON(ctx, "/getMonitors", form, &resp); err != nil {
+			return nil, fmt.Errorf("uptimerobot: list benchmark monitors: %w", err)
+		}
+		if resp.Stat != "ok" {
+			return nil, fmt.Errorf("uptimerobot: list benchmark monitors: %s", resp.Error)
+		}
+		for _, mon := range resp.Monitors {
+			if strings.HasPrefix(mon.FriendlyName, "uptime-bench:") {
+				monitors = append(monitors, mon)
+			}
+		}
+		if len(resp.Monitors) < limit {
+			break
+		}
+	}
+	return monitors, nil
+}
+
 func sameURL(a, b string) bool {
 	return strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
 }

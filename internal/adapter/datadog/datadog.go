@@ -163,6 +163,18 @@ type newTestResponse struct {
 	ErrorMsg string   `json:"error,omitempty"`  // sometimes a single string
 }
 
+type listTestsResponse struct {
+	Tests  []syntheticTest `json:"tests"`
+	Errors []string        `json:"errors,omitempty"`
+}
+
+type syntheticTest struct {
+	PublicID string     `json:"public_id"`
+	Name     string     `json:"name"`
+	Tags     []string   `json:"tags"`
+	Config   testConfig `json:"config"`
+}
+
 // tickEverySeconds rounds the requested frequency down to a value Datadog
 // accepts. Allowed: 30, 60, 300, 900, 1800, 3600, 21600. Anything below
 // 30 clamps to 30; anything above 21600 (6 hours) clamps to 21600.
@@ -477,6 +489,76 @@ func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle)
 	}
 
 	return a.deleteSyntheticTest(ctx, handle.MonitorID)
+}
+
+func (a *Adapter) CleanupStale(ctx context.Context, opts adapter.CleanupOptions) (adapter.CleanupResult, error) {
+	if a.apiKey == "" || a.appKey == "" {
+		return adapter.CleanupResult{}, fmt.Errorf("datadog: api_key and app_key are both required")
+	}
+
+	var resp listTestsResponse
+	if err := a.do(ctx, http.MethodGet, "/api/v1/synthetics/tests", nil, &resp); err != nil {
+		return adapter.CleanupResult{}, fmt.Errorf("datadog: GET /synthetics/tests: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return adapter.CleanupResult{}, fmt.Errorf("datadog: GET /synthetics/tests: %s", strings.Join(resp.Errors, "; "))
+	}
+
+	result := adapter.CleanupResult{}
+	for _, test := range resp.Tests {
+		if !isBenchmarkSyntheticTest(test) {
+			continue
+		}
+		candidate := adapter.CleanupCandidate{
+			ServiceID:  a.id,
+			ResourceID: test.PublicID,
+			Kind:       "synthetic-test",
+			Name:       test.Name,
+			URL:        test.Config.Request.URL,
+			Reason:     "benchmark-owned Datadog synthetic test",
+		}
+		if !opts.Scope.MatchesURL(test.Config.Request.URL) {
+			candidate.Ambiguous = true
+			candidate.Reason = "benchmark-owned synthetic test outside configured fleet scope"
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionSkipped,
+			})
+			continue
+		}
+		if opts.DryRun {
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionWouldDelete,
+			})
+			continue
+		}
+		if err := a.Deprovision(ctx, adapter.MonitorHandle{ServiceID: a.id, MonitorID: candidate.ResourceID}); err != nil {
+			result.Actions = append(result.Actions, adapter.CleanupAction{
+				Candidate: candidate,
+				Action:    adapter.CleanupActionError,
+				Error:     err.Error(),
+			})
+			continue
+		}
+		result.Actions = append(result.Actions, adapter.CleanupAction{
+			Candidate: candidate,
+			Action:    adapter.CleanupActionDeleted,
+		})
+	}
+	return result, nil
+}
+
+func isBenchmarkSyntheticTest(test syntheticTest) bool {
+	if strings.HasPrefix(test.Name, "uptime-bench:") {
+		return true
+	}
+	for _, tag := range test.Tags {
+		if tag == "uptime-bench" || strings.HasPrefix(tag, "uptime-bench:") {
+			return true
+		}
+	}
+	return false
 }
 
 // ─── HTTP plumbing ──────────────────────────────────────────────────────────

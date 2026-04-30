@@ -3,6 +3,9 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -56,11 +59,142 @@ type Adapter interface {
 	Normalize(raw string) string
 }
 
+// StaleCleaner is implemented by adapters that can list and remove
+// benchmark-owned resources that may have survived an interrupted run.
+type StaleCleaner interface {
+	CleanupStale(ctx context.Context, opts CleanupOptions) (CleanupResult, error)
+}
+
+// CleanupOptions controls provider-state cleanup. DryRun reports what would be
+// removed without deleting anything. Scope lets adapters limit cleanup to the
+// currently configured fleet.
+type CleanupOptions struct {
+	DryRun bool
+	Scope  CleanupScope
+}
+
+// CleanupScope describes the target surface that is safe for preflight cleanup.
+// An empty scope means "all benchmark-owned resources" for that provider.
+type CleanupScope struct {
+	TargetHosts []string
+	TargetURLs  []string
+}
+
+func (s CleanupScope) Empty() bool {
+	return len(s.TargetHosts) == 0 && len(s.TargetURLs) == 0
+}
+
+// MatchesURL returns whether raw belongs to the cleanup scope. Matching first
+// tries full URL equivalence, then falls back to host matching so provider APIs
+// that split host/path can still be scoped.
+func (s CleanupScope) MatchesURL(raw string) bool {
+	if s.Empty() {
+		return true
+	}
+	rawNorm := normalizeCleanupURL(raw)
+	if rawNorm != "" {
+		for _, targetURL := range s.TargetURLs {
+			if rawNorm == normalizeCleanupURL(targetURL) {
+				return true
+			}
+		}
+	}
+	return s.MatchesHost(raw)
+}
+
+// MatchesHost returns whether raw's hostname belongs to the cleanup scope.
+func (s CleanupScope) MatchesHost(raw string) bool {
+	if s.Empty() {
+		return true
+	}
+	rawHost := cleanupHostname(raw)
+	if rawHost == "" {
+		return false
+	}
+	for _, host := range s.TargetHosts {
+		if rawHost == cleanupHostname(host) {
+			return true
+		}
+	}
+	return false
+}
+
+type CleanupResult struct {
+	Actions []CleanupAction
+}
+
+type CleanupActionType string
+
+const (
+	CleanupActionWouldDelete CleanupActionType = "would_delete"
+	CleanupActionDeleted     CleanupActionType = "deleted"
+	CleanupActionSkipped     CleanupActionType = "skipped"
+	CleanupActionError       CleanupActionType = "error"
+)
+
+type CleanupCandidate struct {
+	ServiceID  string
+	ResourceID string
+	Kind       string
+	Name       string
+	URL        string
+	Reason     string
+	Ambiguous  bool
+}
+
+type CleanupAction struct {
+	Candidate CleanupCandidate
+	Action    CleanupActionType
+	Error     string
+}
+
 // UnrecognizedClassification is the constant adapters return from Normalize
 // when a raw label has no entry in their mapping table. The benchmark
 // records the raw label alongside the normalized one so unrecognized
 // values can be added later without losing audit data.
 const UnrecognizedClassification = "unrecognized"
+
+func normalizeCleanupURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Fragment = ""
+	if u.Path == "" {
+		u.Path = "/"
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	if u.Path == "" {
+		u.Path = "/"
+	}
+	return u.String()
+}
+
+func cleanupHostname(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "://") {
+		if u, err := url.Parse(raw); err == nil {
+			return strings.ToLower(u.Hostname())
+		}
+	}
+	host := raw
+	if i := strings.Index(host, "/"); i >= 0 {
+		host = host[:i]
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.Trim(host, "[]")
+}
 
 // Capabilities describes what a monitoring service supports.
 type Capabilities struct {

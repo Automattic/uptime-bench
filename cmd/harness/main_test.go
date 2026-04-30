@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automattic/uptime-bench/internal/adapterfactory"
 	"github.com/Automattic/uptime-bench/internal/serviceconfig"
 )
 
@@ -15,11 +16,11 @@ import (
 func TestRegistry_KnownTypes(t *testing.T) {
 	want := []string{"jetmon-v1", "jetmon-v2", "uptimerobot", "pingdom", "better-uptime", "datadog-synthetics"}
 	for _, typ := range want {
-		if _, ok := registry[typ]; !ok {
+		if _, ok := adapterfactory.Registry[typ]; !ok {
 			t.Errorf("registry missing factory for %q", typ)
 		}
 	}
-	for typ := range registry {
+	for typ := range adapterfactory.Registry {
 		known := false
 		for _, w := range want {
 			if typ == w {
@@ -65,7 +66,7 @@ func TestParseMonitorOverrideRejectsInvalidLists(t *testing.T) {
 // back to. Catching this at config parse time saves the operator a
 // confusing "no monitor pre-seeded" error mid-run.
 func TestRegistry_JetmonV1RequiresURL(t *testing.T) {
-	factory := registry["jetmon-v1"]
+	factory := adapterfactory.Registry["jetmon-v1"]
 	_, err := factory("jetmon", "", map[string]string{"token": "tok"})
 	if err == nil {
 		t.Fatal("expected error from jetmon-v1 factory with empty URL")
@@ -78,7 +79,7 @@ func TestRegistry_JetmonV1RequiresURL(t *testing.T) {
 // TestRegistry_JetmonV1Builds — happy path: with a URL and token the
 // factory returns a non-nil adapter.
 func TestRegistry_JetmonV1Builds(t *testing.T) {
-	factory := registry["jetmon-v1"]
+	factory := adapterfactory.Registry["jetmon-v1"]
 	a, err := factory("jetmon", "http://localhost:7400", map[string]string{"token": "tok"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -94,7 +95,7 @@ func TestRegistry_JetmonV1Builds(t *testing.T) {
 // TestRegistry_JetmonV2RequiresURLAndToken catches missing v2 API
 // configuration before any monitor-management calls are attempted.
 func TestRegistry_JetmonV2RequiresURLAndToken(t *testing.T) {
-	factory := registry["jetmon-v2"]
+	factory := adapterfactory.Registry["jetmon-v2"]
 	cases := []struct {
 		name string
 		url  string
@@ -122,7 +123,7 @@ func TestRegistry_JetmonV2RequiresURLAndToken(t *testing.T) {
 
 // TestRegistry_JetmonV2Builds — happy path with API URL and token.
 func TestRegistry_JetmonV2Builds(t *testing.T) {
-	factory := registry["jetmon-v2"]
+	factory := adapterfactory.Registry["jetmon-v2"]
 	a, err := factory("jetmon-v2", "http://localhost:8081/api/v1", map[string]string{
 		"token":     "tok",
 		"bucket_no": "17",
@@ -139,7 +140,7 @@ func TestRegistry_JetmonV2Builds(t *testing.T) {
 }
 
 func TestRegistry_JetmonV2RejectsInvalidBucket(t *testing.T) {
-	factory := registry["jetmon-v2"]
+	factory := adapterfactory.Registry["jetmon-v2"]
 	_, err := factory("jetmon-v2", "http://localhost:8081/api/v1", map[string]string{
 		"token":     "tok",
 		"bucket_no": "nope",
@@ -157,7 +158,7 @@ func TestRegistry_JetmonV2RejectsInvalidBucket(t *testing.T) {
 // first API call, but failing at construction time means the operator
 // sees the error before any monitors are touched.
 func TestRegistry_UptimeRobotRequiresAPIKey(t *testing.T) {
-	factory := registry["uptimerobot"]
+	factory := adapterfactory.Registry["uptimerobot"]
 	_, err := factory("ur", "", nil)
 	if err == nil {
 		t.Fatal("expected error from uptimerobot factory with empty api_key")
@@ -169,7 +170,7 @@ func TestRegistry_UptimeRobotRequiresAPIKey(t *testing.T) {
 
 // TestRegistry_UptimeRobotBuilds — happy path with api_key set.
 func TestRegistry_UptimeRobotBuilds(t *testing.T) {
-	factory := registry["uptimerobot"]
+	factory := adapterfactory.Registry["uptimerobot"]
 	a, err := factory("ur", "", map[string]string{
 		"api_key":             "u123-XXX",
 		"http_method":         "GET",
@@ -187,7 +188,7 @@ func TestRegistry_UptimeRobotBuilds(t *testing.T) {
 }
 
 func TestRegistry_UptimeRobotRejectsInvalidHTTPMethod(t *testing.T) {
-	factory := registry["uptimerobot"]
+	factory := adapterfactory.Registry["uptimerobot"]
 	_, err := factory("ur", "", map[string]string{"api_key": "u123-XXX", "http_method": "TRACE"})
 	if err == nil {
 		t.Fatal("expected invalid http_method error")
@@ -198,7 +199,7 @@ func TestRegistry_UptimeRobotRejectsInvalidHTTPMethod(t *testing.T) {
 }
 
 func TestRegistry_UptimeRobotRejectsInvalidMinCheckFrequency(t *testing.T) {
-	factory := registry["uptimerobot"]
+	factory := adapterfactory.Registry["uptimerobot"]
 	_, err := factory("ur", "", map[string]string{"api_key": "u123-XXX", "min_check_frequency": "soon"})
 	if err == nil {
 		t.Fatal("expected invalid min_check_frequency error")
@@ -212,7 +213,7 @@ func TestRegistry_UptimeRobotRejectsInvalidMinCheckFrequency(t *testing.T) {
 // other adapters: if the operator forgets the token, error before any
 // API call instead of producing a confusing 401 mid-run.
 func TestRegistry_PingdomRequiresToken(t *testing.T) {
-	factory := registry["pingdom"]
+	factory := adapterfactory.Registry["pingdom"]
 	_, err := factory("pd", "", nil)
 	if err == nil {
 		t.Fatal("expected error from pingdom factory with empty token")
@@ -224,7 +225,7 @@ func TestRegistry_PingdomRequiresToken(t *testing.T) {
 
 // TestRegistry_PingdomBuilds — happy path.
 func TestRegistry_PingdomBuilds(t *testing.T) {
-	factory := registry["pingdom"]
+	factory := adapterfactory.Registry["pingdom"]
 	a, err := factory("pd", "", map[string]string{"token": "tok"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -238,7 +239,7 @@ func TestRegistry_PingdomBuilds(t *testing.T) {
 }
 
 func TestRegistry_BetterUptimeRequiresToken(t *testing.T) {
-	factory := registry["better-uptime"]
+	factory := adapterfactory.Registry["better-uptime"]
 	_, err := factory("bu", "", nil)
 	if err == nil {
 		t.Fatal("expected error from better-uptime factory with empty token")
@@ -249,7 +250,7 @@ func TestRegistry_BetterUptimeRequiresToken(t *testing.T) {
 }
 
 func TestRegistry_BetterUptimeBuilds(t *testing.T) {
-	factory := registry["better-uptime"]
+	factory := adapterfactory.Registry["better-uptime"]
 	a, err := factory("bu", "", map[string]string{"token": "tok"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -263,7 +264,7 @@ func TestRegistry_BetterUptimeBuilds(t *testing.T) {
 }
 
 func TestRegistry_DatadogRequiresBothKeys(t *testing.T) {
-	factory := registry["datadog-synthetics"]
+	factory := adapterfactory.Registry["datadog-synthetics"]
 	cases := []map[string]string{
 		nil,
 		{"api_key": "ak"},                // missing app_key
@@ -283,7 +284,7 @@ func TestRegistry_DatadogRequiresBothKeys(t *testing.T) {
 }
 
 func TestRegistry_DatadogBuilds(t *testing.T) {
-	factory := registry["datadog-synthetics"]
+	factory := adapterfactory.Registry["datadog-synthetics"]
 	a, err := factory("dd", "", map[string]string{"api_key": "ak", "app_key": "pk"})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -314,7 +315,7 @@ func TestAdaptersForScenario_PreservesMonitorOrder(t *testing.T) {
 		},
 	}}
 
-	adapters, err := adaptersForScenario(cfg, []string{"jetmon-b", "jetmon-a"})
+	adapters, err := adapterfactory.ForScenario(cfg, []string{"jetmon-b", "jetmon-a"})
 	if err != nil {
 		t.Fatalf("adaptersForScenario: %v", err)
 	}
@@ -338,7 +339,7 @@ func TestAdaptersForScenario_RejectsDisabledMonitor(t *testing.T) {
 		},
 	}}
 
-	_, err := adaptersForScenario(cfg, []string{"jetmon-a"})
+	_, err := adapterfactory.ForScenario(cfg, []string{"jetmon-a"})
 	if err == nil {
 		t.Fatal("expected disabled scenario monitor to be rejected")
 	}
@@ -365,7 +366,7 @@ func TestEnabledAdapters_LoadsEnabledServicesOnly(t *testing.T) {
 		},
 	}}
 
-	adapters, err := enabledAdapters(cfg)
+	adapters, err := adapterfactory.Enabled(cfg)
 	if err != nil {
 		t.Fatalf("enabledAdapters: %v", err)
 	}
@@ -388,7 +389,7 @@ func TestEnabledAdapters_RejectsEmptySet(t *testing.T) {
 		},
 	}}
 
-	_, err := enabledAdapters(cfg)
+	_, err := adapterfactory.Enabled(cfg)
 	if err == nil {
 		t.Fatal("expected error when no services are enabled")
 	}
