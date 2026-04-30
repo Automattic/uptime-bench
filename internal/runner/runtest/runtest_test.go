@@ -175,6 +175,34 @@ func TestRun_AdapterProvisionFailure_RecordsAdapterError(t *testing.T) {
 	}
 }
 
+// TestRun_DeprovisionFailureRecordsCleanupError verifies cleanup failures are
+// separated from detection/provisioning failures. The monitor data for the run
+// may still be valid even when provider cleanup later fails, so the close
+// reason should not be the generic adapter_error.
+func TestRun_DeprovisionFailureRecordsCleanupError(t *testing.T) {
+	f := runtest.NewFixture(t)
+	f.Scenario.Monitors = []string{"cleanup-svc"}
+	f.Adapters = []adapter.Adapter{
+		&cleanupFailingAdapter{
+			id:   "cleanup-svc",
+			caps: adapter.Capabilities{MinCheckFrequency: 30 * time.Second},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := f.Run(ctx); err != nil {
+		t.Fatalf("Run should complete despite cleanup failure; got %v", err)
+	}
+	if f.Recorder.CloseRunCalls != 1 {
+		t.Errorf("CloseRun called %d times, want 1", f.Recorder.CloseRunCalls)
+	}
+	if f.Recorder.CloseRunReason != "cleanup_error" {
+		t.Errorf("CloseRunReason = %q, want cleanup_error", f.Recorder.CloseRunReason)
+	}
+}
+
 // TestRun_NonEmptyResolutionReason_AlwaysTrue — meta-check across
 // every Run path that reaches CloseRun. The universal claim: when
 // CloseRun was called, the recorded reason is non-empty. If a future
@@ -284,4 +312,22 @@ func (a *failingProvisionAdapter) Retrieve(context.Context, adapter.MonitorHandl
 }
 func (a *failingProvisionAdapter) Deprovision(context.Context, adapter.MonitorHandle) error {
 	return nil
+}
+
+type cleanupFailingAdapter struct {
+	id   string
+	caps adapter.Capabilities
+}
+
+func (a *cleanupFailingAdapter) ServiceID() string                  { return a.id }
+func (a *cleanupFailingAdapter) Capabilities() adapter.Capabilities { return a.caps }
+func (a *cleanupFailingAdapter) Normalize(string) string            { return adapter.UnrecognizedClassification }
+func (a *cleanupFailingAdapter) Provision(context.Context, adapter.Target, adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
+	return adapter.MonitorHandle{ServiceID: a.id, MonitorID: "fake-" + a.id}, nil
+}
+func (a *cleanupFailingAdapter) Retrieve(context.Context, adapter.MonitorHandle, adapter.RunWindow) (adapter.RetrieveResult, error) {
+	return adapter.RetrieveResult{Status: adapter.RetrieveKnown}, nil
+}
+func (a *cleanupFailingAdapter) Deprovision(context.Context, adapter.MonitorHandle) error {
+	return errors.New("delete timed out")
 }

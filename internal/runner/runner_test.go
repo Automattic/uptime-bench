@@ -20,6 +20,7 @@ type recordingAdapter struct {
 	id           string
 	deprovCtxErr error
 	deprovCalled bool
+	deprovCalls  int
 	failNext     error
 }
 
@@ -34,6 +35,7 @@ func (a *recordingAdapter) Retrieve(ctx context.Context, _ adapter.MonitorHandle
 }
 func (a *recordingAdapter) Deprovision(ctx context.Context, _ adapter.MonitorHandle) error {
 	a.deprovCalled = true
+	a.deprovCalls++
 	a.deprovCtxErr = ctx.Err()
 	return a.failNext
 }
@@ -77,6 +79,10 @@ func TestDeprovisionAll_UsesFreshContext(t *testing.T) {
 // not skip the others. Each adapter's monitor must be torn down even if
 // a sibling errors first.
 func TestDeprovisionAll_ContinuesAfterError(t *testing.T) {
+	prevAttempts := deprovisionAttempts
+	deprovisionAttempts = 1
+	defer func() { deprovisionAttempts = prevAttempts }()
+
 	a1 := &recordingAdapter{id: "a1", failNext: errors.New("boom")}
 	a2 := &recordingAdapter{id: "a2"}
 	handles := []provisioned{
@@ -97,6 +103,9 @@ func TestDeprovisionAll_RespectsTimeout(t *testing.T) {
 	prev := deprovisionTimeout
 	deprovisionTimeout = 100 * time.Millisecond
 	defer func() { deprovisionTimeout = prev }()
+	prevAttempts := deprovisionAttempts
+	deprovisionAttempts = 1
+	defer func() { deprovisionAttempts = prevAttempts }()
 
 	slow := &slowDeprovisionAdapter{id: "slow"}
 	handles := []provisioned{{a: slow, handle: adapter.MonitorHandle{}}}
@@ -110,6 +119,22 @@ func TestDeprovisionAll_RespectsTimeout(t *testing.T) {
 	}
 	if !slow.sawDeadline {
 		t.Fatal("slow adapter did not observe a context deadline; cleanup ctx is unbounded")
+	}
+}
+
+func TestDeprovisionAll_RetriesFailures(t *testing.T) {
+	prevAttempts := deprovisionAttempts
+	deprovisionAttempts = 3
+	defer func() { deprovisionAttempts = prevAttempts }()
+
+	flaky := &flakyDeprovisionAdapter{id: "flaky", failCount: 1}
+	handles := []provisioned{{a: flaky, handle: adapter.MonitorHandle{}}}
+
+	if errs := deprovisionAll(handles); errs != 0 {
+		t.Fatalf("deprovisionAll errors = %d, want 0 after retry success", errs)
+	}
+	if flaky.calls != 2 {
+		t.Fatalf("Deprovision calls = %d, want 2", flaky.calls)
 	}
 }
 
@@ -137,6 +162,29 @@ func (a *slowDeprovisionAdapter) Deprovision(ctx context.Context, _ adapter.Moni
 	case <-time.After(2 * deprovisionTimeout):
 		return nil
 	}
+}
+
+type flakyDeprovisionAdapter struct {
+	id        string
+	failCount int
+	calls     int
+}
+
+func (a *flakyDeprovisionAdapter) ServiceID() string                  { return a.id }
+func (a *flakyDeprovisionAdapter) Capabilities() adapter.Capabilities { return adapter.Capabilities{} }
+func (a *flakyDeprovisionAdapter) Normalize(string) string            { return adapter.UnrecognizedClassification }
+func (a *flakyDeprovisionAdapter) Provision(ctx context.Context, _ adapter.Target, _ adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
+	return adapter.MonitorHandle{}, nil
+}
+func (a *flakyDeprovisionAdapter) Retrieve(ctx context.Context, _ adapter.MonitorHandle, _ adapter.RunWindow) (adapter.RetrieveResult, error) {
+	return adapter.RetrieveResult{}, nil
+}
+func (a *flakyDeprovisionAdapter) Deprovision(context.Context, adapter.MonitorHandle) error {
+	a.calls++
+	if a.calls <= a.failCount {
+		return errors.New("temporary delete failure")
+	}
+	return nil
 }
 
 // TestScheduleFailureEvents_NoOffsets — every failure activates at start

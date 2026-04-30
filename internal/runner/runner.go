@@ -188,7 +188,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	// fail immediately with context.Canceled and leak monitors.
 	defer func() {
 		if errs := deprovisionAll(handles); errs > 0 && resolutionReason == "planned_completion" {
-			resolutionReason = "adapter_error"
+			resolutionReason = "cleanup_error"
 		}
 	}()
 
@@ -715,10 +715,16 @@ type provisioned struct {
 	handle adapter.MonitorHandle
 }
 
-// deprovisionTimeout bounds how long we'll wait for adapter cleanup. Each
-// adapter's HTTP DELETE is short, but a hung remote service must not block
-// fleet shutdown forever. It's a var (not const) so tests can shrink it.
-var deprovisionTimeout = 30 * time.Second
+// deprovisionTimeout bounds a single adapter cleanup attempt. Each handle gets
+// its own fresh timeout so one slow provider cannot consume the whole cleanup
+// budget and cause unrelated monitors to leak. It's a var (not const) so tests
+// can shrink it.
+var deprovisionTimeout = 90 * time.Second
+
+// deprovisionAttempts lets cleanup retry transient provider/network failures.
+// Deprovision operations are required to be idempotent, so retrying is safer
+// than leaking monitors that can exhaust provider quotas before the next run.
+var deprovisionAttempts = 3
 
 // deprovisionAll tears down every monitor handle, returning the number of
 // errors encountered. It deliberately uses a fresh context derived from
@@ -729,14 +735,36 @@ func deprovisionAll(handles []provisioned) int {
 	if len(handles) == 0 {
 		return 0
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), deprovisionTimeout)
-	defer cancel()
 	errs := 0
 	for _, p := range handles {
-		if err := p.a.Deprovision(ctx, p.handle); err != nil {
+		if err := deprovisionOne(p); err != nil {
 			log.Printf("runner: deprovision %s: %v", p.a.ServiceID(), err)
 			errs++
 		}
 	}
 	return errs
+}
+
+func deprovisionOne(p provisioned) error {
+	attempts := deprovisionAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), deprovisionTimeout)
+		err := p.a.Deprovision(ctx, p.handle)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("runner: deprovision %s succeeded on attempt %d", p.a.ServiceID(), attempt)
+			}
+			return nil
+		}
+		lastErr = err
+		if attempt < attempts {
+			log.Printf("runner: deprovision %s attempt %d/%d: %v", p.a.ServiceID(), attempt, attempts, err)
+		}
+	}
+	return lastErr
 }
