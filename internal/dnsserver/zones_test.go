@@ -168,6 +168,69 @@ func TestBuildResponse_AAtApexStillWorks(t *testing.T) {
 	}
 }
 
+func TestBuildResponse_GeneratedARecord(t *testing.T) {
+	r, err := NewGeneratedRecordRange("load", "site-%07d.load.example.com", 1, 100, net.ParseIP("10.0.0.10"), 30)
+	if err != nil {
+		t.Fatalf("NewGeneratedRecordRange: %v", err)
+	}
+	z := &Zones{
+		Generated: []GeneratedRecordRange{r},
+		Apex: map[string]ZoneApex{
+			"example.com": {
+				Name:        "example.com",
+				NSHostnames: []string{"ns1.example.com"},
+				SOA: SOA{
+					MName:   "ns1.example.com",
+					RName:   "hostmaster.example.com",
+					Serial:  1700000000,
+					Minimum: 30,
+				},
+			},
+		},
+	}
+
+	resp, _ := BuildResponse(buildQuery("site-0000042.load.example.com", 1), control.NewRegistry(), z, nil)
+	if rcode := resp[3] & 0x0F; rcode != 0 {
+		t.Fatalf("RCODE = %d, want 0", rcode)
+	}
+	if got := binary.BigEndian.Uint16(resp[6:8]); got != 1 {
+		t.Fatalf("ANCOUNT = %d, want 1", got)
+	}
+	if got := answerA(t, resp); !got.Equal(net.ParseIP("10.0.0.10")) {
+		t.Fatalf("answer A = %s, want 10.0.0.10", got)
+	}
+}
+
+func TestBuildResponse_GeneratedARecordOutOfRangeGetsSOA(t *testing.T) {
+	r, err := NewGeneratedRecordRange("load", "site-%07d.load.example.com", 1, 100, net.ParseIP("10.0.0.10"), 30)
+	if err != nil {
+		t.Fatalf("NewGeneratedRecordRange: %v", err)
+	}
+	z := &Zones{
+		Generated: []GeneratedRecordRange{r},
+		Apex: map[string]ZoneApex{
+			"example.com": {
+				Name:        "example.com",
+				NSHostnames: []string{"ns1.example.com"},
+				SOA: SOA{
+					MName:   "ns1.example.com",
+					RName:   "hostmaster.example.com",
+					Serial:  1700000000,
+					Minimum: 30,
+				},
+			},
+		},
+	}
+
+	resp, _ := BuildResponse(buildQuery("site-0000101.load.example.com", 1), control.NewRegistry(), z, nil)
+	if rcode := resp[3] & 0x0F; rcode != 3 {
+		t.Fatalf("RCODE = %d, want 3", rcode)
+	}
+	if got := binary.BigEndian.Uint16(resp[8:10]); got != 1 {
+		t.Fatalf("NSCOUNT = %d, want 1", got)
+	}
+}
+
 // decodeNSHostnames pulls every NS RR's RDATA name out of a response
 // and returns them in answer order.
 func decodeNSHostnames(t *testing.T, resp []byte) []string {
@@ -262,6 +325,31 @@ func skipRR(resp []byte, pos int) int {
 	rdlen := binary.BigEndian.Uint16(resp[pos : pos+2])
 	pos += 2 + int(rdlen)
 	return pos
+}
+
+func answerA(t *testing.T, resp []byte) net.IP {
+	t.Helper()
+	pos := skipQuestion(t, resp)
+	if resp[pos]&0xC0 == 0xC0 {
+		pos += 2
+	} else {
+		for resp[pos] != 0 {
+			pos += int(resp[pos]) + 1
+		}
+		pos++
+	}
+	rrType := binary.BigEndian.Uint16(resp[pos : pos+2])
+	pos += 2
+	if rrType != 1 {
+		t.Fatalf("answer type = %d, want A", rrType)
+	}
+	pos += 2 + 4 // class + ttl
+	rdlen := binary.BigEndian.Uint16(resp[pos : pos+2])
+	pos += 2
+	if rdlen != 4 {
+		t.Fatalf("A rdlen = %d, want 4", rdlen)
+	}
+	return net.IP(resp[pos : pos+4])
 }
 
 func decodeName(data []byte) string {

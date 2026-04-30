@@ -1,0 +1,32 @@
+# Local target/DNS capacity-test fleet.
+# Run target, DNS, and targetload on the same host with high ports.
+
+[control]
+timeout = "10s"
+auth_token_file = "/tmp/uptime-bench-target-capacity/control-token"
+
+[[nameservers]]
+id           = "ns-local"
+address      = "127.0.0.1"
+control_port = 19100
+dns_port     = 15353
+domains      = ["load.localtest.example"]
+hosts        = ["ns1.load.localtest.example"]
+
+[[targets]]
+id           = "target-local"
+address      = "127.0.0.1"
+control_port = 19000
+
+  [[targets.generated_sites]]
+  id           = "load"
+  host_pattern = "site-%07d.load.localtest.example"
+  start        = 1
+  count        = 1000000
+  paths        = ["/"]
+
+[[domains]]
+name = "load.localtest.example"
+nameservers = ["ns-local"]
+nameserver_hosts = ["ns1.load.localtest.example"]
+ttl = 1

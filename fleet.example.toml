@@ -103,6 +103,18 @@ control_port = 9000
   host  = "bench-b.bench.example.com"
   paths = ["/", "/blog"]
 
+  # Optional generated host range for capacity tests. The DNS server resolves
+  # matching names without expanding each hostname into fleet.toml, and the
+  # target HTTP server serves arbitrary Host headers from the same binary.
+  # This example covers site-0000001.load.bench.example.com through
+  # site-1000000.load.bench.example.com.
+  [[targets.generated_sites]]
+  id           = "load"
+  host_pattern = "site-%07d.load.bench.example.com"
+  start        = 1
+  count        = 1000000
+  paths        = ["/"]
+
 [[targets]]
 id           = "target-02"
 address      = "203.0.113.21"

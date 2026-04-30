@@ -129,6 +129,123 @@ domains = ["example.com"]
 	}
 }
 
+func TestParse_GeneratedSitesRoundTrip(t *testing.T) {
+	in := `
+[control]
+auth_token_file = "/tmp/tok"
+
+[[targets]]
+id = "target-01"
+address = "10.0.0.10"
+control_port = 9000
+
+  [[targets.generated_sites]]
+  id = "load"
+  host_pattern = "site-%07d.load.example.com"
+  start = 0
+  count = 1000000
+  paths = ["/", "/health"]
+`
+	cfg, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := cfg.Targets[0].GeneratedSites
+	if len(got) != 1 {
+		t.Fatalf("GeneratedSites len = %d, want 1", len(got))
+	}
+	if got[0].ID != "load" ||
+		got[0].HostPattern != "site-%07d.load.example.com" ||
+		got[0].Start != 0 ||
+		got[0].Count != 1_000_000 ||
+		len(got[0].Paths) != 2 ||
+		got[0].Paths[1] != "/health" {
+		t.Fatalf("GeneratedSites[0] = %+v", got[0])
+	}
+}
+
+func TestParse_GeneratedSitesDefaultStart(t *testing.T) {
+	in := `
+[control]
+auth_token_file = "/tmp/tok"
+
+[[targets]]
+id = "target-01"
+address = "10.0.0.10"
+control_port = 9000
+
+  [[targets.generated_sites]]
+  id = "load"
+  host_pattern = "site-%07d.load.example.com"
+  count = 10
+`
+	cfg, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := cfg.Targets[0].GeneratedSites[0].Start; got != 1 {
+		t.Fatalf("Start = %d, want default 1", got)
+	}
+}
+
+func TestParse_RejectsInvalidGeneratedSites(t *testing.T) {
+	for name, in := range map[string]string{
+		"missing id": `
+[control]
+auth_token_file = "/tmp/tok"
+[[targets]]
+id = "target-01"
+address = "10.0.0.10"
+control_port = 9000
+  [[targets.generated_sites]]
+  host_pattern = "site-%07d.load.example.com"
+  count = 10
+`,
+		"missing pattern": `
+[control]
+auth_token_file = "/tmp/tok"
+[[targets]]
+id = "target-01"
+address = "10.0.0.10"
+control_port = 9000
+  [[targets.generated_sites]]
+  id = "load"
+  count = 10
+`,
+		"bad count": `
+[control]
+auth_token_file = "/tmp/tok"
+[[targets]]
+id = "target-01"
+address = "10.0.0.10"
+control_port = 9000
+  [[targets.generated_sites]]
+  id = "load"
+  host_pattern = "site-%07d.load.example.com"
+  count = 0
+`,
+		"bad start": `
+[control]
+auth_token_file = "/tmp/tok"
+[[targets]]
+id = "target-01"
+address = "10.0.0.10"
+control_port = 9000
+  [[targets.generated_sites]]
+  id = "load"
+  host_pattern = "site-%07d.load.example.com"
+  start = -1
+  count = 10
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(in)); err == nil {
+				t.Fatal("Parse returned nil error")
+			}
+		})
+	}
+}
+
 func TestParse_CertmintRoundTrip(t *testing.T) {
 	in := `
 [control]

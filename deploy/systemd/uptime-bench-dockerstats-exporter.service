@@ -1,0 +1,13 @@
+[Unit]
+Description=uptime-bench Docker stats Prometheus exporter
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/uptime-bench-dockerstats-exporter -listen=:9103 -docker-socket=/var/run/docker.sock
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

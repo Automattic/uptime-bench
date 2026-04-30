@@ -4,6 +4,9 @@ BINARY_TARGET   = $(BIN_DIR)/uptime-bench-target
 BINARY_DNS      = $(BIN_DIR)/uptime-bench-dns
 BINARY_CERTMINT = $(BIN_DIR)/uptime-bench-certmint
 BINARY_REPORT   = $(BIN_DIR)/uptime-bench-report
+BINARY_CAPACITY = $(BIN_DIR)/uptime-bench-capacity
+BINARY_DOCKERSTATS_EXPORTER = $(BIN_DIR)/uptime-bench-dockerstats-exporter
+BINARY_TARGETLOAD = $(BIN_DIR)/uptime-bench-targetload
 BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 
 .DEFAULT_GOAL := build
@@ -13,7 +16,7 @@ BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_PROBE_IPS_REFRESH)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_PROBE_IPS_REFRESH)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -34,6 +37,18 @@ $(BINARY_CERTMINT): $(shell find cmd/certmint internal -name '*.go' 2>/dev/null)
 $(BINARY_REPORT): $(shell find cmd/uptime-bench-report internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/uptime-bench-report
+
+$(BINARY_CAPACITY): $(shell find cmd/uptime-bench-capacity internal/capacitybench -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-capacity
+
+$(BINARY_DOCKERSTATS_EXPORTER): $(shell find cmd/uptime-bench-dockerstats-exporter internal/dockerstats -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 go build -o $@ ./cmd/uptime-bench-dockerstats-exporter
+
+$(BINARY_TARGETLOAD): $(shell find cmd/uptime-bench-targetload -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-targetload
 
 $(BINARY_PROBE_IPS_REFRESH): $(shell find cmd/probe-ips-refresh internal/probeips -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -126,6 +141,19 @@ REPORT_FORMAT ?= table
 .PHONY: report-campaign
 report-campaign: $(BINARY_REPORT)
 	$(BINARY_REPORT) -campaign=$(CAMPAIGN) -format=$(REPORT_FORMAT)
+
+PROMETHEUS_URL ?= http://paprika.internal:9091
+CAPACITY_INSTANCES ?= jetmon-v1,jetmon-v2
+CAPACITY_DURATION ?= 15m
+CAPACITY_FORMAT ?= table
+
+.PHONY: capacity-metrics
+capacity-metrics: $(BINARY_CAPACITY)
+	$(BINARY_CAPACITY) \
+	  -prometheus-url=$(PROMETHEUS_URL) \
+	  -instances=$(CAPACITY_INSTANCES) \
+	  -duration=$(CAPACITY_DURATION) \
+	  -format=$(CAPACITY_FORMAT)
 
 PROBE_IPS_ARGS ?=
 
@@ -222,6 +250,10 @@ help:
 	@echo "    SCENARIO=scenarios/http-503.toml (default)"
 	@echo "  make report-campaign  Summarize a campaign"
 	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_FORMAT=table|tsv|json]"
+	@echo "  make capacity-metrics Summarize Jetmon v1/v2 Prometheus capacity metrics"
+	@echo "    [PROMETHEUS_URL=http://paprika.internal:9091] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
+	@echo "  deploy/dockerstats-exporter.sh HOST [USER]  Deploy per-container Prometheus exporter"
+	@echo "  bin/uptime-bench-targetload -url-pattern=...  Probe generated target/DNS capacity"
 	@echo ""
 	@echo "Provision (first-time host setup — run before deploy):"
 	@echo "  make provision-harness  HARNESS_HOST=host  [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"

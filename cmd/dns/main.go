@@ -84,7 +84,8 @@ func main() {
 		for apex, za := range fleetZones.Apex {
 			zones.Apex[apex] = za
 		}
-		log.Printf("dns: %d zone(s) loaded from fleet config", len(fleetZones.Records))
+		zones.Generated = append(zones.Generated, fleetZones.Generated...)
+		log.Printf("dns: %d zone(s), %d generated range(s) loaded from fleet config", len(fleetZones.Records), len(fleetZones.Generated))
 	}
 
 	// -zone flags override fleet-derived zones.
@@ -97,6 +98,9 @@ func main() {
 	}
 	for apex, za := range zones.Apex {
 		log.Printf("dns: zone apex %s → SOA mname=%s ns=%v", apex, za.SOA.MName, za.NSHostnames)
+	}
+	for _, r := range zones.Generated {
+		log.Printf("dns: generated range %s → %s", r.ID, r.IP)
 	}
 
 	registry := control.NewRegistry()

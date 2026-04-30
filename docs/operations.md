@@ -466,7 +466,7 @@ dig A bench-a.bench-example.com
 dig A bench-a.bench-example.com | grep -i ttl
 ```
 
-The DNS binary loads A records from `fleet.toml` at startup — it serves every site hostname from its configured domains, pointing to the corresponding target server IP, using the TTL from the `[[domains]]` block.
+The DNS binary loads A records from `fleet.toml` at startup — it serves every site hostname from its configured domains, pointing to the corresponding target server IP, using the TTL from the `[[domains]]` block. Capacity fleets can use `[[targets.generated_sites]]` to resolve large deterministic host ranges without expanding every hostname into the file.
 
 ---
 

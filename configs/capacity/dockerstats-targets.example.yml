@@ -1,0 +1,8 @@
+- labels:
+    instance: jetmon-v1
+  targets:
+    - 10.0.0.170:9103
+- labels:
+    instance: jetmon-v2
+  targets:
+    - 10.0.0.171:9103

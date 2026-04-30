@@ -188,3 +188,92 @@ func TestBuildFromFleet_NoHostsIsBackwardsCompatible(t *testing.T) {
 		t.Fatal("target A record missing on backwards-compatible config")
 	}
 }
+
+func TestBuildFromFleet_GeneratedSitesAreNotExpanded(t *testing.T) {
+	cfg := &fleet.Config{
+		Nameservers: []fleet.Nameserver{
+			{
+				ID:          "ns-01",
+				Address:     "10.0.0.1",
+				ControlPort: 9100,
+				DNSPort:     53,
+				Domains:     []string{"example.com"},
+				Hosts:       []string{"ns1.example.com"},
+			},
+		},
+		Targets: []fleet.Target{
+			{
+				ID:      "target-01",
+				Address: "10.0.0.10",
+				GeneratedSites: []fleet.GeneratedSiteRange{
+					{
+						ID:          "load",
+						HostPattern: "site-%07d.load.example.com",
+						Start:       1,
+						Count:       1_000_000,
+						Paths:       []string{"/"},
+					},
+				},
+			},
+		},
+		Domains: []fleet.Domain{
+			{Name: "example.com", Nameservers: []string{"ns-01"}, TTL: 30},
+		},
+	}
+
+	z, err := BuildFromFleet(cfg, "ns-01", 1700000000)
+	if err != nil {
+		t.Fatalf("BuildFromFleet: %v", err)
+	}
+	if len(z.Generated) != 1 {
+		t.Fatalf("generated ranges = %d, want 1", len(z.Generated))
+	}
+	if _, ok := z.Records["site-0000001.load.example.com"]; ok {
+		t.Fatal("generated host was expanded into static Records map")
+	}
+	got, ok := z.LookupA("site-0000001.load.example.com")
+	if !ok {
+		t.Fatal("generated host did not resolve")
+	}
+	if !got.IP.Equal(net.ParseIP("10.0.0.10")) {
+		t.Fatalf("generated IP = %s, want 10.0.0.10", got.IP)
+	}
+}
+
+func TestBuildFromFleet_GeneratedSitesRespectServedDomains(t *testing.T) {
+	cfg := &fleet.Config{
+		Nameservers: []fleet.Nameserver{
+			{
+				ID:          "ns-01",
+				Address:     "10.0.0.1",
+				ControlPort: 9100,
+				DNSPort:     53,
+				Domains:     []string{"example.com"},
+			},
+		},
+		Targets: []fleet.Target{
+			{
+				ID:      "target-01",
+				Address: "10.0.0.10",
+				GeneratedSites: []fleet.GeneratedSiteRange{
+					{ID: "served", HostPattern: "site-%07d.load.example.com", Start: 1, Count: 10},
+					{ID: "skipped", HostPattern: "site-%07d.other.example", Start: 1, Count: 10},
+				},
+			},
+		},
+		Domains: []fleet.Domain{
+			{Name: "example.com", Nameservers: []string{"ns-01"}, TTL: 30},
+		},
+	}
+
+	z, err := BuildFromFleet(cfg, "ns-01", 1700000000)
+	if err != nil {
+		t.Fatalf("BuildFromFleet: %v", err)
+	}
+	if len(z.Generated) != 1 {
+		t.Fatalf("generated ranges = %d, want 1", len(z.Generated))
+	}
+	if z.Generated[0].ID != "served" {
+		t.Fatalf("generated range ID = %q, want served", z.Generated[0].ID)
+	}
+}

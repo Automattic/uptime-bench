@@ -82,10 +82,11 @@ type Nameserver struct {
 
 // Target is one target server in the fleet.
 type Target struct {
-	ID          string
-	Address     string
-	ControlPort int
-	Sites       []Site
+	ID             string
+	Address        string
+	ControlPort    int
+	Sites          []Site
+	GeneratedSites []GeneratedSiteRange
 }
 
 // Site is one virtual host served by a target server.
@@ -93,6 +94,17 @@ type Site struct {
 	ID    string
 	Host  string
 	Paths []string
+}
+
+// GeneratedSiteRange describes a large deterministic virtual-host range.
+// The target server can serve these hosts without knowing them ahead of time;
+// DNS uses the pattern to resolve matching names to this target's address.
+type GeneratedSiteRange struct {
+	ID          string
+	HostPattern string
+	Start       int
+	Count       int
+	Paths       []string
 }
 
 // Domain holds domain-level configuration.
@@ -186,6 +198,31 @@ func convert(r rawConfig) (*Config, error) {
 				Paths: s.Paths,
 			})
 		}
+		for _, s := range t.GeneratedSites {
+			if s.ID == "" {
+				return nil, fmt.Errorf("fleet: target %q: generated site range missing id", t.ID)
+			}
+			if s.HostPattern == "" {
+				return nil, fmt.Errorf("fleet: target %q: generated site range %q: host_pattern is required", t.ID, s.ID)
+			}
+			if s.Count <= 0 {
+				return nil, fmt.Errorf("fleet: target %q: generated site range %q: count must be positive", t.ID, s.ID)
+			}
+			start := 1
+			if s.Start != nil {
+				if *s.Start < 0 {
+					return nil, fmt.Errorf("fleet: target %q: generated site range %q: start must be non-negative", t.ID, s.ID)
+				}
+				start = *s.Start
+			}
+			tgt.GeneratedSites = append(tgt.GeneratedSites, GeneratedSiteRange{
+				ID:          s.ID,
+				HostPattern: s.HostPattern,
+				Start:       start,
+				Count:       s.Count,
+				Paths:       s.Paths,
+			})
+		}
 		c.Targets = append(c.Targets, tgt)
 	}
 
@@ -252,16 +289,25 @@ type rawNameserver struct {
 }
 
 type rawTarget struct {
-	ID          string    `toml:"id"`
-	Address     string    `toml:"address"`
-	ControlPort int       `toml:"control_port"`
-	Sites       []rawSite `toml:"sites"`
+	ID             string                  `toml:"id"`
+	Address        string                  `toml:"address"`
+	ControlPort    int                     `toml:"control_port"`
+	Sites          []rawSite               `toml:"sites"`
+	GeneratedSites []rawGeneratedSiteRange `toml:"generated_sites"`
 }
 
 type rawSite struct {
 	ID    string   `toml:"id"`
 	Host  string   `toml:"host"`
 	Paths []string `toml:"paths"`
+}
+
+type rawGeneratedSiteRange struct {
+	ID          string   `toml:"id"`
+	HostPattern string   `toml:"host_pattern"`
+	Start       *int     `toml:"start"`
+	Count       int      `toml:"count"`
+	Paths       []string `toml:"paths"`
 }
 
 type rawDomain struct {

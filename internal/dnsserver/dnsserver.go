@@ -85,6 +85,7 @@ func BuildFromFleet(fl *fleet.Config, memberID string, serial uint32) (*Zones, e
 	}
 
 	m := make(ZoneMap)
+	var generated []GeneratedRecordRange
 	for _, t := range fl.Targets {
 		ip := ResolveIPv4(t.Address)
 		if ip == nil {
@@ -95,6 +96,19 @@ func BuildFromFleet(fl *fleet.Config, memberID string, serial uint32) (*Zones, e
 			for domain, ttl := range servedDomains {
 				if host == domain || strings.HasSuffix(host, "."+domain) {
 					m[host] = ZoneEntry{IP: ip, TTL: ttl}
+					break
+				}
+			}
+		}
+		for _, site := range t.GeneratedSites {
+			hostPattern := strings.ToLower(strings.TrimSuffix(site.HostPattern, "."))
+			for domain, ttl := range servedDomains {
+				if generatedPatternUnderDomain(hostPattern, domain) {
+					r, err := NewGeneratedRecordRange(site.ID, hostPattern, site.Start, site.Count, ip, ttl)
+					if err != nil {
+						return nil, fmt.Errorf("target %s generated site range %s: %w", t.ID, site.ID, err)
+					}
+					generated = append(generated, r)
 					break
 				}
 			}
@@ -165,7 +179,18 @@ func BuildFromFleet(fl *fleet.Config, memberID string, serial uint32) (*Zones, e
 		}
 	}
 
-	return &Zones{Records: m, Apex: apex}, nil
+	return &Zones{Records: m, Generated: generated, Apex: apex}, nil
+}
+
+func generatedPatternUnderDomain(hostPattern, domain string) bool {
+	if hostPattern == domain || strings.HasSuffix(hostPattern, "."+domain) {
+		return true
+	}
+	prefix, suffix, _, err := parseGeneratedHostPattern(hostPattern)
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(prefix+suffix, "."+domain)
 }
 
 // MergeFlagZones parses -zone name:addr pairs and adds them to the zone map.
@@ -422,10 +447,8 @@ func BuildResponse(query []byte, registry *control.FailureRegistry, zones *Zones
 	}
 
 	if qtype == qtypeA {
-		if zones != nil {
-			if e, ok := zones.Records[name]; ok {
-				return aResponse(query, qEnd, e.IP, e.TTL), latency
-			}
+		if e, ok := zones.LookupA(name); ok {
+			return aResponse(query, qEnd, e.IP, e.TTL), latency
 		}
 	}
 

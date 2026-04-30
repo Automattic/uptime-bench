@@ -114,6 +114,11 @@ Target servers are the websites under test. A single target can host many benchm
 sites by virtual hostname. HTTP routing uses the `Host` header; HTTPS routing
 uses SNI.
 
+For capacity tests, a target can also declare generated site ranges in
+`fleet.toml` with `[[targets.generated_sites]]`. DNS resolves matching
+hostnames from the configured pattern and range without expanding every host
+into the static zone map, while the target serves those Host headers normally.
+
 Target-side failure layers:
 
 | Layer | Examples | Why it lives on the target |

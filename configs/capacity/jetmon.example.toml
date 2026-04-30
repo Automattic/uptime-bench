@@ -1,0 +1,41 @@
+# Example capacity-benchmark plan for Jetmon v1 vs Jetmon v2.
+# This file documents the intended inputs while the first implementation
+# focuses on Prometheus window collection.
+
+id = "jetmon-v1-vs-v2-capacity"
+prometheus_url = "http://paprika.internal:9091"
+instances = ["jetmon-v1", "jetmon-v2"]
+
+[window]
+baseline_duration = "15m"
+step = "15s"
+rate_window = "2m"
+
+[targets]
+domain = "load.example.com"
+url_pattern = "http://site-%07d.load.example.com/"
+count = 1000000
+
+[checks]
+interval = "1m"
+
+[batches]
+sizes = [10, 100, 1000, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000]
+duration = "30m"
+cooldown = "5m"
+
+[stop_thresholds]
+host_cpu_percent = 85
+host_memory_percent = 85
+root_disk_percent = 90
+missed_check_percent = 1
+scrape_up_min = 1
+dockerstats_scrape_success_min = 1
+
+[jetmon_v1]
+bridge_url = "http://jetmon-v1:7400"
+bulk_lifecycle = "bridge_or_db_seeded_range"
+
+[jetmon_v2]
+api_url = "http://jetmon-v2:8090/api/v1"
+bulk_lifecycle = "api_or_db_seeded_range"

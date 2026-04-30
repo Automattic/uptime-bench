@@ -10,6 +10,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 5. [Provider-state preflight cleanup](#provider-state-preflight-cleanup)
 6. [Campaign hardening dry run](#campaign-hardening-dry-run)
 7. [Next-wave adapter expansion](#next-wave-adapter-expansion)
+8. [Jetmon capacity benchmark](#jetmon-capacity-benchmark)
 
 **Lower-priority follow-ups:**
 - [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
@@ -633,6 +634,26 @@ Deferred for different scenario lanes:
 
 - **Upptime** — useful zero-infrastructure/GitHub Actions monitor, but the normal five-minute cadence is a poor fit for minute-level detection comparisons. Consider later as a distinct "free/CI-backed monitor" category.
 - **Healthchecks.io self-hosted** — reverse heartbeat/dead-man-switch semantics belong with future heartbeat and agent-based reverse-check scenarios, not the current probe-based uptime matrix.
+
+## Jetmon capacity benchmark
+
+**Status:** Initial observability path and generated target DNS support are implemented on branch `jetmon-capacity-bench`.
+
+The first capacity track compares Jetmon v1 and Jetmon v2 as active monitor count grows. It is intentionally separate from scenario accuracy campaigns: scenario runs answer whether monitors detect controlled failures, while capacity runs answer how resource use, check timeliness, lifecycle throughput, and service health scale with batch size.
+
+Implemented:
+
+- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-v1` and `jetmon-v2`.
+- `cmd/uptime-bench-dockerstats-exporter` exposes Docker API container stats as Prometheus metrics for hosts where cAdvisor cannot identify Docker 29 `overlayfs` / containerd-snapshotter writable layers.
+- The exporter is deployed on both Jetmon hosts at `10.0.0.170:9103` and `10.0.0.171:9103`.
+- `fleet.toml` supports `[[targets.generated_sites]]` ranges so DNS can resolve million-scale synthetic hostnames without expanding all hosts into the zone map.
+- `cmd/uptime-bench-targetload` can probe generated host ranges against DNS and HTTP before those hosts are loaded into Jetmon.
+- `docs/capacity-benchmark.md` records the test shape, stop thresholds, target direction, and bulk lifecycle approach.
+
+Remaining follow-up:
+
+- Stress test target-side DNS and HTTP capacity before monitor-side million-site runs.
+- Implement a benchmark-owned bulk lifecycle path for Jetmon v1/v2 using bridge/API or controlled database-side seeded ranges, without changing Jetmon v1 application code.
 
 ---
 

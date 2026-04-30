@@ -18,8 +18,9 @@ import (
 // "name truly isn't in the zone" path gets the negative-caching
 // SOA — see BuildResponse.
 type Zones struct {
-	Records ZoneMap
-	Apex    map[string]ZoneApex
+	Records   ZoneMap
+	Generated []GeneratedRecordRange
+	Apex      map[string]ZoneApex
 }
 
 // ZoneApex carries per-zone records — the hostnames the parent zone
@@ -56,6 +57,23 @@ func (z *Zones) LookupApex(host string) (ZoneApex, bool) {
 		}
 	}
 	return ZoneApex{}, false
+}
+
+// LookupA returns an exact or generated A record for host.
+func (z *Zones) LookupA(host string) (ZoneEntry, bool) {
+	if z == nil {
+		return ZoneEntry{}, false
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if e, ok := z.Records[host]; ok {
+		return e, true
+	}
+	for _, generated := range z.Generated {
+		if e, ok := generated.Lookup(host); ok {
+			return e, true
+		}
+	}
+	return ZoneEntry{}, false
 }
 
 // encodeName encodes name as DNS labels with a terminating zero byte.
