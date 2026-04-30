@@ -97,7 +97,8 @@ Every scenario run records why it ended. This affects whether results are usable
 - `planned_completion` — scenario ran to its defined end time normally.
 - `aborted` — run was interrupted before completion (operator action or harness error).
 - `target_independent_failure` — the target failed in a way not caused by the scenario's own injection (e.g., underlying infrastructure issue).
-- `adapter_error` — one or more adapters failed to deprovision or retrieve data, potentially corrupting results for those services.
+- `adapter_error` — one or more adapters failed to provision or retrieve data, potentially corrupting results for those services.
+- `cleanup_error` — detection and retrieval completed, but one or more adapters failed to deprovision after retries. Monitor reports from the run may still be valid, but the leaked provider state must be investigated before relying on later runs.
 
 ---
 
