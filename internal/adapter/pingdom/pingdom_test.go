@@ -44,6 +44,7 @@ func fakeAPI(t *testing.T, c *captured, status int, respBody string) *httptest.S
 func newTestAdapter(srvURL, token string) *Adapter {
 	a := New("pingdom", srvURL, token)
 	a.client = http.DefaultClient
+	a.retryDelay = 0
 	return a
 }
 
@@ -452,6 +453,55 @@ func TestRetrieve_HTTPErrorReturnsUnknown(t *testing.T) {
 	res, err := a.Retrieve(context.Background(), adapter.MonitorHandle{MonitorID: "1"}, adapter.RunWindow{})
 	if err != nil {
 		t.Fatalf("Retrieve should not return Go error: %v", err)
+	}
+	if res.Status != adapter.RetrieveUnknown {
+		t.Fatalf("Status = %q, want unknown", res.Status)
+	}
+}
+
+func TestRetrieve_RetriesTransientHTTPError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"summary":{"states":[{"status":"down","timefrom":100,"timeto":200}]}}`))
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	res, err := a.Retrieve(context.Background(), adapter.MonitorHandle{MonitorID: "1"}, adapter.RunWindow{})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+	if res.Status != adapter.RetrieveKnown {
+		t.Fatalf("Status = %q, want known", res.Status)
+	}
+	if len(res.Reports) != 1 || res.Reports[0].EventType != adapter.EventAlertFired {
+		t.Fatalf("Reports = %+v, want one alert_fired report", res.Reports)
+	}
+}
+
+func TestRetrieve_DoesNotRetryNonTransientHTTPError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	res, err := a.Retrieve(context.Background(), adapter.MonitorHandle{MonitorID: "1"}, adapter.RunWindow{})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 	if res.Status != adapter.RetrieveUnknown {
 		t.Fatalf("Status = %q, want unknown", res.Status)

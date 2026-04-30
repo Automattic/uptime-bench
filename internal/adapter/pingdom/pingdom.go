@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,6 +42,11 @@ import (
 
 // DefaultAPIURL is used when services.toml omits `url`.
 const DefaultAPIURL = "https://api.pingdom.com/api/3.1"
+
+const (
+	retrieveRetryAttempts = 3
+	retrieveRetryDelay    = 2 * time.Second
+)
 
 // classification maps Pingdom outage state strings to uptime-bench's
 // normalized vocabulary.
@@ -58,6 +64,8 @@ type Adapter struct {
 	apiURL string
 	token  string
 	client *http.Client
+
+	retryDelay time.Duration
 }
 
 // New creates a Pingdom adapter.
@@ -70,6 +78,8 @@ func New(id, apiURL, token string) *Adapter {
 		apiURL: strings.TrimRight(apiURL, "/"),
 		token:  token,
 		client: &http.Client{Timeout: 30 * time.Second},
+
+		retryDelay: retrieveRetryDelay,
 	}
 }
 
@@ -328,17 +338,39 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 	)
 
 	var resp outageSummaryResponse
-	if err := a.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return adapter.RetrieveResult{
-			Status: adapter.RetrieveUnknown,
-			Reason: fmt.Sprintf("pingdom: GET %s: %v", path, err),
-		}, nil
-	}
-	if resp.Error != nil {
-		return adapter.RetrieveResult{
-			Status: adapter.RetrieveUnknown,
-			Reason: fmt.Sprintf("pingdom: GET %s: %s", path, resp.Error),
-		}, nil
+	for attempt := 1; attempt <= retrieveRetryAttempts; attempt++ {
+		resp = outageSummaryResponse{}
+		err := a.do(ctx, http.MethodGet, path, nil, &resp)
+		if err != nil {
+			if !isTransientHTTPError(err) || attempt == retrieveRetryAttempts {
+				return adapter.RetrieveResult{
+					Status: adapter.RetrieveUnknown,
+					Reason: fmt.Sprintf("pingdom: GET %s: %v", path, err),
+				}, nil
+			}
+			if err := a.waitForRetrieveRetry(ctx, attempt); err != nil {
+				return adapter.RetrieveResult{
+					Status: adapter.RetrieveUnknown,
+					Reason: fmt.Sprintf("pingdom: GET %s: retry canceled: %v", path, err),
+				}, nil
+			}
+			continue
+		}
+		if resp.Error == nil {
+			break
+		}
+		if !isTransientAPIError(resp.Error) || attempt == retrieveRetryAttempts {
+			return adapter.RetrieveResult{
+				Status: adapter.RetrieveUnknown,
+				Reason: fmt.Sprintf("pingdom: GET %s: %s", path, resp.Error),
+			}, nil
+		}
+		if err := a.waitForRetrieveRetry(ctx, attempt); err != nil {
+			return adapter.RetrieveResult{
+				Status: adapter.RetrieveUnknown,
+				Reason: fmt.Sprintf("pingdom: GET %s: retry canceled: %v", path, err),
+			}, nil
+		}
 	}
 
 	now := time.Now()
@@ -365,6 +397,40 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 		Status:  adapter.RetrieveKnown,
 		Reports: reports,
 	}, nil
+}
+
+func (a *Adapter) waitForRetrieveRetry(ctx context.Context, attempt int) error {
+	delay := a.retryDelay * time.Duration(attempt)
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isTransientAPIError(err *apiError) bool {
+	if err == nil {
+		return false
+	}
+	return isTransientStatus(err.StatusCode)
+}
+
+func isTransientHTTPError(err error) bool {
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) {
+		return isTransientStatus(statusErr.status)
+	}
+	return false
+}
+
+func isTransientStatus(status int) bool {
+	return status == http.StatusTooManyRequests || (status >= 500 && status <= 599)
 }
 
 // classifyState turns a Pingdom outage state into the corresponding
@@ -462,7 +528,7 @@ func (a *Adapter) do(ctx context.Context, method, path string, body, out any) er
 		return fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("status %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return &httpStatusError{status: resp.StatusCode, body: string(respBody)}
 	}
 	if out == nil {
 		return nil
@@ -471,6 +537,15 @@ func (a *Adapter) do(ctx context.Context, method, path string, body, out any) er
 		return fmt.Errorf("decode: %w (body=%s)", err, truncate(string(respBody), 200))
 	}
 	return nil
+}
+
+type httpStatusError struct {
+	status int
+	body   string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("status %d: %s", e.status, truncate(e.body, 200))
 }
 
 func truncate(s string, n int) string {

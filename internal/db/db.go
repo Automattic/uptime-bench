@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -16,6 +17,8 @@ import (
 type DB struct {
 	db *sql.DB
 }
+
+const derivedMetricTextMaxChars = 256
 
 // nullStr returns nil for empty strings, otherwise a pointer to s. Used to
 // pass NULL into MySQL columns where the empty string would be a distinct
@@ -356,12 +359,35 @@ func (d *DB) UpsertDerivedMetric(ctx context.Context, r DerivedMetricRow) error 
 		   metric_value = VALUES(metric_value),
 		   metric_text  = VALUES(metric_text),
 		   computed_at  = VALUES(computed_at)`,
-		r.RunID, r.ServiceID, r.MetricName, r.MetricValue, nullStr(r.MetricText), r.ComputedAt,
+		r.RunID, r.ServiceID, r.MetricName, r.MetricValue, metricTextValue(r.MetricText), r.ComputedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("db: UpsertDerivedMetric: %w", err)
 	}
 	return nil
+}
+
+func metricTextValue(s string) *string {
+	if s == "" {
+		return nil
+	}
+	s = truncateRunes(s, derivedMetricTextMaxChars)
+	return &s
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	const suffix = "..."
+	if max <= len(suffix) {
+		return string([]rune(s)[:max])
+	}
+	runes := []rune(s)
+	return string(runes[:max-len(suffix)]) + suffix
 }
 
 // CampaignMetricRows returns derived metrics for every scenario run
