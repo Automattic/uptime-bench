@@ -12,7 +12,7 @@ import (
 
 func main() {
 	campaign := flag.String("campaign", "", "campaign run ID or campaign config ID to report")
-	format := flag.String("format", "table", "output format: table, tsv, or json")
+	format := flag.String("format", "table", "output format: table, tsv, json, or markdown")
 	dsnFlag := flag.String("dsn", "", "MySQL DSN (overrides DB_DSN env var)")
 	flag.Parse()
 
@@ -65,9 +65,10 @@ func main() {
 	}
 	summaries := report.Summarize(rows, reasonRows)
 	out := report.Report{
-		Meta:       report.MetaFromLookup(lookup),
-		BiasChecks: report.AnalyzeBias(summaries),
-		Summaries:  summaries,
+		Meta:          report.MetaFromLookup(lookup),
+		BiasChecks:    report.AnalyzeBias(summaries),
+		ServiceScores: report.ScoreMetrics(rows, reasonRows),
+		Summaries:     summaries,
 	}
 	if err := report.Write(os.Stdout, *format, out); err != nil {
 		log.Fatalf("report: write: %v", err)

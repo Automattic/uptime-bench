@@ -30,9 +30,10 @@ const failureTypeUnrecorded = "<no_failure>"
 // span). Required for the methodology disclosure called out in
 // docs/roadmap.md.
 type Report struct {
-	Meta       Meta        `json:"meta"`
-	BiasChecks []BiasCheck `json:"bias_checks,omitempty"`
-	Summaries  []Summary   `json:"summaries"`
+	Meta          Meta           `json:"meta"`
+	BiasChecks    []BiasCheck    `json:"bias_checks,omitempty"`
+	ServiceScores []ServiceScore `json:"service_scores,omitempty"`
+	Summaries     []Summary      `json:"summaries"`
 }
 
 // Meta describes how a Report was assembled. CampaignRuns counts how
@@ -135,6 +136,23 @@ type BiasCheck struct {
 	Name    string `json:"name"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
+}
+
+// ServiceScore is an outcome-count rollup for one service. It is intentionally
+// computed from generic metric categories only; service IDs are grouping keys,
+// never branch conditions.
+type ServiceScore struct {
+	ServiceID                  string   `json:"service_id"`
+	TotalSamples               int      `json:"total_samples"`
+	Passed                     int      `json:"passed"`
+	Failed                     int      `json:"failed"`
+	Comparable                 int      `json:"comparable"`
+	Excluded                   int      `json:"excluded"`
+	Unknown                    int      `json:"unknown"`
+	CapabilityMismatch         int      `json:"capability_mismatch"`
+	SampleWeightedPassRate     *float64 `json:"sample_weighted_pass_rate,omitempty"`
+	ScenarioNormalizedPassRate *float64 `json:"scenario_normalized_pass_rate,omitempty"`
+	CategoryNormalizedPassRate *float64 `json:"category_normalized_pass_rate,omitempty"`
 }
 
 type summaryKey struct {
@@ -296,6 +314,256 @@ func AnalyzeBias(summaries []Summary) []BiasCheck {
 		cellBalanceCheck(summaries),
 		capabilityMismatchCheck(summaries),
 		uncategorizedUnknownCheck(summaries),
+	}
+}
+
+// ScoreServices returns service-level pass/fail rollups for quick comparison.
+// Unknown, capability mismatch, maintenance suppression, cooldown outcomes, and
+// other ambiguous categories are exposed but excluded from pass-rate
+// denominators, matching docs/events.md.
+func ScoreServices(summaries []Summary) []ServiceScore {
+	type serviceAcc struct {
+		score        ServiceScore
+		scenarioRate map[string]rateAcc
+		categoryRate map[string]map[string]rateAcc
+	}
+	byService := map[string]*serviceAcc{}
+	for _, s := range summaries {
+		acc := byService[s.ServiceID]
+		if acc == nil {
+			acc = &serviceAcc{
+				scenarioRate: map[string]rateAcc{},
+				categoryRate: map[string]map[string]rateAcc{},
+			}
+			acc.score.ServiceID = s.ServiceID
+			byService[s.ServiceID] = acc
+		}
+		passed := s.TruePositive + s.TLSAdvisoryDetected
+		failed := s.FalseNegative + s.FalsePositive + s.TLSAdvisoryMissed + s.TLSAdvisoryFalseOutage
+		excluded := s.Unknown + s.CapabilityMismatch + s.MaintenanceSuppressed + s.CooldownSuppressed + s.CooldownUncertain
+		acc.score.TotalSamples += s.Samples
+		acc.score.Passed += passed
+		acc.score.Failed += failed
+		acc.score.Comparable += passed + failed
+		acc.score.Excluded += excluded
+		acc.score.Unknown += s.Unknown
+		acc.score.CapabilityMismatch += s.CapabilityMismatch
+
+		if passed+failed > 0 {
+			ra := acc.scenarioRate[s.FailureType]
+			ra.passed += passed
+			ra.comparable += passed + failed
+			acc.scenarioRate[s.FailureType] = ra
+			category := failureCategory(s.FailureType)
+			if acc.categoryRate[category] == nil {
+				acc.categoryRate[category] = map[string]rateAcc{}
+			}
+			acc.categoryRate[category][s.FailureType] = ra
+		}
+	}
+
+	out := make([]ServiceScore, 0, len(byService))
+	for _, acc := range byService {
+		if acc.score.Comparable > 0 {
+			acc.score.SampleWeightedPassRate = ratioPtr(acc.score.Passed, acc.score.Comparable)
+		}
+		acc.score.ScenarioNormalizedPassRate = meanScenarioRate(acc.scenarioRate)
+		acc.score.CategoryNormalizedPassRate = meanCategoryRate(acc.categoryRate)
+		out = append(out, acc.score)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServiceID < out[j].ServiceID })
+	return out
+}
+
+// ScoreMetrics returns exact per-sample service scores from raw campaign metric
+// and reason rows. Unlike ScoreServices, this can see when one run has both a
+// correct detection and a false-positive side effect; such a sample is scored as
+// failed because the service did not behave cleanly.
+func ScoreMetrics(rows []db.CampaignMetricRow, reasonRows []db.CampaignReasonRow) []ServiceScore {
+	type sampleKey struct {
+		runID       string
+		failureType string
+		serviceID   string
+	}
+	type sample struct {
+		pass               bool
+		fail               bool
+		unknown            bool
+		capabilityMismatch bool
+		excluded           bool
+	}
+	samples := map[sampleKey]*sample{}
+	sampleFor := func(runID, failureType, serviceID string) *sample {
+		if failureType == "" {
+			failureType = failureTypeUnrecorded
+		}
+		key := sampleKey{runID: runID, failureType: failureType, serviceID: serviceID}
+		s := samples[key]
+		if s == nil {
+			s = &sample{}
+			samples[key] = s
+		}
+		return s
+	}
+	for _, row := range rows {
+		if boolMetric(metricValue(row)) == 0 {
+			continue
+		}
+		s := sampleFor(row.RunID, row.FailureType, row.ServiceID)
+		switch row.MetricName {
+		case "true_positive", "tls_advisory_detected":
+			s.pass = true
+		case "false_negative", "false_positive", "tls_advisory_missed", "tls_advisory_false_outage":
+			s.fail = true
+		case "unknown":
+			s.unknown = true
+			s.excluded = true
+		case "maintenance_suppressed", "cooldown_suppressed", "cooldown_uncertain":
+			s.excluded = true
+		}
+	}
+	for _, row := range reasonRows {
+		if row.ReasonCode != "capability_mismatch" {
+			continue
+		}
+		s := sampleFor(row.RunID, row.FailureType, row.ServiceID)
+		s.capabilityMismatch = true
+		s.excluded = true
+	}
+
+	type serviceAcc struct {
+		score        ServiceScore
+		scenarioRate map[string]rateAcc
+		categoryRate map[string]map[string]rateAcc
+	}
+	byService := map[string]*serviceAcc{}
+	for key, sample := range samples {
+		acc := byService[key.serviceID]
+		if acc == nil {
+			acc = &serviceAcc{
+				score:        ServiceScore{ServiceID: key.serviceID},
+				scenarioRate: map[string]rateAcc{},
+				categoryRate: map[string]map[string]rateAcc{},
+			}
+			byService[key.serviceID] = acc
+		}
+		acc.score.TotalSamples++
+		switch {
+		case sample.fail:
+			acc.score.Failed++
+			acc.score.Comparable++
+			ra := acc.scenarioRate[key.failureType]
+			ra.comparable++
+			acc.scenarioRate[key.failureType] = ra
+			category := failureCategory(key.failureType)
+			if acc.categoryRate[category] == nil {
+				acc.categoryRate[category] = map[string]rateAcc{}
+			}
+			acc.categoryRate[category][key.failureType] = ra
+		case sample.pass:
+			acc.score.Passed++
+			acc.score.Comparable++
+			ra := acc.scenarioRate[key.failureType]
+			ra.passed++
+			ra.comparable++
+			acc.scenarioRate[key.failureType] = ra
+			category := failureCategory(key.failureType)
+			if acc.categoryRate[category] == nil {
+				acc.categoryRate[category] = map[string]rateAcc{}
+			}
+			acc.categoryRate[category][key.failureType] = ra
+		case sample.excluded:
+			acc.score.Excluded++
+		}
+		if sample.unknown {
+			acc.score.Unknown++
+		}
+		if sample.capabilityMismatch {
+			acc.score.CapabilityMismatch++
+		}
+	}
+
+	out := make([]ServiceScore, 0, len(byService))
+	for _, acc := range byService {
+		if acc.score.Comparable > 0 {
+			acc.score.SampleWeightedPassRate = ratioPtr(acc.score.Passed, acc.score.Comparable)
+		}
+		acc.score.ScenarioNormalizedPassRate = meanScenarioRate(acc.scenarioRate)
+		acc.score.CategoryNormalizedPassRate = meanCategoryRate(acc.categoryRate)
+		out = append(out, acc.score)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServiceID < out[j].ServiceID })
+	return out
+}
+
+type rateAcc struct {
+	passed     int
+	comparable int
+}
+
+func ratioPtr(num, den int) *float64 {
+	if den <= 0 {
+		return nil
+	}
+	v := float64(num) / float64(den)
+	return &v
+}
+
+func meanScenarioRate(cells map[string]rateAcc) *float64 {
+	if len(cells) == 0 {
+		return nil
+	}
+	sum := 0.0
+	count := 0
+	for _, cell := range cells {
+		if cell.comparable == 0 {
+			continue
+		}
+		sum += float64(cell.passed) / float64(cell.comparable)
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	v := sum / float64(count)
+	return &v
+}
+
+func meanCategoryRate(categories map[string]map[string]rateAcc) *float64 {
+	if len(categories) == 0 {
+		return nil
+	}
+	sum := 0.0
+	count := 0
+	for _, cells := range categories {
+		rate := meanScenarioRate(cells)
+		if rate == nil {
+			continue
+		}
+		sum += *rate
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	v := sum / float64(count)
+	return &v
+}
+
+func failureCategory(failureType string) string {
+	switch {
+	case strings.HasPrefix(failureType, "http_body"):
+		return "content"
+	case strings.HasPrefix(failureType, "http"):
+		return "http"
+	case strings.HasPrefix(failureType, "tls"):
+		return "tls"
+	case strings.HasPrefix(failureType, "dns"):
+		return "dns"
+	case strings.HasPrefix(failureType, "tcp"):
+		return "tcp"
+	default:
+		return "other"
 	}
 }
 
@@ -547,7 +815,7 @@ func percentileNearest(sorted []float64, p float64) float64 {
 	return sorted[idx]
 }
 
-// Write renders a Report in table, tsv, or json format. Table format
+// Write renders a Report in table, tsv, json, or markdown format. Table format
 // emits a `# ...` comment line documenting how the data was scoped
 // (resolved interpretation, campaign_runs count, time span); JSON
 // wraps the same metadata as a top-level `meta` field. TSV stays
@@ -563,6 +831,8 @@ func Write(w io.Writer, format string, r Report) error {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(r)
+	case "markdown", "md":
+		return writeMarkdown(w, r)
 	default:
 		return fmt.Errorf("report: unknown output format %q", format)
 	}
@@ -579,7 +849,87 @@ func writeTable(w io.Writer, r Report) error {
 			return err
 		}
 	}
+	if len(r.ServiceScores) > 0 {
+		if _, err := fmt.Fprintln(w, "# service_scores"); err != nil {
+			return err
+		}
+		if err := writeServiceScores(w, r.ServiceScores, "\t", true); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+	}
 	return writeDelimited(w, r.Summaries, "\t", true)
+}
+
+func writeMarkdown(w io.Writer, r Report) error {
+	if _, err := fmt.Fprintln(w, "# Uptime Bench Report"); err != nil {
+		return err
+	}
+	if line := metaCommentLine(r.Meta); line != "" {
+		if _, err := fmt.Fprintf(w, "\n%s\n", strings.TrimPrefix(line, "# ")); err != nil {
+			return err
+		}
+	}
+	if len(r.BiasChecks) > 0 {
+		if _, err := fmt.Fprint(w, "\n## Bias Checks\n\n"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| Check | Status | Detail |"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| --- | --- | --- |"); err != nil {
+			return err
+		}
+		for _, check := range r.BiasChecks {
+			if _, err := fmt.Fprintf(w, "| %s | %s | %s |\n", check.Name, check.Status, escapePipes(check.Message)); err != nil {
+				return err
+			}
+		}
+	}
+	if len(r.ServiceScores) > 0 {
+		if _, err := fmt.Fprint(w, "\n## Service Scores\n\n"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| Service | Passed | Failed | Comparable | Excluded | Sample Pass Rate | Scenario-Normalized | Category-Normalized |"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"); err != nil {
+			return err
+		}
+		for _, s := range r.ServiceScores {
+			if _, err := fmt.Fprintf(w, "| %s | %d | %d | %d | %d | %s | %s | %s |\n",
+				s.ServiceID, s.Passed, s.Failed, s.Comparable, s.Excluded,
+				formatPercent(s.SampleWeightedPassRate), formatPercent(s.ScenarioNormalizedPassRate), formatPercent(s.CategoryNormalizedPassRate)); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(w, "\n`Comparable` excludes unknown, capability mismatch, maintenance suppression, cooldown outcomes, and other intentionally ambiguous categories."); err != nil {
+			return err
+		}
+	}
+	if len(r.Summaries) > 0 {
+		if _, err := fmt.Fprint(w, "\n## Failure-Type Details\n\n"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| Failure Type | Service | N | TP Rate | TP | FN | FP | Unknown | Capability Mismatch | Min s | Avg s | P50 s | P95 s | Max s |"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"); err != nil {
+			return err
+		}
+		for _, s := range r.Summaries {
+			if _, err := fmt.Fprintf(w, "| %s | %s | %d | %s | %d | %d | %d | %d | %d | %s | %s | %s | %s | %s |\n",
+				s.FailureType, s.ServiceID, s.Samples, formatRatio(s.DetectionRate),
+				s.TruePositive, s.FalseNegative, s.FalsePositive, s.Unknown, s.CapabilityMismatch,
+				formatSeconds(s.LatencyMinSeconds), formatSeconds(s.LatencyAvgSeconds), formatSeconds(s.LatencyP50Seconds),
+				formatSeconds(s.LatencyP95Seconds), formatSeconds(s.LatencyMaxSeconds)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // metaCommentLine renders Meta as a one-line `#`-prefixed comment for
@@ -671,6 +1021,44 @@ func writeDelimited(w io.Writer, summaries []Summary, sep string, align bool) er
 	return nil
 }
 
+func writeServiceScores(w io.Writer, scores []ServiceScore, sep string, align bool) error {
+	out := w
+	var tw *tabwriter.Writer
+	if align {
+		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		out = tw
+	}
+	header := []string{
+		"service", "total_samples", "passed", "failed", "comparable", "excluded",
+		"unknown", "cap_mismatch", "sample_pass_rate", "scenario_norm_rate", "category_norm_rate",
+	}
+	if _, err := fmt.Fprintln(out, strings.Join(header, sep)); err != nil {
+		return err
+	}
+	for _, s := range scores {
+		fields := []string{
+			s.ServiceID,
+			strconv.Itoa(s.TotalSamples),
+			strconv.Itoa(s.Passed),
+			strconv.Itoa(s.Failed),
+			strconv.Itoa(s.Comparable),
+			strconv.Itoa(s.Excluded),
+			strconv.Itoa(s.Unknown),
+			strconv.Itoa(s.CapabilityMismatch),
+			formatRatio(s.SampleWeightedPassRate),
+			formatRatio(s.ScenarioNormalizedPassRate),
+			formatRatio(s.CategoryNormalizedPassRate),
+		}
+		if _, err := fmt.Fprintln(out, strings.Join(fields, sep)); err != nil {
+			return err
+		}
+	}
+	if tw != nil {
+		return tw.Flush()
+	}
+	return nil
+}
+
 // formatRatio / formatSeconds use strconv rather than fmt.Sprintf for
 // the same reason as the integer fields above: hot path, allocation
 // sensitive. See BenchmarkWriteTSV.
@@ -700,4 +1088,15 @@ func formatSecondsCI(v *CI) string {
 		return ""
 	}
 	return strconv.FormatFloat(v.Lower, 'f', 1, 64) + "-" + strconv.FormatFloat(v.Upper, 'f', 1, 64)
+}
+
+func formatPercent(v *float64) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*v*100, 'f', 1, 64) + "%"
+}
+
+func escapePipes(s string) string {
+	return strings.ReplaceAll(s, "|", "\\|")
 }

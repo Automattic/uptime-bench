@@ -242,6 +242,101 @@ func TestAnalyzeBias_FlagsMissingServiceCells(t *testing.T) {
 	}
 }
 
+func TestScoreServicesReportsSampleAndNormalizedRates(t *testing.T) {
+	summaries := []Summary{
+		{FailureType: "http_status", ServiceID: "svc-a", Samples: 10, TruePositive: 9, FalseNegative: 1},
+		{FailureType: "tls_expired", ServiceID: "svc-a", Samples: 2, TruePositive: 0, FalseNegative: 2},
+		{FailureType: "http_status", ServiceID: "svc-b", Samples: 10, TruePositive: 5, FalseNegative: 5, Unknown: 1},
+		{FailureType: "tls_deprecated", ServiceID: "svc-b", Samples: 2, TLSAdvisoryDetected: 1, TLSAdvisoryFalseOutage: 1},
+		{FailureType: "http_body", ServiceID: "svc-b", Samples: 1, CapabilityMismatch: 1, ReasonCodes: map[string]int{"capability_mismatch": 1}},
+	}
+
+	got := ScoreServices(summaries)
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2: %+v", len(got), got)
+	}
+	a := got[0]
+	if a.ServiceID != "svc-a" {
+		t.Fatalf("first service = %q, want svc-a", a.ServiceID)
+	}
+	if a.Passed != 9 || a.Failed != 3 || a.Comparable != 12 {
+		t.Fatalf("svc-a score = %+v, want passed=9 failed=3 comparable=12", a)
+	}
+	if a.SampleWeightedPassRate == nil || *a.SampleWeightedPassRate != 0.75 {
+		t.Fatalf("svc-a sample rate = %v, want 0.75", a.SampleWeightedPassRate)
+	}
+	if a.ScenarioNormalizedPassRate == nil || diff(*a.ScenarioNormalizedPassRate, 0.45) > 0.000001 {
+		t.Fatalf("svc-a scenario-normalized = %v, want average of 0.9 and 0", a.ScenarioNormalizedPassRate)
+	}
+	b := got[1]
+	if b.Passed != 6 || b.Failed != 6 || b.Unknown != 1 || b.CapabilityMismatch != 1 {
+		t.Fatalf("svc-b score = %+v, want passed=6 failed=6 unknown=1 cap=1", b)
+	}
+	if b.CategoryNormalizedPassRate == nil || *b.CategoryNormalizedPassRate != 0.5 {
+		t.Fatalf("svc-b category-normalized = %v, want average of http 0.5 and tls 0.5", b.CategoryNormalizedPassRate)
+	}
+}
+
+func TestScoreMetricsScoresSamplesWithFalsePositiveAsFailure(t *testing.T) {
+	rows := []db.CampaignMetricRow{
+		metric("run-1", "http_status", "svc", "true_positive", 1),
+		metric("run-1", "http_status", "svc", "false_positive", 1),
+		metric("run-2", "http_status", "svc", "true_positive", 1),
+		metric("run-3", "http_status", "svc", "unknown", 1),
+		metric("run-4", "http_body", "svc", "unknown", 1),
+	}
+	reasons := []db.CampaignReasonRow{
+		reason("run-4", "http_body", "svc", "capability_mismatch"),
+	}
+
+	got := ScoreMetrics(rows, reasons)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1: %+v", len(got), got)
+	}
+	score := got[0]
+	if score.TotalSamples != 4 {
+		t.Fatalf("TotalSamples = %d, want 4", score.TotalSamples)
+	}
+	if score.Passed != 1 || score.Failed != 1 || score.Comparable != 2 {
+		t.Fatalf("score = %+v, want one clean pass and one failed mixed sample", score)
+	}
+	if score.Excluded != 2 || score.Unknown != 2 || score.CapabilityMismatch != 1 {
+		t.Fatalf("excluded counts = %+v, want excluded=2 unknown=2 cap=1", score)
+	}
+	if score.SampleWeightedPassRate == nil || *score.SampleWeightedPassRate != 0.5 {
+		t.Fatalf("SampleWeightedPassRate = %v, want 0.5", score.SampleWeightedPassRate)
+	}
+}
+
+func diff(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func TestWriteMarkdownIncludesServiceScores(t *testing.T) {
+	rate := 0.5
+	r := Report{
+		ServiceScores: []ServiceScore{
+			{ServiceID: "svc", Passed: 1, Failed: 1, Comparable: 2, SampleWeightedPassRate: &rate},
+		},
+		Summaries: []Summary{{FailureType: "http_status", ServiceID: "svc", Samples: 2}},
+	}
+
+	var buf bytes.Buffer
+	if err := Write(&buf, "markdown", r); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "## Service Scores") || !strings.Contains(out, "| svc | 1 | 1 | 2 |") {
+		t.Fatalf("markdown missing service score table: %q", out)
+	}
+	if !strings.Contains(out, "## Failure-Type Details") {
+		t.Fatalf("markdown missing detail table: %q", out)
+	}
+}
+
 func TestWriteRejectsUnknownFormat(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Write(&buf, "xml", Report{}); err == nil {

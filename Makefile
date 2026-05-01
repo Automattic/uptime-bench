@@ -4,6 +4,8 @@ BINARY_TARGET   = $(BIN_DIR)/uptime-bench-target
 BINARY_DNS      = $(BIN_DIR)/uptime-bench-dns
 BINARY_CERTMINT = $(BIN_DIR)/uptime-bench-certmint
 BINARY_REPORT   = $(BIN_DIR)/uptime-bench-report
+BINARY_PREFLIGHT = $(BIN_DIR)/uptime-bench-preflight
+BINARY_FINALIZE = $(BIN_DIR)/uptime-bench-finalize
 BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 
 .DEFAULT_GOAL := build
@@ -13,7 +15,7 @@ BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_PROBE_IPS_REFRESH)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_PREFLIGHT) $(BINARY_FINALIZE) $(BINARY_PROBE_IPS_REFRESH)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -34,6 +36,14 @@ $(BINARY_CERTMINT): $(shell find cmd/certmint internal -name '*.go' 2>/dev/null)
 $(BINARY_REPORT): $(shell find cmd/uptime-bench-report internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/uptime-bench-report
+
+$(BINARY_PREFLIGHT): $(shell find cmd/uptime-bench-preflight internal -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-preflight
+
+$(BINARY_FINALIZE): $(shell find cmd/uptime-bench-finalize internal -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-finalize
 
 $(BINARY_PROBE_IPS_REFRESH): $(shell find cmd/probe-ips-refresh internal/probeips -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -122,10 +132,20 @@ run-campaign:
 
 CAMPAIGN ?= $(error set CAMPAIGN)
 REPORT_FORMAT ?= table
+PREFLIGHT_FORMAT ?= table
+REPORT_OUT_DIR ?=
 
 .PHONY: report-campaign
 report-campaign: $(BINARY_REPORT)
 	$(BINARY_REPORT) -campaign=$(CAMPAIGN) -format=$(REPORT_FORMAT)
+
+.PHONY: preflight-campaign
+preflight-campaign: $(BINARY_PREFLIGHT)
+	$(BINARY_PREFLIGHT) -campaign=$(CAMPAIGN_CONFIG) -format=$(PREFLIGHT_FORMAT)
+
+.PHONY: finalize-campaign
+finalize-campaign: $(BINARY_FINALIZE)
+	$(BINARY_FINALIZE) -campaign=$(CAMPAIGN) $(if $(REPORT_OUT_DIR),-out-dir=$(REPORT_OUT_DIR))
 
 PROBE_IPS_ARGS ?=
 
@@ -222,6 +242,10 @@ help:
 	@echo "    SCENARIO=scenarios/http-503.toml (default)"
 	@echo "  make report-campaign  Summarize a campaign"
 	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_FORMAT=table|tsv|json]"
+	@echo "  make preflight-campaign Validate campaign config and print timing estimates"
+	@echo "    [CAMPAIGN_CONFIG=configs/campaign/example.toml] [PREFLIGHT_FORMAT=table|json]"
+	@echo "  make finalize-campaign Derive metrics and write report.md/report.json"
+	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_OUT_DIR=reports/<run-tag>]"
 	@echo ""
 	@echo "Provision (first-time host setup — run before deploy):"
 	@echo "  make provision-harness  HARNESS_HOST=host  [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"
