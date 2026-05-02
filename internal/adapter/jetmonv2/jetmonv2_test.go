@@ -431,8 +431,8 @@ func TestRetrieve_HappyPathResolvedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query parse: %v", err)
 	}
-	if query.Get("check_type__in") != "http,tls_expiry" {
-		t.Errorf("query = %q, want check_type__in=http,tls_expiry", c.query)
+	if query.Get("check_type__in") != "http,tls_expiry,tls_deprecated" {
+		t.Errorf("query = %q, want check_type__in=http,tls_expiry,tls_deprecated", c.query)
 	}
 	if !strings.Contains(c.query, "started_at__gte=") || !strings.Contains(c.query, "started_at__lt=") {
 		t.Errorf("query = %q, want started_at range", c.query)
@@ -594,12 +594,12 @@ func TestRetrieve_ClassifiesJetmonMetadata(t *testing.T) {
 			{
 				"id": 4,
 				"site_id": 8000000000000123,
-				"check_type": "http",
+				"check_type": "tls_deprecated",
 				"severity": 1,
 				"state": "Warning",
 				"started_at": "2026-04-25T08:03:00Z",
 				"ended_at": null,
-				"metadata": {"http_code": 200, "error_code": 7},
+				"metadata": {"tls_version": "TLS 1.1", "cipher_suite": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"},
 				"duration_ms": 1000,
 				"transition_count": 1
 			},
