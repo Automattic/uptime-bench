@@ -33,7 +33,7 @@ scrape_up_min = 1
 dockerstats_scrape_success_min = 1
 
 [jetmon_v1]
-bridge_url = "http://jetmon-v1:7400"
+bridge_url = "http://jetmon-service-host-1:7400"
 bulk_lifecycle = "bridge_or_db_seeded_range"
 
   [jetmon_v1.lifecycle]
@@ -45,7 +45,7 @@ bulk_lifecycle = "bridge_or_db_seeded_range"
   check_interval = "1m"
 
 [jetmon_v2]
-api_url = "http://jetmon-v2:8090/api/v1"
+api_url = "http://jetmon-service-host-2:8090/api/v1"
 bulk_lifecycle = "api_or_db_seeded_range"
 
   [jetmon_v2.lifecycle]

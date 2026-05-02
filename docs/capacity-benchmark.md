@@ -257,13 +257,13 @@ go build -o /tmp/uptime-bench-target ./cmd/target
 go build -o /tmp/uptime-bench-dns ./cmd/dns
 go build -o /tmp/uptime-bench-targetload ./cmd/uptime-bench-targetload
 
-ssh -F ~/.ssh/config jetmon-deploy-test \
+ssh -F ~/.ssh/config jetmon-vm-host-1 \
   'mkdir -p /tmp/uptime-bench-target-capacity/bin'
 scp -F ~/.ssh/config \
   /tmp/uptime-bench-target /tmp/uptime-bench-dns /tmp/uptime-bench-targetload \
-  jetmon-deploy-test:/tmp/uptime-bench-target-capacity/bin/
+  jetmon-vm-host-1:/tmp/uptime-bench-target-capacity/bin/
 scp -F ~/.ssh/config configs/capacity/targetload.local.toml \
-  jetmon-deploy-test:/tmp/uptime-bench-target-capacity/fleet.toml
+  jetmon-vm-host-1:/tmp/uptime-bench-target-capacity/fleet.toml
 ```
 
 On the lab host, run the target and DNS commands in separate terminals or under

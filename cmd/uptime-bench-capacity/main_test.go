@@ -43,7 +43,7 @@ func TestWriteTableIncludesSummary(t *testing.T) {
 			{
 				Query:   "host_cpu_used",
 				Unit:    "percent",
-				Labels:  map[string]string{"instance": "jetmon-v1"},
+				Labels:  map[string]string{"instance": "jetmon-service-host-1"},
 				Samples: 3,
 				Avg:     12.345,
 				P95:     20,
@@ -55,7 +55,7 @@ func TestWriteTableIncludesSummary(t *testing.T) {
 	var buf bytes.Buffer
 	writeTable(&buf, report)
 	out := buf.String()
-	for _, want := range []string{"host_cpu_used", "jetmon-v1", "12.35"} {
+	for _, want := range []string{"host_cpu_used", "jetmon-service-host-1", "12.35"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("table output missing %q:\n%s", want, out)
 		}

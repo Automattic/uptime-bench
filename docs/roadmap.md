@@ -640,13 +640,13 @@ Deferred for different scenario lanes:
 
 ## Jetmon capacity benchmark
 
-**Status:** Initial observability path and generated target DNS support are implemented on branch `jetmon-capacity-bench`.
+**Status:** Initial observability path and generated target DNS support are implemented on `trunk`.
 
 The first capacity track compares Jetmon v1 and Jetmon v2 as active monitor count grows. It is intentionally separate from scenario accuracy campaigns: scenario runs answer whether monitors detect controlled failures, while capacity runs answer how resource use, check timeliness, lifecycle throughput, and service health scale with batch size.
 
 Implemented:
 
-- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-v1` and `jetmon-v2`.
+- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-service-host-1` and `jetmon-service-host-2`.
 - `cmd/uptime-bench-dockerstats-exporter` exposes Docker API container stats as Prometheus metrics for hosts where cAdvisor cannot identify Docker 29 `overlayfs` / containerd-snapshotter writable layers.
 - The exporter is deployed on both Jetmon hosts at `10.0.0.170:9103` and `10.0.0.171:9103`.
 - `fleet.toml` supports `[[targets.generated_sites]]` ranges so DNS can resolve million-scale synthetic hostnames without expanding all hosts into the zone map.

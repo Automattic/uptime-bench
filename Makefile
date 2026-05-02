@@ -10,6 +10,7 @@ BINARY_TARGETLOAD = $(BIN_DIR)/uptime-bench-targetload
 BINARY_JETMON_CAPACITY = $(BIN_DIR)/uptime-bench-jetmon-capacity
 BINARY_PREFLIGHT = $(BIN_DIR)/uptime-bench-preflight
 BINARY_FINALIZE = $(BIN_DIR)/uptime-bench-finalize
+BINARY_CLEANUP = $(BIN_DIR)/uptime-bench-cleanup
 BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 
 .DEFAULT_GOAL := build
@@ -19,7 +20,7 @@ BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_JETMON_CAPACITY) $(BINARY_PREFLIGHT) $(BINARY_FINALIZE) $(BINARY_PROBE_IPS_REFRESH)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_JETMON_CAPACITY) $(BINARY_PREFLIGHT) $(BINARY_FINALIZE) $(BINARY_CLEANUP) $(BINARY_PROBE_IPS_REFRESH)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -64,6 +65,10 @@ $(BINARY_PREFLIGHT): $(shell find cmd/uptime-bench-preflight internal -name '*.g
 $(BINARY_FINALIZE): $(shell find cmd/uptime-bench-finalize internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/uptime-bench-finalize
+
+$(BINARY_CLEANUP): $(shell find cmd/uptime-bench-cleanup internal -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-cleanup
 
 $(BINARY_PROBE_IPS_REFRESH): $(shell find cmd/probe-ips-refresh internal/probeips -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -197,6 +202,19 @@ preflight-campaign: $(BINARY_PREFLIGHT)
 finalize-campaign: $(BINARY_FINALIZE)
 	$(BINARY_FINALIZE) -campaign=$(CAMPAIGN) $(if $(REPORT_OUT_DIR),-out-dir=$(REPORT_OUT_DIR))
 
+CLEANUP_FLEET ?= fleet.toml
+CLEANUP_SERVICES ?= services.toml
+CLEANUP_DRY_RUN ?= true
+CLEANUP_TIMEOUT ?= 2m
+
+.PHONY: provider-cleanup
+provider-cleanup: $(BINARY_CLEANUP)
+	$(BINARY_CLEANUP) \
+	  -fleet=$(CLEANUP_FLEET) \
+	  -services=$(CLEANUP_SERVICES) \
+	  -dry-run=$(CLEANUP_DRY_RUN) \
+	  -timeout=$(CLEANUP_TIMEOUT)
+
 PROBE_IPS_ARGS ?=
 
 .PHONY: refresh-probe-ips
@@ -296,6 +314,8 @@ help:
 	@echo "    [CAMPAIGN_CONFIG=configs/campaign/example.toml] [PREFLIGHT_FORMAT=table|json]"
 	@echo "  make finalize-campaign Derive metrics and write report.md/report.json"
 	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_OUT_DIR=reports/<run-tag>]"
+	@echo "  make provider-cleanup Dry-run stale provider resource cleanup"
+	@echo "    [CLEANUP_FLEET=fleet.toml] [CLEANUP_SERVICES=services.toml] [CLEANUP_DRY_RUN=true]"
 	@echo "  make capacity-metrics Summarize Jetmon v1/v2 Prometheus capacity metrics"
 	@echo "    [PROMETHEUS_URL=http://10.0.0.67:9091] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
 	@echo "  make capacity-capture-run CAPACITY_RUN_DIR=reports/<run-tag>"
