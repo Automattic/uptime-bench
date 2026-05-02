@@ -1,0 +1,13 @@
+id          = "dns-ns-unavailable-silent"
+version     = "1"
+description = "One authoritative nameserver silently stops answering — tests delegation resiliency and resolver retry behavior"
+target      = "bench-a"
+monitors    = ["jetmon-v1"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 4006
+
+[[failures]]
+type = "dns_ns_unavailable"
+mode = "silent"

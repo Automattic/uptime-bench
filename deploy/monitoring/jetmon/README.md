@@ -1,12 +1,12 @@
 # Jetmon Monitoring Stack
 
 This stack is the repo-managed source for the Grafana and Prometheus setup on
-`jetmon-vm-host-3`.
+`monitoring.example.com`.
 
 ## Access
 
-- Grafana: `http://10.0.0.67:3001`
-- Prometheus: `http://10.0.0.67:9091`
+- Grafana: `http://grafana.example.com:3000`
+- Prometheus: `http://prometheus.example.com:9090`
 - Grafana admin user: `admin`
 - Grafana admin password: stored on the host in `/home/jetmon/jetmon-monitoring/.env`
 
@@ -32,7 +32,7 @@ single file; replacing it during sync changes the host-side inode.
 
 ## Compose
 
-On `jetmon-vm-host-3`:
+On `monitoring.example.com`:
 
 ```sh
 cd /home/jetmon/jetmon-monitoring
@@ -43,11 +43,11 @@ sudo docker compose -p jetmon-monitoring up -d
 
 ## Scraped Targets
 
-- `node`: all Jetmon service hosts plus `jetmon-vm-host-1`, `jetmon-vm-host-2`, and `jetmon-vm-host-3`
-- `cadvisor`: all Docker-capable Jetmon service/VM hosts except `jetmon-vm-host-1`
-- `dockerstats`: all Docker-capable Jetmon service/VM hosts except `jetmon-vm-host-1`
-- `process`: native Jetmon service processes on `jetmon-service-host-1` and `jetmon-service-host-2`
-- `smartctl`: `jetmon-vm-host-3`
+- `node`: all Jetmon service hosts plus `jetmon-lab-1.example.com`, `jetmon-lab-2.example.com`, and `monitoring.example.com`
+- `cadvisor`: all Docker-capable Jetmon service/VM hosts except `jetmon-lab-1.example.com`
+- `dockerstats`: all Docker-capable Jetmon service/VM hosts except `jetmon-lab-1.example.com`
+- `process`: native Jetmon service processes on `jetmon-v1.example.com` and `jetmon-v2.example.com`
+- `smartctl`: `monitoring.example.com`
 - `prometheus` and `grafana`: this monitoring stack
 
 Target files live in `configs/prometheus/targets.d/`.
@@ -66,7 +66,7 @@ To reapply the package/config to service hosts:
 deploy/monitoring/jetmon/install-process-exporter.sh
 ```
 
-The installer also opens `9256/tcp` to `10.0.0.0/24` and `100.64.0.0/10` via
+The installer also opens `9256/tcp` to the CIDR in `PROMETHEUS_CIDR` via
 UFW, matching the existing exporter firewall pattern.
 
 ## Provisioned Dashboards
@@ -86,7 +86,7 @@ Grafana stores mutable state in SQLite at:
 /home/jetmon/jetmon-monitoring/dbs/grafana/grafana.db
 ```
 
-Install the daily backup timer on `jetmon-vm-host-3`:
+Install the daily backup timer on `monitoring.example.com`:
 
 ```sh
 cd /home/jetmon/jetmon-monitoring

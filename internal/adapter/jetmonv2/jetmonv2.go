@@ -147,7 +147,7 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		MinCheckFrequency:          time.Minute,
 		SupportsKeyword:            true,
-		SupportsInvertedKeyword:    false,
+		SupportsInvertedKeyword:    true,
 		SupportsAgentChecks:        true,
 		SupportsMaintenanceWindows: true,
 		SupportsCooldownReset:      true,
@@ -169,6 +169,7 @@ type createSiteRequest struct {
 	MonitorActive        bool              `json:"monitor_active"`
 	BucketNo             int               `json:"bucket_no"`
 	CheckKeyword         *string           `json:"check_keyword"`
+	ForbiddenKeyword     *string           `json:"forbidden_keyword"`
 	RedirectPolicy       string            `json:"redirect_policy"`
 	TimeoutSeconds       *int              `json:"timeout_seconds"`
 	CustomHeaders        map[string]string `json:"custom_headers"`
@@ -189,6 +190,7 @@ type siteResponse struct {
 	LastCheckedAt        *string `json:"last_checked_at"`
 	LastStatusChangeAt   *string `json:"last_status_change_at"`
 	CheckKeyword         *string `json:"check_keyword"`
+	ForbiddenKeyword     *string `json:"forbidden_keyword"`
 	RedirectPolicy       string  `json:"redirect_policy"`
 	MaintenanceStart     *string `json:"maintenance_start"`
 	MaintenanceEnd       *string `json:"maintenance_end"`
@@ -212,9 +214,7 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	if err != nil {
 		return adapter.MonitorHandle{}, err
 	}
-	if config.Keyword != "" && config.KeywordCheck == adapter.KeywordCheckAbsent {
-		return adapter.MonitorHandle{}, fmt.Errorf("jetmon-v2: KeywordCheck = absent is not supported (SupportsInvertedKeyword = false)")
-	}
+	checkKeyword, forbiddenKeyword := keywordRules(config)
 
 	var lastErr error
 	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
@@ -229,7 +229,8 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 			MonitorURL:           target.URL,
 			MonitorActive:        true,
 			BucketNo:             a.bucketNo,
-			CheckKeyword:         keywordPtr(config.Keyword),
+			CheckKeyword:         checkKeyword,
+			ForbiddenKeyword:     forbiddenKeyword,
 			RedirectPolicy:       "follow",
 			CustomHeaders:        map[string]string{},
 			AlertCooldownMinutes: &cooldown,
@@ -526,6 +527,16 @@ func keywordPtr(keyword string) *string {
 		return nil
 	}
 	return &keyword
+}
+
+func keywordRules(config adapter.ProvisionConfig) (*string, *string) {
+	if config.Keyword == "" {
+		return nil, nil
+	}
+	if config.KeywordCheck == adapter.KeywordCheckAbsent {
+		return nil, keywordPtr(config.Keyword)
+	}
+	return keywordPtr(config.Keyword), nil
 }
 
 func randomSyntheticBlogID() (int64, error) {

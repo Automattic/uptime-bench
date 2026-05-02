@@ -138,6 +138,41 @@ func TestDeprovisionAll_RetriesFailures(t *testing.T) {
 	}
 }
 
+func TestDeprovisionAll_RunsAdaptersConcurrently(t *testing.T) {
+	prevAttempts := deprovisionAttempts
+	deprovisionAttempts = 1
+	defer func() { deprovisionAttempts = prevAttempts }()
+
+	entered := make(chan string, 2)
+	release := make(chan struct{})
+	a1 := &blockingDeprovisionAdapter{id: "a1", entered: entered, release: release}
+	a2 := &blockingDeprovisionAdapter{id: "a2", entered: entered, release: release}
+	done := make(chan int, 1)
+	go func() {
+		done <- deprovisionAll([]provisioned{
+			{a: a1, handle: adapter.MonitorHandle{}},
+			{a: a2, handle: adapter.MonitorHandle{}},
+		})
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("deprovisionAll did not start both adapters concurrently")
+		}
+	}
+	close(release)
+	select {
+	case errs := <-done:
+		if errs != 0 {
+			t.Fatalf("deprovisionAll errors = %d, want 0", errs)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("deprovisionAll did not finish after release")
+	}
+}
+
 type slowDeprovisionAdapter struct {
 	id          string
 	sawDeadline bool
@@ -185,6 +220,35 @@ func (a *flakyDeprovisionAdapter) Deprovision(context.Context, adapter.MonitorHa
 		return errors.New("temporary delete failure")
 	}
 	return nil
+}
+
+type blockingDeprovisionAdapter struct {
+	id      string
+	entered chan<- string
+	release <-chan struct{}
+}
+
+func (a *blockingDeprovisionAdapter) ServiceID() string { return a.id }
+func (a *blockingDeprovisionAdapter) Capabilities() adapter.Capabilities {
+	return adapter.Capabilities{}
+}
+func (a *blockingDeprovisionAdapter) Normalize(string) string {
+	return adapter.UnrecognizedClassification
+}
+func (a *blockingDeprovisionAdapter) Provision(ctx context.Context, _ adapter.Target, _ adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
+	return adapter.MonitorHandle{}, nil
+}
+func (a *blockingDeprovisionAdapter) Retrieve(ctx context.Context, _ adapter.MonitorHandle, _ adapter.RunWindow) (adapter.RetrieveResult, error) {
+	return adapter.RetrieveResult{}, nil
+}
+func (a *blockingDeprovisionAdapter) Deprovision(ctx context.Context, _ adapter.MonitorHandle) error {
+	a.entered <- a.id
+	select {
+	case <-a.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // TestScheduleFailureEvents_NoOffsets — every failure activates at start

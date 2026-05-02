@@ -587,7 +587,7 @@ func TestHandleTCP_ForwardsHealthyRequest(t *testing.T) {
 // ─── benchmarks (for the canary regression check) ───────────────────────────
 
 func BenchmarkPeekHTTPHost(b *testing.B) {
-	in := "GET /api/health HTTP/1.1\r\nUser-Agent: monitor/1.0\r\nHost: bench-a.harmonic.party\r\nAccept: */*\r\n\r\n"
+	in := "GET /api/health HTTP/1.1\r\nUser-Agent: monitor/1.0\r\nHost: bench-a.example.com\r\nAccept: */*\r\n\r\n"
 	for i := 0; i < b.N; i++ {
 		br := bufio.NewReaderSize(bytes.NewReader([]byte(in)), 4096)
 		_ = peekHTTPHost(br)

@@ -1,0 +1,12 @@
+id          = "dns-cname-nxdomain"
+version     = "1"
+description = "Hostname resolves through a CNAME whose target is NXDOMAIN — tests chained DNS failure handling"
+target      = "bench-a"
+monitors    = ["jetmon-v1"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 4004
+
+[[failures]]
+type = "dns_cname_nxdomain"

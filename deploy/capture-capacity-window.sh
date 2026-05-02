@@ -19,8 +19,8 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CAPACITY_BIN="${CAPACITY_BIN:-${REPO_ROOT}/bin/uptime-bench-capacity}"
-PROMETHEUS_URL="${PROMETHEUS_URL:-http://10.0.0.67:9091}"
-CAPACITY_INSTANCES="${CAPACITY_INSTANCES:-jetmon-service-host-1,jetmon-service-host-2}"
+PROMETHEUS_URL="${PROMETHEUS_URL:-http://localhost:9090}"
+CAPACITY_INSTANCES="${CAPACITY_INSTANCES:-jetmon-v1.example.com,jetmon-v2.example.com}"
 CAPACITY_STEP="${CAPACITY_STEP:-15s}"
 CAPACITY_RATE_WINDOW="${CAPACITY_RATE_WINDOW:-2m}"
 CAPACITY_POSTRUN_DURATION="${CAPACITY_POSTRUN_DURATION:-15m}"

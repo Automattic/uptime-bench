@@ -1,0 +1,14 @@
+id          = "http-timeout-body"
+version     = "1"
+description = "Headers arrive promptly but body transfer stalls — tests body-phase timeout detection"
+target      = "bench-a"
+monitors    = ["jetmon-v1"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1014
+
+[[failures]]
+type  = "http_timeout"
+phase = "body"
+delay = "35s"

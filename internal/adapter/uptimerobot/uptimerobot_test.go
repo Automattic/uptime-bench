@@ -155,7 +155,7 @@ func TestProvision_RequestShape(t *testing.T) {
 
 	a := newTestAdapter(srv.URL, "u123-XXX")
 	handle, err := a.Provision(context.Background(),
-		adapter.Target{ID: "bench-a", URL: "http://bench-a.harmonic.party/"},
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
 		adapter.ProvisionConfig{CheckFrequency: 5 * time.Minute},
 	)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestProvision_RequestShape(t *testing.T) {
 	if c.form.Get("type") != "1" {
 		t.Errorf("type field = %q, want 1 (HTTP)", c.form.Get("type"))
 	}
-	if c.form.Get("url") != "http://bench-a.harmonic.party/" {
+	if c.form.Get("url") != "http://bench-a.example.com/" {
 		t.Errorf("url field = %q", c.form.Get("url"))
 	}
 	if c.form.Get("interval") != strconv.Itoa(int((5 * time.Minute).Seconds())) {
@@ -203,7 +203,7 @@ func TestProvision_RequestShape(t *testing.T) {
 	if handle.MonitorID != "777888" {
 		t.Errorf("handle.MonitorID = %q, want 777888", handle.MonitorID)
 	}
-	if handle.Fields["url"] != "http://bench-a.harmonic.party/" {
+	if handle.Fields["url"] != "http://bench-a.example.com/" {
 		t.Errorf("handle.Fields[url] = %q", handle.Fields["url"])
 	}
 	// No keyword config -> no keyword fields set on the form.

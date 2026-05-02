@@ -1,6 +1,6 @@
 - targets:
-    - 10.0.0.67:9633
+    - 203.0.113.67:9633
   labels:
-    instance: jetmon-vm-host-3
+    instance: monitoring.example.com
     role: monitoring
     stack: jetmon

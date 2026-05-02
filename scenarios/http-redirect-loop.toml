@@ -1,0 +1,13 @@
+id          = "http-redirect-loop"
+version     = "1"
+description = "GET enters a redirect loop — tests redirect-loop detection without HEAD/GET method asymmetry"
+target      = "bench-a"
+monitors    = ["jetmon-v1"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1013
+
+[[failures]]
+type    = "http_redirect"
+variant = "loop"

@@ -18,7 +18,12 @@
 //	id      = "better-uptime"
 //	type    = "better-uptime"
 //	enabled = true
-//	auth    = { token = "<your_better_uptime_api_token>" }
+//	auth    = { token = "<your_better_uptime_api_token>", http_method = "GET" }
+//
+// Optional auth keys:
+//
+//	http_method — explicit HTTP method for status monitors: "GET" or "HEAD".
+//	              Keyword monitors always use GET because HEAD has no body.
 //
 // `url` is optional; the default endpoint is https://uptime.betterstack.com/api/v2.
 //
@@ -58,40 +63,51 @@ var classification = map[string]string{
 
 // Adapter implements adapter.Adapter for Better Uptime.
 type Adapter struct {
-	id     string
-	apiURL string
-	token  string
-	client *http.Client
+	id         string
+	apiURL     string
+	token      string
+	httpMethod string
+	client     *http.Client
+}
+
+type Option func(*Adapter)
+
+func WithHTTPMethod(method string) Option {
+	return func(a *Adapter) {
+		a.httpMethod = normalizeHTTPMethod(method)
+	}
 }
 
 // New creates a Better Uptime adapter.
-func New(id, apiURL, token string) *Adapter {
+func New(id, apiURL, token string, opts ...Option) *Adapter {
 	if apiURL == "" {
 		apiURL = DefaultAPIURL
 	}
-	return &Adapter{
+	a := &Adapter{
 		id:     id,
 		apiURL: strings.TrimRight(apiURL, "/"),
 		token:  token,
 		client: &http.Client{Timeout: 30 * time.Second},
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 func (a *Adapter) ServiceID() string { return a.id }
 
 func (a *Adapter) Capabilities() adapter.Capabilities {
+	supportsKeyword := !strings.EqualFold(a.httpMethod, http.MethodHead)
 	return adapter.Capabilities{
 		// Better Uptime supports 30-second checks on paid plans; 3-minute on free.
 		// Use 3 minutes as a defensive default that doesn't exclude free-tier users.
 		MinCheckFrequency: 3 * time.Minute,
-		SupportsKeyword:   true,
-		// Better Uptime's monitor_type = "keyword" alerts only on the
-		// canary direction (alert when keyword missing). There is no
-		// known built-in "alert when keyword is present" mode on the
-		// keyword type. Until verified live, leave this false; the
-		// runner will gate keyword_check = absent scenarios as a
-		// capability_mismatch.
-		SupportsInvertedKeyword:    false,
+		SupportsKeyword:   supportsKeyword,
+		// Better Stack supports monitor_type = "keyword" for required
+		// content and "keyword_absence" for forbidden content. HEAD-lane
+		// checks disable keyword support because there is no response body.
+		SupportsInvertedKeyword:    supportsKeyword,
 		SupportsAgentChecks:        false,
 		SupportsMaintenanceWindows: true,
 		// Cooldown resets naturally because Deprovision deletes the
@@ -115,11 +131,12 @@ func (a *Adapter) Normalize(raw string) string {
 // newMonitorRequest mirrors POST /monitors. We use "status" for HTTP
 // status checks (failure injection scenarios produce 5xx responses, which
 // is what this monitor alerts on) and "keyword" when keyword monitoring
-// is requested (alerts when required_keyword is missing from the body).
+// is requested.
 type newMonitorRequest struct {
 	URL               string `json:"url"`
-	MonitorType       string `json:"monitor_type"` // "status" or "keyword"
+	MonitorType       string `json:"monitor_type"` // "status", "keyword", or "keyword_absence"
 	PronounceableName string `json:"pronounceable_name,omitempty"`
+	HTTPMethod        string `json:"http_method,omitempty"`
 	CheckFrequency    int    `json:"check_frequency,omitempty"` // seconds; min 30 on paid
 	RequiredKeyword   string `json:"required_keyword,omitempty"`
 }
@@ -189,6 +206,15 @@ func checkFrequencySeconds(d time.Duration) int {
 	return s
 }
 
+func normalizeHTTPMethod(method string) string {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case http.MethodHead:
+		return http.MethodHead
+	default:
+		return http.MethodGet
+	}
+}
+
 func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
 	if a.token == "" {
 		return adapter.MonitorHandle{}, fmt.Errorf("better-uptime: token is not configured")
@@ -198,16 +224,22 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		URL:               target.URL,
 		MonitorType:       "status",
 		PronounceableName: "uptime-bench: " + target.ID,
+		HTTPMethod:        normalizeHTTPMethod(a.httpMethod),
 		CheckFrequency:    checkFrequencySeconds(config.CheckFrequency),
 	}
 	if config.Keyword != "" {
-		// SupportsInvertedKeyword = false, so the runner should already
-		// have gated absent-mode out. If it hasn't, fail loudly rather
-		// than silently provisioning a present-mode monitor.
-		if config.KeywordCheck == adapter.KeywordCheckAbsent {
-			return adapter.MonitorHandle{}, fmt.Errorf("better-uptime: KeywordCheck = absent is not supported (SupportsInvertedKeyword = false)")
+		if strings.EqualFold(a.httpMethod, http.MethodHead) {
+			return adapter.MonitorHandle{}, fmt.Errorf("better-uptime: keyword monitoring is not supported for HEAD checks")
 		}
-		req.MonitorType = "keyword"
+		switch config.KeywordCheck {
+		case adapter.KeywordCheckPresent, "":
+			req.MonitorType = "keyword"
+		case adapter.KeywordCheckAbsent:
+			req.MonitorType = "keyword_absence"
+		default:
+			return adapter.MonitorHandle{}, fmt.Errorf("better-uptime: unsupported KeywordCheck %q", config.KeywordCheck)
+		}
+		req.HTTPMethod = http.MethodGet
 		req.RequiredKeyword = config.Keyword
 	}
 
