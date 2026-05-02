@@ -7,6 +7,7 @@ BINARY_REPORT   = $(BIN_DIR)/uptime-bench-report
 BINARY_CAPACITY = $(BIN_DIR)/uptime-bench-capacity
 BINARY_DOCKERSTATS_EXPORTER = $(BIN_DIR)/uptime-bench-dockerstats-exporter
 BINARY_TARGETLOAD = $(BIN_DIR)/uptime-bench-targetload
+BINARY_JETMON_CAPACITY = $(BIN_DIR)/uptime-bench-jetmon-capacity
 BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 
 .DEFAULT_GOAL := build
@@ -16,7 +17,7 @@ BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_PROBE_IPS_REFRESH)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_JETMON_CAPACITY) $(BINARY_PROBE_IPS_REFRESH)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -49,6 +50,10 @@ $(BINARY_DOCKERSTATS_EXPORTER): $(shell find cmd/uptime-bench-dockerstats-export
 $(BINARY_TARGETLOAD): $(shell find cmd/uptime-bench-targetload -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/uptime-bench-targetload
+
+$(BINARY_JETMON_CAPACITY): $(shell find cmd/uptime-bench-jetmon-capacity internal/jetmoncapacity -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-jetmon-capacity
 
 $(BINARY_PROBE_IPS_REFRESH): $(shell find cmd/probe-ips-refresh internal/probeips -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -142,8 +147,8 @@ REPORT_FORMAT ?= table
 report-campaign: $(BINARY_REPORT)
 	$(BINARY_REPORT) -campaign=$(CAMPAIGN) -format=$(REPORT_FORMAT)
 
-PROMETHEUS_URL ?= http://paprika.internal:9091
-CAPACITY_INSTANCES ?= jetmon-v1,jetmon-v2
+PROMETHEUS_URL ?= http://10.0.0.67:9091
+CAPACITY_INSTANCES ?= jetmon-service-host-1,jetmon-service-host-2
 CAPACITY_DURATION ?= 15m
 CAPACITY_FORMAT ?= table
 CAPACITY_RUN_DIR ?=
@@ -166,6 +171,11 @@ capacity-capture-run: $(BINARY_CAPACITY)
 	  CAPACITY_INSTANCES=$(CAPACITY_INSTANCES) \
 	  CAPACITY_POSTRUN_DURATION=$(CAPACITY_POSTRUN_DURATION) \
 	  deploy/capture-capacity-window.sh "$(CAPACITY_RUN_DIR)" "$(CAPACITY_OUTPUT_DIR)"
+
+JETMON_CAPACITY_ARGS ?=
+.PHONY: capacity-jetmon-plan
+capacity-jetmon-plan: $(BINARY_JETMON_CAPACITY)
+	$(BINARY_JETMON_CAPACITY) $(JETMON_CAPACITY_ARGS)
 
 PROBE_IPS_ARGS ?=
 
@@ -263,7 +273,7 @@ help:
 	@echo "  make report-campaign  Summarize a campaign"
 	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_FORMAT=table|tsv|json]"
 	@echo "  make capacity-metrics Summarize Jetmon v1/v2 Prometheus capacity metrics"
-	@echo "    [PROMETHEUS_URL=http://paprika.internal:9091] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
+	@echo "    [PROMETHEUS_URL=http://10.0.0.67:9091] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
 	@echo "  make capacity-capture-run CAPACITY_RUN_DIR=reports/<run-tag>"
 	@echo "    Capture the exact run.meta.tsv window into reports/<run-tag>/capacity/"
 	@echo "  deploy/dockerstats-exporter.sh HOST [USER]  Deploy per-container Prometheus exporter"

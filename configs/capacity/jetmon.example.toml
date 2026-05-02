@@ -3,8 +3,8 @@
 # focuses on Prometheus window collection.
 
 id = "jetmon-v1-vs-v2-capacity"
-prometheus_url = "http://paprika.internal:9091"
-instances = ["jetmon-v1", "jetmon-v2"]
+prometheus_url = "http://10.0.0.67:9091"
+instances = ["jetmon-service-host-1", "jetmon-service-host-2"]
 
 [window]
 baseline_duration = "15m"
@@ -36,6 +36,22 @@ dockerstats_scrape_success_min = 1
 bridge_url = "http://jetmon-v1:7400"
 bulk_lifecycle = "bridge_or_db_seeded_range"
 
+  [jetmon_v1.lifecycle]
+  schema = "v1"
+  blog_id_start = 8000000000000000
+  count = 1000000
+  bucket_min = 0
+  bucket_max = 99
+  check_interval = "1m"
+
 [jetmon_v2]
 api_url = "http://jetmon-v2:8090/api/v1"
 bulk_lifecycle = "api_or_db_seeded_range"
+
+  [jetmon_v2.lifecycle]
+  schema = "v2"
+  blog_id_start = 8000001000000000
+  count = 1000000
+  bucket_min = 0
+  bucket_max = 99
+  check_interval = "1m"

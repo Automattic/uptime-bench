@@ -1,0 +1,75 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    restart: unless-stopped
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=180d
+      - --storage.tsdb.retention.size=300GB
+      - --storage.tsdb.wal-compression
+      - --web.enable-lifecycle
+    volumes:
+      - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./configs/prometheus/targets.d:/etc/prometheus/targets.d:ro
+      - ./dbs/prometheus:/prometheus
+    ports:
+      - "9091:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - monitoring
+    mem_limit: 4g
+    cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    restart: unless-stopped
+    user: "472:472"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:?set GF_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_DOMAIN: ${GF_DOMAIN:-jetmon-vm-host-3}
+      GF_SERVER_ROOT_URL: ${GF_ROOT_URL:-http://%(domain)s:3001/}
+      GF_METRICS_ENABLED: "true"
+    volumes:
+      - ./dbs/grafana:/var/lib/grafana
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    networks:
+      - monitoring
+    mem_limit: 512m
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  monitoring:
+    driver: bridge

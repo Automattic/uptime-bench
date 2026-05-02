@@ -1,8 +1,16 @@
 - labels:
-    instance: jetmon-v1
+    instance: jetmon-service-host-1
   targets:
     - 10.0.0.170:9103
 - labels:
-    instance: jetmon-v2
+    instance: jetmon-service-host-2
   targets:
     - 10.0.0.171:9103
+- labels:
+    instance: jetmon-service-host-3
+  targets:
+    - 10.0.0.175:9103
+- labels:
+    instance: jetmon-service-host-4
+  targets:
+    - 10.0.0.176:9103

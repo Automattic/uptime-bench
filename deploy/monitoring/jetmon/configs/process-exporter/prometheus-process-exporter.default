@@ -1,0 +1,2 @@
+# Set the command-line arguments to pass to prometheus-process-exporter.
+ARGS="-config.path=/etc/prometheus/process-exporter.yml -web.listen-address=:9256"

@@ -179,6 +179,8 @@ func formatValue(unit string, value float64) string {
 		return formatBytes(value) + "/s"
 	case "state":
 		return fmt.Sprintf("%.0f", value)
+	case "count":
+		return fmt.Sprintf("%.0f", value)
 	default:
 		return fmt.Sprintf("%.3f", value)
 	}

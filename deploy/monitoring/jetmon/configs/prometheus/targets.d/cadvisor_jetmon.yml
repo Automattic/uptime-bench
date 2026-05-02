@@ -1,0 +1,36 @@
+- targets:
+    - 10.0.0.170:9101
+  labels:
+    instance: jetmon-service-host-1
+    role: service
+    stack: jetmon
+- targets:
+    - 10.0.0.171:9101
+  labels:
+    instance: jetmon-service-host-2
+    role: service
+    stack: jetmon
+- targets:
+    - 10.0.0.175:9101
+  labels:
+    instance: jetmon-service-host-3
+    role: service
+    stack: jetmon
+- targets:
+    - 10.0.0.176:9101
+  labels:
+    instance: jetmon-service-host-4
+    role: service
+    stack: jetmon
+- targets:
+    - 10.0.0.173:9101
+  labels:
+    instance: jetmon-vm-host-2
+    role: vm
+    stack: jetmon
+- targets:
+    - 10.0.0.67:9101
+  labels:
+    instance: jetmon-vm-host-3
+    role: monitoring
+    stack: jetmon

@@ -285,9 +285,34 @@ func DefaultQueries(instanceRegex string, rateWindow time.Duration) []Query {
 			Expr: fmt.Sprintf(`uptime_bench_dockerstats_scrape_success{job="dockerstats",%s}`, match),
 		},
 		{
+			Name: "process_cpu_used",
+			Unit: "percent_core",
+			Expr: fmt.Sprintf(`100 * sum by(instance,groupname) (rate(namedprocess_namegroup_cpu_seconds_total{job="process",%s}[%s]))`, match, window),
+		},
+		{
+			Name: "process_memory_resident",
+			Unit: "bytes",
+			Expr: fmt.Sprintf(`sum by(instance,groupname) (namedprocess_namegroup_memory_bytes{job="process",memtype="resident",%s})`, match),
+		},
+		{
+			Name: "process_count",
+			Unit: "count",
+			Expr: fmt.Sprintf(`sum by(instance,groupname) (namedprocess_namegroup_num_procs{job="process",%s})`, match),
+		},
+		{
+			Name: "process_threads",
+			Unit: "count",
+			Expr: fmt.Sprintf(`sum by(instance,groupname) (namedprocess_namegroup_num_threads{job="process",%s})`, match),
+		},
+		{
+			Name: "process_open_fds",
+			Unit: "count",
+			Expr: fmt.Sprintf(`sum by(instance,groupname) (namedprocess_namegroup_open_filedesc{job="process",%s})`, match),
+		},
+		{
 			Name: "scrape_up",
 			Unit: "state",
-			Expr: fmt.Sprintf(`up{job=~"node|cadvisor|dockerstats",%s}`, match),
+			Expr: fmt.Sprintf(`up{job=~"node|cadvisor|dockerstats|process",%s}`, match),
 		},
 	}
 }
@@ -318,6 +343,9 @@ func SeriesLabel(labels map[string]string) string {
 		parts = append(parts, v)
 	}
 	if v := labels["container"]; v != "" {
+		parts = append(parts, v)
+	}
+	if v := labels["groupname"]; v != "" {
 		parts = append(parts, v)
 	}
 	if v := labels["job"]; v != "" {

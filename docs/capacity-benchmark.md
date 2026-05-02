@@ -16,8 +16,8 @@ make capacity-metrics
 
 Defaults:
 
-- Prometheus: `http://paprika.internal:9091`
-- instances: `jetmon-v1,jetmon-v2`
+- Prometheus: `http://10.0.0.67:9091`
+- instances: `jetmon-service-host-1,jetmon-service-host-2`
 - window: last `15m`
 - output: table
 
@@ -25,8 +25,8 @@ Equivalent direct command:
 
 ```sh
 bin/uptime-bench-capacity \
-  -prometheus-url=http://paprika.internal:9091 \
-  -instances=jetmon-v1,jetmon-v2 \
+  -prometheus-url=http://10.0.0.67:9091 \
+  -instances=jetmon-service-host-1,jetmon-service-host-2 \
   -duration=15m
 ```
 
@@ -34,8 +34,8 @@ Use exact timestamps for benchmark windows:
 
 ```sh
 bin/uptime-bench-capacity \
-  -prometheus-url=http://paprika.internal:9091 \
-  -instances=jetmon-v1,jetmon-v2 \
+  -prometheus-url=http://10.0.0.67:9091 \
+  -instances=jetmon-service-host-1,jetmon-service-host-2 \
   -start=2026-04-30T18:00:00Z \
   -end=2026-04-30T18:30:00Z \
   -format=json
@@ -58,21 +58,55 @@ The capacity collector expects these scrape labels:
 
 | Job | Required instances | Purpose |
 |---|---|---|
-| `node` | `jetmon-v1`, `jetmon-v2` | host CPU, memory, disk, network, scrape health |
-| `cadvisor` | `jetmon-v1`, `jetmon-v2` | host/system cgroup metrics and cAdvisor scrape health |
-| `dockerstats` | `jetmon-v1`, `jetmon-v2` | Docker container CPU, memory, network, and scrape health |
+| `node` | `jetmon-service-host-1`, `jetmon-service-host-2` | host CPU, memory, disk, network, scrape health |
+| `cadvisor` | `jetmon-service-host-1`, `jetmon-service-host-2` | host/system cgroup metrics and cAdvisor scrape health |
+| `dockerstats` | `jetmon-service-host-1`, `jetmon-service-host-2` | Docker container CPU, memory, network, and scrape health |
+| `process` | `jetmon-service-host-1`, `jetmon-service-host-2` | native Jetmon process CPU, RSS, counts, threads, and open file descriptors |
 
-The monitoring Prometheus for this work is `paprika.internal:9091`, not any
-other Prometheus running on the network.
+The monitoring Prometheus for this work is `10.0.0.67:9091` on
+`jetmon-vm-host-3`; do not use any retired or unrelated Prometheus running on
+the network.
 
 Useful readiness checks:
 
 ```promql
-up{job=~"node|cadvisor|dockerstats",instance=~"jetmon-v1|jetmon-v2"}
-uptime_bench_dockerstats_scrape_success{job="dockerstats",instance=~"jetmon-v1|jetmon-v2"}
+up{job=~"node|cadvisor|dockerstats|process",instance=~"jetmon-service-host-1|jetmon-service-host-2"}
+uptime_bench_dockerstats_scrape_success{job="dockerstats",instance=~"jetmon-service-host-1|jetmon-service-host-2"}
+namedprocess_namegroup_num_procs{job="process",instance=~"jetmon-service-host-1|jetmon-service-host-2"}
 ```
 
 All returned series should be `1`.
+
+## Grafana Dashboards
+
+The Grafana instance for this work is `http://10.0.0.67:3001`. The admin
+password is stored on `jetmon-vm-host-3` in
+`/home/jetmon/jetmon-monitoring/.env`.
+
+Provisioned dashboards:
+
+- `Jetmon Fleet Overview` for fleet health, host CPU/memory, container
+  CPU/memory, native process CPU/RSS, and scrape status.
+- `Jetmon Host Detail` for per-host CPU, load, memory, filesystem, network,
+  disk, scrape health, and native process CPU/RSS/count/open FDs.
+- `Jetmon Container Detail` for per-host container CPU, memory, network,
+  dockerstats scrape health, and inventory.
+
+The dashboards are managed in the repository at
+`deploy/monitoring/jetmon/configs/grafana/dashboards/`. They include top-level
+links between fleet overview, host detail, and container detail while preserving
+the selected time range and variables.
+
+The monitoring stack itself is managed in
+`deploy/monitoring/jetmon/`. Sync it to `jetmon-vm-host-3` with:
+
+```sh
+deploy/monitoring/jetmon/sync-to-host.sh
+```
+
+Grafana SQLite backups are scheduled by `jetmon-grafana-backup.timer` on
+`jetmon-vm-host-3` and retained under
+`/home/jetmon/jetmon-monitoring/backups/grafana/`.
 
 The Jetmon hosts currently run Docker 29 with the `overlayfs` containerd
 snapshotter layout. cAdvisor can be scraped, but it cannot identify the Docker
@@ -93,11 +127,11 @@ Example `targets.d/dockerstats_jetmon.yml`:
 
 ```yaml
 - labels:
-    instance: jetmon-v1
+    instance: jetmon-service-host-1
   targets:
     - 10.0.0.170:9103
 - labels:
-    instance: jetmon-v2
+    instance: jetmon-service-host-2
   targets:
     - 10.0.0.171:9103
 ```
@@ -125,6 +159,11 @@ count, average, p50, p95, max, and last value.
 | `docker_container_net_rx` | bytes/sec | `uptime_bench_docker_container_network_receive_bytes_total` |
 | `docker_container_net_tx` | bytes/sec | `uptime_bench_docker_container_network_transmit_bytes_total` |
 | `dockerstats_scrape_success` | state | `uptime_bench_dockerstats_scrape_success` |
+| `process_cpu_used` | percent of one core | `namedprocess_namegroup_cpu_seconds_total` |
+| `process_memory_resident` | bytes | `namedprocess_namegroup_memory_bytes{memtype="resident"}` |
+| `process_count` | count | `namedprocess_namegroup_num_procs` |
+| `process_threads` | count | `namedprocess_namegroup_num_threads` |
+| `process_open_fds` | count | `namedprocess_namegroup_open_filedesc` |
 | `scrape_up` | state | `up` |
 
 Deploy the Docker stats exporter to a Jetmon host with:
@@ -285,8 +324,71 @@ one HTTP request per monitor. Prefer a benchmark-owned namespace:
 - bulk activate/deactivate for the first `N` rows;
 - reset status, cooldown, timestamps, and active events at batch boundaries.
 
-Jetmon v1 should be handled through `jetmon-bridge` or controlled database-side
-bulk operations, not by changing Jetmon v1 application code. Jetmon v2 should
-use a bulk API if one exists; otherwise the same benchmark-owned bulk import
-pattern can be used for steady-state capacity while ordinary API paths are
-measured separately.
+The `uptime-bench-jetmon-capacity` helper emits guarded SQL for that lifecycle.
+It does not need Jetmon v1 or v2 code changes, and it keeps lifecycle throughput
+separate from the steady-state capacity measurement.
+
+Build it with:
+
+```sh
+make bin/uptime-bench-jetmon-capacity
+```
+
+Create the inactive benchmark-owned row set for Jetmon v2:
+
+```sh
+bin/uptime-bench-jetmon-capacity \
+  -action=seed \
+  -schema=v2 \
+  -blog-id-start=8000001000000000 \
+  -count=1000000 \
+  -url-pattern='http://site-%07d.load.example.com/' \
+  -bucket-min=0 \
+  -bucket-max=99 \
+  -check-interval=1 \
+  > /tmp/jetmon-v2-capacity-seed.sql
+```
+
+Create a same-shaped seed file for Jetmon v1 with `-schema=v1` and the v1
+reserved `blog_id` range. Review the SQL before applying it. The seed plan
+deletes and recreates rows only inside the reserved range; for v2 it first
+closes any still-open benchmark events with a transition row.
+
+Activate one batch for a test window:
+
+```sh
+bin/uptime-bench-jetmon-capacity \
+  -action=activate \
+  -schema=v2 \
+  -blog-id-start=8000001000000000 \
+  -count=1000000 \
+  -active-count=10000 \
+  > /tmp/jetmon-v2-capacity-activate-10000.sql
+```
+
+Deactivate the whole benchmark-owned range after the window:
+
+```sh
+bin/uptime-bench-jetmon-capacity \
+  -action=deactivate \
+  -schema=v2 \
+  -blog-id-start=8000001000000000 \
+  -count=1000000 \
+  > /tmp/jetmon-v2-capacity-deactivate.sql
+```
+
+Generate verification queries for counts, bucket distribution, stale checks,
+open events, and recent check history:
+
+```sh
+bin/uptime-bench-jetmon-capacity \
+  -action=verify \
+  -schema=v2 \
+  -blog-id-start=8000001000000000 \
+  -count=1000000
+```
+
+The current helper outputs SQL only. The next automation step is a DB executor
+that takes per-service DSNs, applies these plans to both Jetmon services, records
+the exact UTC activation/deactivation timestamps, and runs the existing
+Prometheus capture for each batch window.

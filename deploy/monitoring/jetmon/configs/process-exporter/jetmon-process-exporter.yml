@@ -1,0 +1,23 @@
+process_names:
+  - name: "jetmon-v1-master"
+    comm:
+      - jetmon-master
+  - name: "jetmon-v1-worker"
+    comm:
+      - jetmon-worker
+  - name: "jetmon-v1-server"
+    comm:
+      - jetmon-server
+  - name: "jetmon-bridge"
+    comm:
+      - jetmon-bridge
+  - name: "jetmon2"
+    comm:
+      - jetmon2
+  - name: "veriflier"
+    comm:
+      - veriflier
+      - veriflier2
+  - name: "jetmon-testsite"
+    comm:
+      - jetmon-testsite

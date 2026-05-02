@@ -100,6 +100,7 @@ func TestDefaultQueriesUseInstanceMatcher(t *testing.T) {
 	if len(queries) == 0 {
 		t.Fatal("DefaultQueries returned no queries")
 	}
+	seen := map[string]bool{}
 	for _, q := range queries {
 		if q.Name == "" || q.Unit == "" || q.Expr == "" {
 			t.Fatalf("incomplete query: %+v", q)
@@ -107,5 +108,27 @@ func TestDefaultQueriesUseInstanceMatcher(t *testing.T) {
 		if !strings.Contains(q.Expr, `instance=~"jetmon-v1|jetmon-v2"`) {
 			t.Fatalf("query %s missing instance matcher: %s", q.Name, q.Expr)
 		}
+		seen[q.Name] = true
+	}
+	for _, name := range []string{
+		"process_cpu_used",
+		"process_memory_resident",
+		"process_count",
+		"process_threads",
+		"process_open_fds",
+	} {
+		if !seen[name] {
+			t.Fatalf("DefaultQueries missing %s", name)
+		}
+	}
+}
+
+func TestSeriesLabelIncludesProcessGroup(t *testing.T) {
+	got := SeriesLabel(map[string]string{
+		"instance":  "jetmon-service-host-1",
+		"groupname": "jetmon-v1-worker",
+	})
+	if got != "jetmon-service-host-1/jetmon-v1-worker" {
+		t.Fatalf("SeriesLabel = %q", got)
 	}
 }
