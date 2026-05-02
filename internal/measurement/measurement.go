@@ -22,6 +22,7 @@ import (
 const (
 	failureHTTPMethodStatus   = "http_method_status"
 	failureHTTPTimeout        = "http_timeout"
+	failureHTTPLatency        = "http_latency"
 	failureTLSDeprecated      = "tls_deprecated"
 	classificationTLSAdvisory = "tls_advisory"
 )
@@ -306,7 +307,7 @@ func containsTime(w failureWindow, t time.Time) bool {
 }
 
 func effectiveFailureEnd(w failureWindow) time.Time {
-	if w.kind != failureHTTPTimeout {
+	if w.kind != failureHTTPTimeout && w.kind != failureHTTPLatency {
 		return w.end
 	}
 	delay, err := time.ParseDuration(rawString(w.details["delay"]))

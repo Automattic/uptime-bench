@@ -225,6 +225,36 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if spec, ok := h.Registry.Lookup("http_latency", host, path); ok && matchesRequestMethod(spec, r.Method) {
+		delay := spec.Duration
+		if d, ok := spec.Params["delay"]; ok {
+			if ds, ok := d.(string); ok {
+				if pd, err := time.ParseDuration(ds); err == nil {
+					delay = pd
+				}
+			}
+		}
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, healthyPageHTML(host, path))
+		return
+	}
+
+	if spec, ok := h.Registry.Lookup("http_header_status", host, path); ok && matchesRequestMethod(spec, r.Method) {
+		if requiredHeadersMatch(r, spec) {
+			code := paramInt(spec.Params["status_code"], 403)
+			http.Error(w, http.StatusText(code), code)
+			return
+		}
+	}
+
 	if spec, ok := h.Registry.Lookup("http_partial", host, path); ok && matchesRequestMethod(spec, r.Method) {
 		truncate := paramInt(spec.Params["truncate_after_bytes"], 64)
 		body := healthyPageHTML(host, path)
@@ -303,6 +333,34 @@ func matchesRequestMethod(spec control.FailureSpec, method string) bool {
 		return true
 	}
 	return strings.EqualFold(configured, method)
+}
+
+func requiredHeadersMatch(r *http.Request, spec control.FailureSpec) bool {
+	if name, _ := spec.Params["header_name"].(string); name != "" {
+		if value, ok := spec.Params["header_value"].(string); ok {
+			return r.Header.Get(name) == value
+		}
+		return len(r.Header.Values(name)) > 0
+	}
+	headers, ok := spec.Params["request_headers"].(map[string]string)
+	if ok {
+		for k, v := range headers {
+			if r.Header.Get(k) != v {
+				return false
+			}
+		}
+		return len(headers) > 0
+	}
+	genericHeaders, ok := spec.Params["request_headers"].(map[string]any)
+	if !ok {
+		return false
+	}
+	for k, v := range genericHeaders {
+		if r.Header.Get(k) != fmt.Sprint(v) {
+			return false
+		}
+	}
+	return len(genericHeaders) > 0
 }
 
 // paramInt coerces an interface{} JSON-decoded number to an int with a

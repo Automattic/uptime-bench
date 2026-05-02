@@ -61,6 +61,25 @@ func TestCapabilities(t *testing.T) {
 	if c.MinCheckFrequency != 30*time.Second {
 		t.Errorf("MinCheckFrequency = %v, want 30s", c.MinCheckFrequency)
 	}
+	if !c.SupportsKeyword {
+		t.Error("SupportsKeyword should be true")
+	}
+	if !c.SupportsInvertedKeyword {
+		t.Error("SupportsInvertedKeyword should be true")
+	}
+	head := New("datadog-head", "http://x", "ak", "pk", WithHTTPMethod("HEAD")).Capabilities()
+	if head.SupportsKeyword {
+		t.Error("HEAD lane should not support keyword checks")
+	}
+	if head.SupportsInvertedKeyword {
+		t.Error("HEAD lane should not support inverted keyword checks")
+	}
+	if !c.SupportsResponseTimeThreshold {
+		t.Error("SupportsResponseTimeThreshold should be true")
+	}
+	if !c.SupportsRequestHeaders {
+		t.Error("SupportsRequestHeaders should be true")
+	}
 }
 
 func TestNormalize(t *testing.T) {
@@ -113,7 +132,7 @@ func TestProvision_RequestShape(t *testing.T) {
 
 	a := newTestAdapter(srv.URL, "AK", "PK")
 	handle, err := a.Provision(context.Background(),
-		adapter.Target{ID: "bench-a", URL: "http://bench-a.harmonic.party/"},
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
 		adapter.ProvisionConfig{CheckFrequency: time.Minute},
 	)
 	if err != nil {
@@ -146,7 +165,10 @@ func TestProvision_RequestShape(t *testing.T) {
 	if got.Message == "" {
 		t.Error("message must be non-empty: Datadog rejects the create with 400 otherwise")
 	}
-	if got.Config.Request.URL != "http://bench-a.harmonic.party/" {
+	if got.Config.Request.Method != http.MethodGet {
+		t.Errorf("config.request.method = %q, want GET", got.Config.Request.Method)
+	}
+	if got.Config.Request.URL != "http://bench-a.example.com/" {
 		t.Errorf("config.request.url = %q", got.Config.Request.URL)
 	}
 	if got.Options.TickEvery != 60 {
@@ -165,6 +187,55 @@ func TestProvision_RequestShape(t *testing.T) {
 
 	if handle.MonitorID != "abc-def-ghi" {
 		t.Errorf("handle.MonitorID = %q", handle.MonitorID)
+	}
+}
+
+func TestProvision_HEADStatusUsesConfiguredMethod(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"public_id":"a-b-c"}`)
+	defer srv.Close()
+
+	a := New("datadog-head", srv.URL, "AK", "PK", WithHTTPMethod("HEAD"))
+	a.client = http.DefaultClient
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
+		adapter.ProvisionConfig{CheckFrequency: time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newTestRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Config.Request.Method != http.MethodHead {
+		t.Errorf("config.request.method = %q, want HEAD", got.Config.Request.Method)
+	}
+	if len(got.Config.Assertions) != 1 {
+		t.Fatalf("assertions = %d, want status-only", len(got.Config.Assertions))
+	}
+}
+
+func TestProvision_HEADKeywordRejected(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"public_id":"a-b-c"}`)
+	defer srv.Close()
+
+	a := New("datadog-head", srv.URL, "AK", "PK", WithHTTPMethod("HEAD"))
+	a.client = http.DefaultClient
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: time.Minute,
+			Keyword:        "uptime-bench-canary",
+			KeywordCheck:   adapter.KeywordCheckPresent,
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error for keyword check on HEAD lane")
+	}
+	if !strings.Contains(err.Error(), "HEAD") {
+		t.Errorf("err = %v, want one mentioning HEAD", err)
 	}
 }
 
@@ -232,6 +303,39 @@ func TestProvision_KeywordAbsent(t *testing.T) {
 	}
 }
 
+func TestProvision_ResponseTimeThresholdAndHeaders(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"public_id":"a-b-c"}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "AK", "PK")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:        time.Minute,
+			ResponseTimeThreshold: 2500 * time.Millisecond,
+			RequestHeaders:        map[string]string{"X-Uptime-Bench": "token"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newTestRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Config.Request.Headers["X-Uptime-Bench"] != "token" {
+		t.Fatalf("headers = %+v, want X-Uptime-Bench token", got.Config.Request.Headers)
+	}
+	if len(got.Config.Assertions) != 2 {
+		t.Fatalf("want 2 assertions (statusCode + responseTime), got %d", len(got.Config.Assertions))
+	}
+	rt := got.Config.Assertions[1]
+	if rt.Type != "responseTime" || rt.Operator != "lessThan" || rt.Target != float64(2500) {
+		t.Errorf("responseTime assertion = %+v, want lessThan 2500ms", rt)
+	}
+}
+
 func TestProvision_ErrorMessageInBody(t *testing.T) {
 	var c captured
 	srv := fakeAPI(t, &c, 200, `{"errors":["invalid url"]}`)
@@ -285,7 +389,7 @@ func TestRetrieve_CoalescesPassFailTransitions(t *testing.T) {
 	body := `{
 		"results": [
 			{"result_id":"r1","check_time":1714000000000,"status":0,"result":{"eventType":"Recovered"}},
-			{"result_id":"r2","check_time":1714000060000,"status":1,"result":{"eventType":"Alert"}},
+			{"result_id":"r2","location":"aws:us-east-1","check_time":1714000060000,"status":1,"result":{"eventType":"Alert"}},
 			{"result_id":"r3","check_time":1714000120000,"status":0,"result":{"eventType":"Recovered"}}
 		]
 	}`
@@ -310,6 +414,9 @@ func TestRetrieve_CoalescesPassFailTransitions(t *testing.T) {
 	}
 	if res.Reports[0].EventType != adapter.EventAlertFired {
 		t.Errorf("Reports[0] = %q, want alert_fired", res.Reports[0].EventType)
+	}
+	if res.Reports[0].Metadata["location"] != "aws:us-east-1" {
+		t.Errorf("Reports[0].Metadata[location] = %v", res.Reports[0].Metadata["location"])
 	}
 	if res.Reports[1].EventType != adapter.EventAlertResolved {
 		t.Errorf("Reports[1] = %q, want alert_resolved", res.Reports[1].EventType)
@@ -520,6 +627,9 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 	}
 	if dt.End != end.Unix() {
 		t.Errorf("downtime.end = %d, want %d", dt.End, end.Unix())
+	}
+	if len(dt.Scope) != 1 || dt.Scope[0] != "*" {
+		t.Errorf("downtime.scope = %v, want [*]", dt.Scope)
 	}
 
 	if handle.Fields["monitor_id"] != "277272334" {

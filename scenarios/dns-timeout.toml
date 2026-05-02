@@ -1,0 +1,12 @@
+id          = "dns-timeout"
+version     = "1"
+description = "Authoritative DNS silently times out — tests DNS timeout handling"
+target      = "bench-a"
+monitors    = ["jetmon-v2"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 4003
+
+[[failures]]
+type = "dns_timeout"

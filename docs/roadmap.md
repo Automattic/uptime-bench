@@ -7,10 +7,12 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs) — blocked on Jetmon v1 bridge write-mode provisioning.
 3. [TLS monitor-facing validation](#tls-monitor-facing-validation)
 4. [Live maintenance-window validation](#live-maintenance-window-validation)
-5. [Provider-state preflight cleanup](#provider-state-preflight-cleanup)
-6. [Campaign hardening dry run](#campaign-hardening-dry-run)
-7. [Next-wave adapter expansion](#next-wave-adapter-expansion)
-8. [Jetmon capacity benchmark](#jetmon-capacity-benchmark)
+5. [Report-driven provider reliability](#report-driven-provider-reliability)
+6. [Provider-state preflight cleanup](#provider-state-preflight-cleanup)
+7. [Campaign hardening dry run](#campaign-hardening-dry-run)
+8. [Provider feature coverage gaps](#provider-feature-coverage-gaps)
+9. [Next-wave adapter expansion](#next-wave-adapter-expansion)
+10. [Jetmon capacity benchmark](#jetmon-capacity-benchmark)
 
 **Lower-priority follow-ups:**
 - [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
@@ -157,7 +159,7 @@ Current state: scenario-level `keyword` / `keyword_check` are parsed, defaulted 
 
 - **Scenario format** — `keyword` is a top-level scenario field (not per-failure), since it's a property of monitor configuration. Sibling field `keyword_check` takes values `present` (alert when keyword absent — the canary case) or `absent` (alert when keyword present — the injected-bad-keyword case). When a scenario contains any content failure but doesn't set `keyword` explicitly, the runner defaults `keyword = "uptime-bench-canary"` and `keyword_check = "present"`.
 - **Capability gating** — when the scenario sets a keyword and the adapter's `SupportsKeyword == false`, the runner skips Provision and writes a single `monitor_reports` row with `Status = Unknown` and a structured `reason_code = "capability_mismatch"` plus a free-form Reason describing the missing capability. Same pattern the runner already uses for `MinCheckFrequency`. **Capability-mismatch results are first-class data**, not noise — they are the support matrix for "which services support which features," which is a project deliverable. Reporting must distinguish them from genuine false negatives (see [events.md](events.md)).
-- **Better Uptime asymmetry** — Better Uptime's `monitor_type = "keyword"` may only support presence checks. If verified during implementation, scenarios with `keyword_check = "absent"` against Better Uptime get gated as a capability mismatch (`SupportsKeyword: true` becomes a more granular pair: `SupportsKeywordPresent` / `SupportsKeywordAbsent`, or a single `SupportsKeyword` flag plus a `SupportsInvertedKeyword` qualifier). The asymmetry is recorded in the data, not papered over.
+- **Better Uptime inverted keyword support** — Better Stack's monitor API supports both `monitor_type = "keyword"` and `monitor_type = "keyword_absence"`. The adapter now exposes `SupportsInvertedKeyword = true` on GET lanes and gates keyword checks on HEAD lanes, where no response body exists.
 
 ### Implementation order
 
@@ -168,10 +170,10 @@ Current state: scenario-level `keyword` / `keyword_check` are parsed, defaulted 
    - **Pingdom**: `newCheckRequest` carries `shouldcontain` (present check) or `shouldnotcontain` (absent check). Type stays `"http"`.
    - **UptimeRobot**: switch `type` from `1` (HTTP) to `2` (Keyword); set `keyword_type=1` for "exists" (present check) or `keyword_type=2` for "not exists" (absent check); set `keyword_value`.
    - **Datadog**: append a `body` assertion to the existing `Assertions` list with operator `contains` (present) or `does not contain` (absent).
-   - **Better Uptime**: switch `monitor_type` from `"status"` to `"keyword"`; set `required_keyword` (present check). If absent-mode is unsupported by the API (verify against the live API as part of this step), set the capability flag accordingly and let the runner gate it.
+   - **Better Uptime**: switch `monitor_type` from `"status"` to `"keyword"` for present checks and `"keyword_absence"` for absent checks; set `required_keyword`. Keyword monitors force GET.
 5. ✅ **Tests** — unit tests for each adapter's keyword branches; integration test that asserts capability gating writes a `monitor_reports` row with the expected `reason_code` instead of a Provision call; corpus check covers the new scenario fields.
 
-Remaining follow-up: broaden live API smoke coverage for each vendor's keyword branch, especially inverted keyword checks and Better Uptime's asymmetric support. Jetmon v1 remains `SupportsKeyword = false` for this comparable keyword axis.
+Remaining follow-up: broaden live API smoke coverage for each vendor's keyword branch, especially inverted keyword checks and Better Uptime's `keyword_absence` mode. Jetmon v1 remains `SupportsKeyword = false` for this comparable keyword axis.
 
 ---
 
@@ -235,6 +237,45 @@ Acceptance:
 - `uptime-bench-report` produces table, TSV, and JSON output from the resulting campaign run.
 - No monitor, target, or DNS state is left active after the dry run.
 
+## Provider feature coverage gaps
+
+**Status:** In progress. A provider feature pass found several service capabilities that uptime-bench should model explicitly before or alongside the next adapter wave. Some are now represented as scenario files; others need new adapter capability fields or monitor-kind support so results are not distorted by forcing every provider into an HTTP-status monitor shape.
+
+Implemented locally in the scenario corpus:
+
+- Additional content-body failures: `content-empty` and `content-error-page`.
+- Redirect coverage: `http-redirect-loop` and `http-redirect-chain`.
+- Timeout coverage: `http-timeout-body` and `http-timeout-total` in addition to the existing TTFB stall.
+- TCP coverage: `tcp-timeout` in addition to `tcp-refused`.
+- DNS coverage: `dns-nxdomain`, `dns-servfail`, `dns-timeout`, `dns-cname-nxdomain`, `dns-latency`, and both `dns_ns_unavailable` modes.
+- Slow-success coverage: `http-latency-threshold` exercises response-time threshold assertions without turning the HTTP request into a timeout.
+- Header-sensitive coverage: `http-header-status` verifies that an adapter can configure custom request headers and that the target can fail only matching monitor probes.
+
+Adapter-surface improvements started:
+
+- Better Uptime now supports GET/HEAD status-lane configuration and `keyword_absence` for forbidden-content checks on GET lanes.
+- Datadog Synthetics now supports GET/HEAD HTTP API-test configuration, disables body assertions on HEAD lanes, configures custom request headers, configures response-time assertions, and preserves result location metadata when the API returns it.
+- Jetmon v2 now receives custom request headers from scenario config through its adapter.
+- `services.example.toml` documents the optional `http_method` setting for Better Uptime and Datadog Synthetics.
+- Scenario parsing, adapter capabilities, and runner capability gating now understand native `monitor_kind` values (`http`, `dns`, `tcp`, `ssl_certificate`, `heartbeat`), custom `request_headers`, and `response_time_threshold`.
+
+Feature gaps to model next:
+
+- **Native DNS/TCP/SSL monitor adapter paths.** The schema/gating layer is implemented, but every current adapter still provisions HTTP monitors unless explicitly extended. This is deferred because each provider uses a different request and result schema for native DNS, TCP/port, and SSL/certificate monitors; enabling those paths without stale cleanup and classification tests would produce misleading comparisons.
+- **Dedicated certificate and domain-expiry products.** Current TLS scenarios test HTTPS probe behavior. Native SSL/certificate monitor kinds should come next after one provider adapter is wired through `monitor_kind = "ssl_certificate"`. Domain-expiry monitors remain deferred because reliable simulation requires registrar/RDAP behavior rather than only target TLS behavior.
+- **Heartbeat/push checks.** `monitor_kind = "heartbeat"` is reserved, but no adapter provisions heartbeat monitors yet. The intended first implementation is harness-owned heartbeat sending: adapter provisions a heartbeat endpoint, the harness sends check-ins during healthy periods, and `heartbeat_stopped` pauses those check-ins. This is deferred until the first adapter exposes heartbeat creation and stale cleanup.
+- **Header/auth-sensitive checks beyond custom headers.** Custom request-header support is implemented for Datadog and Jetmon v2. Authentication flows and user-agent divergence remain deferred because they need clearer cross-provider request-shape controls and target fixtures beyond a single deterministic header.
+- **ICMP/ping checks.** Treat ping checks as a separate monitor kind. Deferred because credible ICMP failure injection needs host/firewall-level or isolated-VM control; doing this on the shared target fleet could interfere with concurrent HTTP/DNS/TLS scenarios.
+- **Browser/API assertion checks.** Datadog and Checkly can run richer API or browser assertions. Deferred from the first comparison table because browser checks have different cost, flake, dependency, and timing behavior than single-probe uptime checks. API assertions should be the first sub-track when a provider adapter needs richer structured checks.
+- **Regional quorum and probe-location behavior.** Datadog result location metadata is now preserved when present. Provider-controlled location selection and alert quorum are deferred because they require provider-specific provisioning fields and report dimensions; publishable geo results should wait until location/quorum settings are explicit in run metadata.
+
+Acceptance:
+
+- Scenario docs and campaign configs include the new scenario files without requiring temporary one-off TOML copies.
+- Adapter capability reporting distinguishes unsupported monitor kinds from false negatives.
+- New monitor-kind adapter paths include stale-resource cleanup before they are enabled in campaign runs.
+- Reports can break out "HTTP monitor observing DNS/TLS/TCP failure" from "native DNS/TLS/TCP monitor" so service comparisons stay fair.
+
 ## Next-wave adapter expansion
 
 **Status:** Planned after provider-state preflight cleanup and the first campaign hardening dry run. The next adapter wave should broaden comparison coverage without making the harness harder to trust.
@@ -255,6 +296,55 @@ Expansion acceptance:
 - The first live smoke for each adapter covers at least `http-503`, one HEAD/GET mismatch, one content/keyword scenario if supported, and cleanup verification.
 - Self-hosted adapters are labeled as single-origin/self-hosted in reports so they are not confused with global SaaS probe networks.
 - Any adapter relying on an unstable or internal upstream API must pin the upstream version and document the automation risk.
+
+## Report-driven provider reliability
+
+**Status:** In progress after `reports/v2-regression-9am-20260502-063755Z/`.
+The latest long run had no Jetmon v2, Pingdom, or Better Uptime adapter
+errors, but it exposed 56 provision-time errors across UptimeRobot and Datadog
+Synthetics:
+
+- UptimeRobot: 39 total (`maintenance start_time invalid_parameter`: 15,
+  `newMonitor already_exists`: 22, API timeout after `newMonitor`: 2).
+- Datadog Synthetics: 17 total (`downtime invalid scope`: 17).
+
+Implemented hardening from that report:
+
+- UptimeRobot one-shot maintenance windows now round/clamp `start_time` to the
+  next full second so a subsecond run start is not sent as a timestamp that is
+  already just barely in the past.
+- UptimeRobot monitor names now include a short hash of the monitor URL, and
+  the runner spreads monitor URLs across configured site paths with a
+  per-scenario query token. This reduces duplicate-name and duplicate-URL
+  collisions in parallel matrices while keeping failures scoped to the same
+  path the monitor checks.
+- UptimeRobot uncertain create timeouts retry safely after attempting to adopt
+  a single matching harness-owned monitor.
+- Datadog downtime creation now sends an explicit global scope alongside the
+  monitor id.
+- Provision/retrieve failures now write `monitor_reports` rows with
+  `reason_code = "adapter_error"`, and markdown campaign reports include a
+  reason-code table so these failures are visible without reconstructing them
+  from logs.
+
+Acceptance for the next run:
+
+- Live smoke UptimeRobot and Datadog on
+  `maintenance-http-503-full-cover`; both should provision maintenance without
+  adapter errors and should score as maintenance-suppressed if the vendor
+  behaves as expected.
+- The next matrix should show zero, or nearly zero, UptimeRobot
+  `already_exists` errors. If they persist, enhance stale cleanup to search by
+  benchmark URL in addition to exact friendly name and add a plan-level
+  duplicate URL preflight.
+- Report generation should next bucket adapter-error reasons by provider error
+  text, not only by the structured `adapter_error` code, so maintenance
+  timestamp errors, duplicate monitor collisions, and API timeouts are separated
+  automatically.
+- Geo-scoped `http-geo-503` remains a benchmark validation gap, not a
+  service-specific finding, because every service failed it in the latest run.
+  Before publishing geo results, audit probe CIDRs against actual source IPs
+  observed by the target and flag services with unverifiable probe ranges.
 
 ## Provider-state preflight cleanup
 
@@ -640,15 +730,15 @@ Deferred for different scenario lanes:
 
 ## Jetmon capacity benchmark
 
-**Status:** Initial observability path and generated target DNS support are implemented on branch `jetmon-capacity-bench`.
+**Status:** Initial observability path and generated target DNS support are implemented on `trunk`.
 
 The first capacity track compares Jetmon v1 and Jetmon v2 as active monitor count grows. It is intentionally separate from scenario accuracy campaigns: scenario runs answer whether monitors detect controlled failures, while capacity runs answer how resource use, check timeliness, lifecycle throughput, and service health scale with batch size.
 
 Implemented:
 
-- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-v1` and `jetmon-v2`.
+- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-v1.example.com` and `jetmon-v2.example.com`.
 - `cmd/uptime-bench-dockerstats-exporter` exposes Docker API container stats as Prometheus metrics for hosts where cAdvisor cannot identify Docker 29 `overlayfs` / containerd-snapshotter writable layers.
-- The exporter is deployed on both Jetmon hosts at `10.0.0.170:9103` and `10.0.0.171:9103`.
+- The exporter is deployed on both Jetmon hosts at `203.0.113.170:9103` and `203.0.113.171:9103`.
 - `fleet.toml` supports `[[targets.generated_sites]]` ranges so DNS can resolve million-scale synthetic hostnames without expanding all hosts into the zone map.
 - `cmd/uptime-bench-targetload` can probe generated host ranges against DNS and HTTP before those hosts are loaded into Jetmon.
 - `docs/capacity-benchmark.md` records the test shape, stop thresholds, target direction, and bulk lifecycle approach.
@@ -677,18 +767,18 @@ The `offset` field is honored by the runner: failures activate at `scenario_star
 
 ## Method-sensitive HTTP behavior beyond status
 
-**Status:** Partially implemented. `http_method_status` covers the two high-priority HEAD/GET status mismatches: HEAD failure with healthy GET, and healthy HEAD with GET failure. Measurement now scores `http_method_status method="HEAD"` as a healthy-GET false-down trap rather than as a missed outage when no alert fires, while `method="GET"` remains a visitor-visible outage. The target also honors optional `method = "GET"` / `"HEAD"` predicates for `http_redirect`, `http_timeout`, `http_partial`, and `http_body`, with shipped scenarios for GET-only redirect loops, GET-only truncated bodies, GET-only TTFB stalls, and HEAD-only TTFB stalls. Header-sensitive behaviors remain deferred until the method cases produce real benchmark data.
+**Status:** Partially implemented. `http_method_status` covers the two high-priority HEAD/GET status mismatches: HEAD failure with healthy GET, and healthy HEAD with GET failure. Measurement now scores `http_method_status method="HEAD"` as a healthy-GET false-down trap rather than as a missed outage when no alert fires, while `method="GET"` remains a visitor-visible outage. The target also honors optional `method = "GET"` / `"HEAD"` predicates for `http_redirect`, `http_timeout`, `http_partial`, and `http_body`, with shipped scenarios for GET-only redirect loops, GET-only truncated bodies, GET-only TTFB stalls, and HEAD-only TTFB stalls. One custom-header status variant is implemented; broader user-agent, accept-header, auth, and body-shape divergence remains deferred until the method cases produce more benchmark data.
 
 These are expected Jetmon-v1 pitfalls if it relies on shallow HEAD/status checks, and they should become Jetmon-v2 regression cases if v2 probes the user-visible GET path:
 
 - **Method-scoped redirects:** HEAD returns 200 while GET enters a redirect loop. Inverse cases such as GET healthy but HEAD redirected/challenged, wrong-host redirects, and HTTPS downgrade redirects remain future variants.
 - **Method-scoped latency and truncation:** HEAD returns quickly with 200 while GET stalls before first byte or closes mid-response; the inverse HEAD-stalls/GET-healthy case is also represented for TTFB stalls. Body-phase stalls remain future variants.
-- **Request-header divergence:** the origin, WAF, cache, or bot protection serves different status/content for monitor-specific `User-Agent`, `Accept`, `Accept-Language`, or missing browser-like headers. This can create either false-up or false-down results depending on which request shape the monitor uses.
+- **Request-header divergence:** the origin, WAF, cache, or bot protection serves different status/content for monitor-specific `User-Agent`, `Accept`, `Accept-Language`, auth headers, or missing browser-like headers. The checked-in `http-header-status` scenario covers a deterministic custom-header status failure; richer request-shape divergence can create either false-up or false-down results depending on which headers the monitor actually sends.
 
 Implementation shape:
 
-- Extend the target failure matcher beyond `(type, host, path)` to include optional request predicates. `method` is implemented; selected headers and maybe user-agent substring remain deferred.
-- Add method/header-scoped variants for `http_redirect`, `http_timeout`, `http_partial`, and selected `http_body` scenarios once the matcher can express them cleanly. Method-scoped target support exists now; remaining work is adding header-scoped variants and deciding which method/body combinations deserve campaign weight.
+- Extend the target failure matcher beyond `(type, host, path)` to include optional request predicates. `method` and one custom-header status path are implemented; user-agent substring and richer header predicates remain deferred.
+- Add method/header-scoped variants for `http_redirect`, `http_timeout`, `http_partial`, and selected `http_body` scenarios once the matcher can express them cleanly. Method-scoped target support exists now; remaining work is adding richer header-scoped variants and deciding which method/body combinations deserve campaign weight.
 - Keep the existing content scenarios as the baseline for "GET body is bad while HEAD/status looks fine"; those already cover ransomware, defacement, malicious script, SEO spam, keyword missing, and keyword injection.
 
 ---
@@ -743,7 +833,7 @@ Simulating this requires:
 
 ## Heartbeat and agent-based reverse checks
 
-**Status:** Not implemented. Deferred until monitor services ship this capability.
+**Status:** Not implemented. `monitor_kind = "heartbeat"` is reserved in the scenario schema; provisioning and target-side sender support are deferred until a first adapter implementation is selected.
 
 Heartbeat monitoring (dead-man's switch) and agent-based checks (wp-cron, scheduled task monitoring) require the monitored system to actively send signals to the monitor, rather than the monitor probing the site.
 
@@ -753,7 +843,7 @@ uptime-bench's target fleet is currently passive — it responds to probes. Simu
 - A control command (`heartbeat_stopped`) that pauses the sender for the failure window.
 - Adapter support to provision a heartbeat monitor (endpoint URL, expected interval).
 
-This architectural extension should be designed when the first monitor service ships heartbeat support. The control API and scenario schema are designed to accommodate new failure types without breaking changes.
+This architectural extension should be designed when the first monitor service ships heartbeat support. The control API and scenario schema are designed to accommodate new failure types without breaking changes, and the monitor-kind field can now route such scenarios away from HTTP-only adapters.
 
 ---
 

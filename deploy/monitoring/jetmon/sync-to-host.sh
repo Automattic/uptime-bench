@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-host="${1:-jetmon-vm-host-3}"
+host="${1:-monitoring.example.com}"
 dest="${DEST:-/home/jetmon/jetmon-monitoring}"
-ssh_config="${SSH_CONFIG:-/home/gaarai/.ssh/config}"
+ssh_config="${SSH_CONFIG:-$HOME/.ssh/config}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 tar -C "$script_dir" \

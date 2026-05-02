@@ -1,0 +1,12 @@
+id          = "dns-servfail"
+version     = "1"
+description = "Authoritative DNS returns SERVFAIL — tests resolver/server-error DNS failure detection"
+target      = "bench-a"
+monitors    = ["jetmon-v2"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 4002
+
+[[failures]]
+type = "dns_servfail"

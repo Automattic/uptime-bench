@@ -13,7 +13,7 @@ func TestLoadRunConfigNormalizesServiceLifecycles(t *testing.T) {
 	content := `
 id = "capacity-test"
 prometheus_url = "http://prometheus:9090"
-instances = ["jetmon-service-host-1", "jetmon-service-host-2"]
+instances = ["jetmon-v1.example.com", "jetmon-v2.example.com"]
 
 [targets]
 url_pattern = "http://site-%07d.load.example.test/"

@@ -3,6 +3,7 @@ package scenario
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -15,6 +16,7 @@ type Scenario struct {
 	Description    string
 	Target         string
 	Monitors       []string
+	MonitorKind    string
 	CheckFrequency time.Duration
 	GracePeriod    time.Duration
 	Duration       time.Duration
@@ -37,6 +39,16 @@ type Scenario struct {
 	// keyword_injected, else "present".
 	Keyword      string
 	KeywordCheck string
+
+	// ResponseTimeThreshold configures a monitor-side threshold for
+	// slow-success scenarios. A monitor should alert when a completed
+	// response takes longer than this duration.
+	ResponseTimeThreshold time.Duration
+
+	// RequestHeaders configure custom headers the monitor should send.
+	// Header-sensitive scenarios use the same map to activate target-side
+	// behavior only for probes carrying those headers.
+	RequestHeaders map[string]string
 
 	// Maintenance, when non-nil, declares a vendor-side alert-suppression
 	// window the harness asks the monitor to honour during this run. The
@@ -74,6 +86,8 @@ type Failure struct {
 
 	// HTTP failure fields
 	StatusCode         int
+	HeaderName         string
+	HeaderValue        string
 	Method             string
 	Phase              string
 	Delay              time.Duration
@@ -102,19 +116,22 @@ type Failure struct {
 
 // raw mirrors the TOML structure for unmarshalling before validation.
 type raw struct {
-	ID             string          `toml:"id"`
-	Version        string          `toml:"version"`
-	Description    string          `toml:"description"`
-	Target         string          `toml:"target"`
-	Monitors       []string        `toml:"monitors"`
-	CheckFrequency string          `toml:"check_frequency"`
-	GracePeriod    string          `toml:"grace_period"`
-	Duration       string          `toml:"duration"`
-	Seed           *int64          `toml:"seed"`
-	Keyword        string          `toml:"keyword"`
-	KeywordCheck   string          `toml:"keyword_check"`
-	Maintenance    *rawMaintenance `toml:"maintenance"`
-	Failures       []rawFailure    `toml:"failures"`
+	ID                    string            `toml:"id"`
+	Version               string            `toml:"version"`
+	Description           string            `toml:"description"`
+	Target                string            `toml:"target"`
+	Monitors              []string          `toml:"monitors"`
+	MonitorKind           string            `toml:"monitor_kind"`
+	CheckFrequency        string            `toml:"check_frequency"`
+	GracePeriod           string            `toml:"grace_period"`
+	Duration              string            `toml:"duration"`
+	Seed                  *int64            `toml:"seed"`
+	Keyword               string            `toml:"keyword"`
+	KeywordCheck          string            `toml:"keyword_check"`
+	ResponseTimeThreshold string            `toml:"response_time_threshold"`
+	RequestHeaders        map[string]string `toml:"request_headers"`
+	Maintenance           *rawMaintenance   `toml:"maintenance"`
+	Failures              []rawFailure      `toml:"failures"`
 }
 
 type rawMaintenance struct {
@@ -130,6 +147,8 @@ type rawFailure struct {
 	Duration string `toml:"duration"`
 
 	StatusCode         int      `toml:"status_code"`
+	HeaderName         string   `toml:"header_name"`
+	HeaderValue        string   `toml:"header_value"`
 	Method             string   `toml:"method"`
 	Phase              string   `toml:"phase"`
 	Delay              string   `toml:"delay"`
@@ -175,6 +194,10 @@ func validate(r raw) (*Scenario, error) {
 	if err != nil {
 		return nil, err
 	}
+	monitorKind, err := validateMonitorKind(r.MonitorKind)
+	if err != nil {
+		return nil, err
+	}
 	gracePeriod, err := parseDuration("grace_period", r.GracePeriod, true)
 	if err != nil {
 		return nil, err
@@ -183,19 +206,29 @@ func validate(r raw) (*Scenario, error) {
 	if err != nil {
 		return nil, err
 	}
+	responseTimeThreshold, err := parseDuration("response_time_threshold", r.ResponseTimeThreshold, false)
+	if err != nil {
+		return nil, err
+	}
+	if responseTimeThreshold < 0 {
+		return nil, fmt.Errorf("scenario: response_time_threshold must be non-negative")
+	}
 
 	s := &Scenario{
-		ID:             r.ID,
-		Version:        r.Version,
-		Description:    r.Description,
-		Target:         r.Target,
-		Monitors:       r.Monitors,
-		CheckFrequency: checkFreq,
-		GracePeriod:    gracePeriod,
-		Duration:       duration,
-		Seed:           r.Seed,
-		Keyword:        r.Keyword,
-		KeywordCheck:   r.KeywordCheck,
+		ID:                    r.ID,
+		Version:               r.Version,
+		Description:           r.Description,
+		Target:                r.Target,
+		Monitors:              r.Monitors,
+		MonitorKind:           monitorKind,
+		CheckFrequency:        checkFreq,
+		GracePeriod:           gracePeriod,
+		Duration:              duration,
+		Seed:                  r.Seed,
+		Keyword:               r.Keyword,
+		KeywordCheck:          r.KeywordCheck,
+		ResponseTimeThreshold: responseTimeThreshold,
+		RequestHeaders:        normalizeRequestHeaders(r.RequestHeaders),
 	}
 
 	for i, rf := range r.Failures {
@@ -219,6 +252,37 @@ func validate(r raw) (*Scenario, error) {
 	}
 
 	return s, nil
+}
+
+func validateMonitorKind(kind string) (string, error) {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return "http", nil
+	}
+	switch kind {
+	case "http", "dns", "tcp", "ssl_certificate", "heartbeat":
+		return kind, nil
+	default:
+		return "", fmt.Errorf("scenario: monitor_kind must be one of: http, dns, tcp, ssl_certificate, heartbeat (got %q)", kind)
+	}
+}
+
+func normalizeRequestHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // validateMaintenance parses and validates the [maintenance] block.
@@ -329,6 +393,8 @@ func validateFailure(i int, rf rawFailure) (Failure, error) {
 		Method:             rf.Method,
 		Phase:              rf.Phase,
 		TruncateAfterBytes: rf.TruncateAfterBytes,
+		HeaderName:         strings.TrimSpace(rf.HeaderName),
+		HeaderValue:        rf.HeaderValue,
 		Variant:            rf.Variant,
 		ChainLength:        rf.ChainLength,
 		Content:            rf.Content,
@@ -394,6 +460,20 @@ func validateFailureType(ctx string, f *Failure) error {
 		}
 		if f.Delay == 0 {
 			return fmt.Errorf("%s: delay is required for http_timeout", ctx)
+		}
+	case "http_latency":
+		if err := validateMethod(ctx, f.Method, false); err != nil {
+			return err
+		}
+		if f.Delay == 0 {
+			return fmt.Errorf("%s: delay is required for http_latency", ctx)
+		}
+	case "http_header_status":
+		if f.StatusCode < 100 || f.StatusCode > 599 {
+			return fmt.Errorf("%s: status_code must be a valid HTTP status code (100-599)", ctx)
+		}
+		if f.HeaderName == "" {
+			return fmt.Errorf("%s: header_name is required for http_header_status", ctx)
 		}
 	case "http_partial":
 		if err := validateMethod(ctx, f.Method, false); err != nil {

@@ -125,10 +125,10 @@ func TestDefaultQueriesUseInstanceMatcher(t *testing.T) {
 
 func TestSeriesLabelIncludesProcessGroup(t *testing.T) {
 	got := SeriesLabel(map[string]string{
-		"instance":  "jetmon-service-host-1",
+		"instance":  "jetmon-v1.example.com",
 		"groupname": "jetmon-v1-worker",
 	})
-	if got != "jetmon-service-host-1/jetmon-v1-worker" {
+	if got != "jetmon-v1.example.com/jetmon-v1-worker" {
 		t.Fatalf("SeriesLabel = %q", got)
 	}
 }

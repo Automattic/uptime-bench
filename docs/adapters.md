@@ -57,6 +57,10 @@ type Adapter interface {
     // created during Provision. Must be called even if Provision only partially
     // completed or the scenario aborted midway.
     Deprovision(ctx context.Context, handle MonitorHandle) error
+
+    // Normalize maps a raw service-specific classification label to
+    // uptime-bench's common vocabulary. Each adapter owns its mapping table.
+    Normalize(raw string) string
 }
 ```
 
@@ -75,15 +79,40 @@ type Capabilities struct {
     // Provision returns *FrequencyError if the requested interval is shorter.
     MinCheckFrequency time.Duration
 
+    // MonitorKinds lists native monitor kinds the adapter can provision.
+    // Empty means HTTP only.
+    MonitorKinds []string
+
     // SupportsKeyword indicates whether the service can verify a keyword
-    // in the response body. If false, the harness omits keyword-dependent
-    // scenarios for this service. Provision ignores config.Keyword.
+    // in the response body. When true, the adapter honors
+    // ProvisionConfig.Keyword in present-mode.
     SupportsKeyword bool
+
+    // SupportsInvertedKeyword indicates whether the service can verify
+    // absence of a keyword. When false, keyword_check = "absent" scenarios
+    // are gated as capability_mismatch.
+    SupportsInvertedKeyword bool
 
     // SupportsAgentChecks indicates whether the service has an on-site agent
     // capable of running reverse-check scenarios (heartbeat, wp-cron, etc.).
     // Probe-only services must set this to false.
     SupportsAgentChecks bool
+
+    // SupportsMaintenanceWindows indicates whether the adapter can configure
+    // a vendor-side alert-suppression window while leaving checks running.
+    SupportsMaintenanceWindows bool
+
+    // SupportsCooldownReset indicates whether Deprovision or a reset path can
+    // clear vendor-side alert cooldown before the next run.
+    SupportsCooldownReset bool
+
+    // SupportsResponseTimeThreshold indicates whether the adapter can configure
+    // a monitor-side response-time assertion.
+    SupportsResponseTimeThreshold bool
+
+    // SupportsRequestHeaders indicates whether the adapter can configure custom
+    // request headers on monitor probes.
+    SupportsRequestHeaders bool
 
     // DefaultMaxCallsPerRun is the adapter's own default API call budget per
     // run. The harness uses this when no per-adapter limit is set in fleet.toml.
@@ -109,9 +138,26 @@ type ProvisionConfig struct {
     // this interval, Provision returns *FrequencyError.
     CheckFrequency time.Duration
 
+    // MonitorKind is the requested native monitor kind. Empty means HTTP.
+    MonitorKind string
+
     // Keyword is the string the monitor should verify in the response body.
     // Empty means no keyword check. Ignored if Capabilities.SupportsKeyword is false.
     Keyword string
+
+    // KeywordCheck is "present" for canary-missing checks or "absent" for
+    // forbidden-keyword checks.
+    KeywordCheck string
+
+    // MaintenanceWindow requests vendor-side alert suppression for [Start, End].
+    // The runner only passes this when SupportsMaintenanceWindows is true.
+    MaintenanceWindow *MaintenanceWindow
+
+    // ResponseTimeThreshold requests a slow-response assertion. Zero disables it.
+    ResponseTimeThreshold time.Duration
+
+    // RequestHeaders are custom headers the monitor should send.
+    RequestHeaders map[string]string
 }
 
 // FrequencyError is returned by Provision when the service cannot meet the
@@ -232,14 +278,29 @@ func (h *Harness) compatible(a Adapter, s Scenario) error {
             MinAchievable: caps.MinCheckFrequency,
         }
     }
+    if !caps.SupportsMonitorKind(s.MonitorKind) {
+        return fmt.Errorf("%s: does not support monitor kind %s", a.ServiceID(), s.MonitorKind)
+    }
     if s.RequiresKeyword && !caps.SupportsKeyword {
         return fmt.Errorf("%s: does not support keyword checks", a.ServiceID())
+    }
+    if s.RequiresInvertedKeyword && !caps.SupportsInvertedKeyword {
+        return fmt.Errorf("%s: does not support inverted keyword checks", a.ServiceID())
+    }
+    if s.RequiresMaintenanceWindow && !caps.SupportsMaintenanceWindows {
+        return fmt.Errorf("%s: does not support maintenance windows", a.ServiceID())
+    }
+    if s.RequiresResponseTimeThreshold && !caps.SupportsResponseTimeThreshold {
+        return fmt.Errorf("%s: does not support response-time thresholds", a.ServiceID())
+    }
+    if s.RequiresRequestHeaders && !caps.SupportsRequestHeaders {
+        return fmt.Errorf("%s: does not support custom request headers", a.ServiceID())
     }
     return nil
 }
 ```
 
-Skipped pairs are recorded in the run output with reason `"capability_mismatch"` — they do not appear as Unknown or false negatives.
+Skipped pairs are recorded in the run output with reason `"capability_mismatch"` — they do not appear as false negatives. Provision and retrieve failures are recorded with reason `"adapter_error"` so provider/API reliability remains queryable even when no usable monitor result was produced.
 
 ### Normalization
 
@@ -333,4 +394,4 @@ This data enables layer-level attribution verification: a `dns_latency` scenario
 
 ### Maintenance window provisioning
 
-If the service supports scheduled maintenance windows, expose this via a `ProvisionConfig` extension (a service-specific option passed through `MonitorHandle.Fields`). Do not build maintenance window support into the core `ProvisionConfig` struct — it is a service capability, not a universal one. See [roadmap.md](roadmap.md) for the planned maintenance window scenario type.
+If the service supports scheduled maintenance windows, set `Capabilities.SupportsMaintenanceWindows` and honor `ProvisionConfig.MaintenanceWindow`. The adapter should configure alert suppression while leaving probes/check execution active. If provisioning the maintenance window fails after creating the monitor, roll back the monitor before returning an error so interrupted setup does not leak provider state.

@@ -1,0 +1,16 @@
+id          = "http-latency-threshold"
+version     = "1"
+description = "GET returns 200 OK but slower than the configured response-time threshold"
+target      = "bench-a"
+monitors    = ["datadog-synthetics"]
+monitor_kind = "http"
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1017
+
+response_time_threshold = "2s"
+
+[[failures]]
+type  = "http_latency"
+delay = "5s"

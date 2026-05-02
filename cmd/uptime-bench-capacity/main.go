@@ -19,7 +19,7 @@ import (
 
 func main() {
 	promURL := flag.String("prometheus-url", "", "Prometheus base URL (overrides PROMETHEUS_URL env var)")
-	instancesFlag := flag.String("instances", "jetmon-v1,jetmon-v2", "comma-separated Prometheus instance labels to collect")
+	instancesFlag := flag.String("instances", "jetmon-v1.example.com,jetmon-v2.example.com", "comma-separated Prometheus instance labels to collect")
 	startFlag := flag.String("start", "", "window start time (RFC3339 or Unix timestamp); default is end-duration")
 	endFlag := flag.String("end", "", "window end time (RFC3339 or Unix timestamp); default is now")
 	duration := flag.Duration("duration", 15*time.Minute, "window duration when -start is omitted")

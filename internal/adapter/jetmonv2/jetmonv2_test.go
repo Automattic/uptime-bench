@@ -66,8 +66,8 @@ func TestCapabilities(t *testing.T) {
 	if !c.SupportsKeyword {
 		t.Error("SupportsKeyword should be true")
 	}
-	if c.SupportsInvertedKeyword {
-		t.Error("SupportsInvertedKeyword should be false")
+	if !c.SupportsInvertedKeyword {
+		t.Error("SupportsInvertedKeyword should be true")
 	}
 	if !c.SupportsAgentChecks {
 		t.Error("SupportsAgentChecks should be true")
@@ -77,6 +77,9 @@ func TestCapabilities(t *testing.T) {
 	}
 	if !c.SupportsCooldownReset {
 		t.Error("SupportsCooldownReset should be true")
+	}
+	if !c.SupportsRequestHeaders {
+		t.Error("SupportsRequestHeaders should be true")
 	}
 }
 
@@ -198,8 +201,14 @@ func TestProvision_RequestShape(t *testing.T) {
 	if got.CheckKeyword != nil {
 		t.Errorf("check_keyword = %q, want nil", *got.CheckKeyword)
 	}
+	if got.ForbiddenKeyword != nil {
+		t.Errorf("forbidden_keyword = %q, want nil", *got.ForbiddenKeyword)
+	}
 	if got.AlertCooldownMinutes == nil || *got.AlertCooldownMinutes != 0 {
 		t.Errorf("alert_cooldown_minutes = %v, want 0", got.AlertCooldownMinutes)
+	}
+	if got.CustomHeaders == nil {
+		t.Error("custom_headers should be an empty map, not nil")
 	}
 
 	if handle.MonitorID != "8000000000000123" {
@@ -213,6 +222,35 @@ func TestProvision_RequestShape(t *testing.T) {
 	}
 	if handle.Fields["check_interval"] != "5" {
 		t.Errorf("check_interval field = %q, want 5", handle.Fields["check_interval"])
+	}
+}
+
+func TestProvision_CustomHeaders(t *testing.T) {
+	var c captured
+	body := `{"id":8000000000000123,"blog_id":8000000000000123,"monitor_url":"http://bench-a.example/","monitor_active":true,"bucket_no":17,"check_interval":5,"current_state":"Up","current_severity":0,"redirect_policy":"follow"}`
+	srv := fakeAPI(t, &c, http.StatusCreated, body)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok-abc")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: 5 * time.Minute,
+			RequestHeaders: map[string]string{
+				"X-Uptime-Bench": "token",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	var got createSiteRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatalf("body unmarshal: %v", err)
+	}
+	if got.CustomHeaders["X-Uptime-Bench"] != "token" {
+		t.Fatalf("custom_headers = %+v, want X-Uptime-Bench token", got.CustomHeaders)
 	}
 }
 
@@ -242,11 +280,14 @@ func TestProvision_KeywordPresent(t *testing.T) {
 	if got.CheckKeyword == nil || *got.CheckKeyword != "uptime-bench-canary" {
 		t.Fatalf("check_keyword = %v, want uptime-bench-canary", got.CheckKeyword)
 	}
+	if got.ForbiddenKeyword != nil {
+		t.Fatalf("forbidden_keyword = %v, want nil", got.ForbiddenKeyword)
+	}
 }
 
-func TestProvision_KeywordAbsentRejected(t *testing.T) {
+func TestProvision_KeywordAbsent(t *testing.T) {
 	var c captured
-	srv := fakeAPI(t, &c, http.StatusCreated, `{"id":1,"blog_id":1}`)
+	srv := fakeAPI(t, &c, http.StatusCreated, `{"id":8000000000000125,"blog_id":8000000000000125,"monitor_url":"http://bench-a.example/","monitor_active":true}`)
 	defer srv.Close()
 
 	a := newTestAdapter(srv.URL, "tok")
@@ -258,14 +299,19 @@ func TestProvision_KeywordAbsentRejected(t *testing.T) {
 			KeywordCheck:   adapter.KeywordCheckAbsent,
 		},
 	)
-	if err == nil {
-		t.Fatal("expected error for absent-mode")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
 	}
-	if !strings.Contains(err.Error(), "absent") {
-		t.Fatalf("err = %v, want absent", err)
+
+	var got createSiteRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
 	}
-	if c.method != "" {
-		t.Fatalf("expected no request, got %s %s", c.method, c.path)
+	if got.CheckKeyword != nil {
+		t.Fatalf("check_keyword = %v, want nil", got.CheckKeyword)
+	}
+	if got.ForbiddenKeyword == nil || *got.ForbiddenKeyword != "HACKED" {
+		t.Fatalf("forbidden_keyword = %v, want HACKED", got.ForbiddenKeyword)
 	}
 }
 
@@ -431,8 +477,8 @@ func TestRetrieve_HappyPathResolvedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query parse: %v", err)
 	}
-	if query.Get("check_type__in") != "http,tls_expiry" {
-		t.Errorf("query = %q, want check_type__in=http,tls_expiry", c.query)
+	if query.Get("check_type__in") != "http,tls_expiry,tls_deprecated" {
+		t.Errorf("query = %q, want check_type__in=http,tls_expiry,tls_deprecated", c.query)
 	}
 	if !strings.Contains(c.query, "started_at__gte=") || !strings.Contains(c.query, "started_at__lt=") {
 		t.Errorf("query = %q, want started_at range", c.query)
@@ -594,12 +640,12 @@ func TestRetrieve_ClassifiesJetmonMetadata(t *testing.T) {
 			{
 				"id": 4,
 				"site_id": 8000000000000123,
-				"check_type": "http",
+				"check_type": "tls_deprecated",
 				"severity": 1,
 				"state": "Warning",
 				"started_at": "2026-04-25T08:03:00Z",
 				"ended_at": null,
-				"metadata": {"http_code": 200, "error_code": 7},
+				"metadata": {"tls_version": "TLS 1.1", "cipher_suite": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"},
 				"duration_ms": 1000,
 				"transition_count": 1
 			},

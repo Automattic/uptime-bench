@@ -1,12 +1,12 @@
 - targets:
-    - 10.0.0.170:9256
+    - 203.0.113.170:9256
   labels:
-    instance: jetmon-service-host-1
+    instance: jetmon-v1.example.com
     role: service
     stack: jetmon
 - targets:
-    - 10.0.0.171:9256
+    - 203.0.113.171:9256
   labels:
-    instance: jetmon-service-host-2
+    instance: jetmon-v2.example.com
     role: service
     stack: jetmon

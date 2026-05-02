@@ -118,8 +118,8 @@ func TestSeedRequiresForceWhenBenchmarkRowsExist(t *testing.T) {
 func TestEvaluateThresholdsStopsOnResourceFailure(t *testing.T) {
 	report := &capacitybench.Report{
 		Summaries: []capacitybench.SeriesSummary{
-			{Query: "host_cpu_used", Labels: map[string]string{"instance": "jetmon-service-host-1"}, Max: 92},
-			{Query: "scrape_up", Labels: map[string]string{"instance": "jetmon-service-host-1", "job": "node"}, Min: 1},
+			{Query: "host_cpu_used", Labels: map[string]string{"instance": "jetmon-v1.example.com"}, Max: 92},
+			{Query: "scrape_up", Labels: map[string]string{"instance": "jetmon-v1.example.com", "job": "node"}, Min: 1},
 		},
 	}
 	findings := EvaluateThresholds(nil, "http://prometheus", StopThresholds{
@@ -218,7 +218,7 @@ func writeRunnerConfig(t *testing.T) string {
 	content := `
 id = "capacity-test"
 prometheus_url = "http://prometheus:9090"
-instances = ["jetmon-service-host-1", "jetmon-service-host-2"]
+instances = ["jetmon-v1.example.com", "jetmon-v2.example.com"]
 
 [targets]
 url_pattern = "http://site-%07d.load.example.test/"

@@ -138,6 +138,41 @@ func TestDeprovisionAll_RetriesFailures(t *testing.T) {
 	}
 }
 
+func TestDeprovisionAll_RunsAdaptersConcurrently(t *testing.T) {
+	prevAttempts := deprovisionAttempts
+	deprovisionAttempts = 1
+	defer func() { deprovisionAttempts = prevAttempts }()
+
+	entered := make(chan string, 2)
+	release := make(chan struct{})
+	a1 := &blockingDeprovisionAdapter{id: "a1", entered: entered, release: release}
+	a2 := &blockingDeprovisionAdapter{id: "a2", entered: entered, release: release}
+	done := make(chan int, 1)
+	go func() {
+		done <- deprovisionAll([]provisioned{
+			{a: a1, handle: adapter.MonitorHandle{}},
+			{a: a2, handle: adapter.MonitorHandle{}},
+		})
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("deprovisionAll did not start both adapters concurrently")
+		}
+	}
+	close(release)
+	select {
+	case errs := <-done:
+		if errs != 0 {
+			t.Fatalf("deprovisionAll errors = %d, want 0", errs)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("deprovisionAll did not finish after release")
+	}
+}
+
 type slowDeprovisionAdapter struct {
 	id          string
 	sawDeadline bool
@@ -185,6 +220,35 @@ func (a *flakyDeprovisionAdapter) Deprovision(context.Context, adapter.MonitorHa
 		return errors.New("temporary delete failure")
 	}
 	return nil
+}
+
+type blockingDeprovisionAdapter struct {
+	id      string
+	entered chan<- string
+	release <-chan struct{}
+}
+
+func (a *blockingDeprovisionAdapter) ServiceID() string { return a.id }
+func (a *blockingDeprovisionAdapter) Capabilities() adapter.Capabilities {
+	return adapter.Capabilities{}
+}
+func (a *blockingDeprovisionAdapter) Normalize(string) string {
+	return adapter.UnrecognizedClassification
+}
+func (a *blockingDeprovisionAdapter) Provision(ctx context.Context, _ adapter.Target, _ adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
+	return adapter.MonitorHandle{}, nil
+}
+func (a *blockingDeprovisionAdapter) Retrieve(ctx context.Context, _ adapter.MonitorHandle, _ adapter.RunWindow) (adapter.RetrieveResult, error) {
+	return adapter.RetrieveResult{}, nil
+}
+func (a *blockingDeprovisionAdapter) Deprovision(ctx context.Context, _ adapter.MonitorHandle) error {
+	a.entered <- a.id
+	select {
+	case <-a.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // TestScheduleFailureEvents_NoOffsets — every failure activates at start
@@ -583,6 +647,51 @@ func TestMonitorTargetURLFallsBackToAddress(t *testing.T) {
 	}
 }
 
+func TestMonitorTargetURLUsesConfiguredNonRootPathAndScenarioToken(t *testing.T) {
+	target := fleet.Target{
+		ID:      "bench",
+		Address: "192.0.2.1",
+		Sites: []fleet.Site{{
+			ID:    "bench-a",
+			Host:  "bench-a.example",
+			Paths: []string{"/", "/api/health", "/shop"},
+		}},
+	}
+	sc := &scenario.Scenario{
+		ID:       "sample-http-503-bench-a-r1",
+		Target:   "bench",
+		Failures: []scenario.Failure{{Type: "http_status"}},
+	}
+	got := monitorTargetURL(sc, target)
+	if !strings.HasPrefix(got, "http://bench-a.example/") {
+		t.Fatalf("monitorTargetURL = %q, want bench-a.example URL", got)
+	}
+	if strings.HasPrefix(got, "http://bench-a.example/?") {
+		t.Fatalf("monitorTargetURL = %q, should prefer a configured non-root path when available", got)
+	}
+	if !strings.Contains(got, "?ub=") {
+		t.Fatalf("monitorTargetURL = %q, want per-scenario query token", got)
+	}
+}
+
+func TestTargetHostPathForFailureScopesHTTPToSelectedPath(t *testing.T) {
+	endpoint := targetEndpoint{host: "bench-a.example", path: "/api/health"}
+	host, path := targetHostPathForFailure(endpoint, scenario.Failure{Type: "http_status"})
+	if host != "bench-a.example" || path != "/api/health" {
+		t.Fatalf("host/path = %q/%q, want selected HTTP endpoint", host, path)
+	}
+
+	host, path = targetHostPathForFailure(endpoint, scenario.Failure{Type: "tls_expiring"})
+	if host != "bench-a.example" || path != "" {
+		t.Fatalf("TLS host/path = %q/%q, want host-only failure", host, path)
+	}
+
+	host, path = targetHostPathForFailure(endpoint, scenario.Failure{Type: "tcp_refused"})
+	if host != "" || path != "" {
+		t.Fatalf("tcp_refused host/path = %q/%q, want global failure", host, path)
+	}
+}
+
 // TestProvisionAdapters_MinCheckFrequencyGate — adapter requires
 // MinCheckFrequency = 5m; scenario asks for 30s. Adapter should not be
 // provisioned; one capability_mismatch row should be written.
@@ -596,7 +705,7 @@ func TestProvisionAdapters_MinCheckFrequencyGate(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", CheckFrequency: 30 * time.Second}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if provisionErr {
@@ -620,6 +729,28 @@ func TestProvisionAdapters_MinCheckFrequencyGate(t *testing.T) {
 	}
 }
 
+func TestProvisionAdapters_MonitorKindGate(t *testing.T) {
+	a := &gateTestAdapter{
+		id:   "svc",
+		caps: adapter.Capabilities{},
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{Target: "bench", MonitorKind: adapter.MonitorKindDNS}
+
+	_, _ = provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
+
+	if a.provisionedAs != nil {
+		t.Errorf("Provision should be skipped when monitor_kind is unsupported")
+	}
+	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("expected one capability_mismatch row, got %+v", rec.monitorReportRows)
+	}
+	if !strings.Contains(rec.monitorReportRows[0].RetrieveUnknownReason, "monitor_kind") {
+		t.Errorf("Reason should mention monitor_kind, got %q", rec.monitorReportRows[0].RetrieveUnknownReason)
+	}
+}
+
 // TestProvisionAdapters_KeywordGate — adapter SupportsKeyword=false,
 // scenario sets a keyword. Skip + capability_mismatch row.
 func TestProvisionAdapters_KeywordGate(t *testing.T) {
@@ -630,7 +761,7 @@ func TestProvisionAdapters_KeywordGate(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", Keyword: "uptime-bench-canary", KeywordCheck: "present"}
 
-	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
+	_, _ = provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if a.provisionedAs != nil {
@@ -658,7 +789,7 @@ func TestProvisionAdapters_InvertedKeywordGate(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", Keyword: "HACKED", KeywordCheck: adapter.KeywordCheckAbsent}
 
-	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
+	_, _ = provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if a.provisionedAs != nil {
@@ -669,6 +800,50 @@ func TestProvisionAdapters_InvertedKeywordGate(t *testing.T) {
 	}
 	if !strings.Contains(rec.monitorReportRows[0].RetrieveUnknownReason, "SupportsInvertedKeyword") {
 		t.Errorf("Reason should mention SupportsInvertedKeyword, got %q", rec.monitorReportRows[0].RetrieveUnknownReason)
+	}
+}
+
+func TestProvisionAdapters_ResponseTimeThresholdGate(t *testing.T) {
+	a := &gateTestAdapter{
+		id:   "svc",
+		caps: adapter.Capabilities{},
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{Target: "bench", ResponseTimeThreshold: 2 * time.Second}
+
+	_, _ = provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
+
+	if a.provisionedAs != nil {
+		t.Errorf("Provision should be skipped when response-time threshold is unsupported")
+	}
+	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("expected one capability_mismatch row, got %+v", rec.monitorReportRows)
+	}
+	if !strings.Contains(rec.monitorReportRows[0].RetrieveUnknownReason, "SupportsResponseTimeThreshold") {
+		t.Errorf("Reason should mention SupportsResponseTimeThreshold, got %q", rec.monitorReportRows[0].RetrieveUnknownReason)
+	}
+}
+
+func TestProvisionAdapters_RequestHeadersGate(t *testing.T) {
+	a := &gateTestAdapter{
+		id:   "svc",
+		caps: adapter.Capabilities{},
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{Target: "bench", RequestHeaders: map[string]string{"X-Uptime-Bench": "token"}}
+
+	_, _ = provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
+
+	if a.provisionedAs != nil {
+		t.Errorf("Provision should be skipped when request headers are unsupported")
+	}
+	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("expected one capability_mismatch row, got %+v", rec.monitorReportRows)
+	}
+	if !strings.Contains(rec.monitorReportRows[0].RetrieveUnknownReason, "SupportsRequestHeaders") {
+		t.Errorf("Reason should mention SupportsRequestHeaders, got %q", rec.monitorReportRows[0].RetrieveUnknownReason)
 	}
 }
 
@@ -686,7 +861,7 @@ func TestProvisionAdapters_MaintenanceWindowGate(t *testing.T) {
 		Maintenance: &scenario.Maintenance{StartOffset: 0, Duration: 5 * time.Minute},
 	}
 
-	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
+	_, _ = provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if a.provisionedAs != nil {
@@ -713,7 +888,7 @@ func TestProvisionAdapters_CooldownResetGate(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", CheckFrequency: time.Minute}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), true)
 
 	if provisionErr {
@@ -740,23 +915,28 @@ func TestProvisionAdapters_HappyPath(t *testing.T) {
 	a := &gateTestAdapter{
 		id: "svc",
 		caps: adapter.Capabilities{
-			MinCheckFrequency:          time.Minute,
-			SupportsKeyword:            true,
-			SupportsInvertedKeyword:    true,
-			SupportsMaintenanceWindows: true,
+			MinCheckFrequency:             time.Minute,
+			SupportsKeyword:               true,
+			SupportsInvertedKeyword:       true,
+			SupportsMaintenanceWindows:    true,
+			SupportsResponseTimeThreshold: true,
+			SupportsRequestHeaders:        true,
 		},
 	}
 	rec := &fakeRecorder{}
 	startedAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 	sc := &scenario.Scenario{
-		Target:         "bench",
-		CheckFrequency: time.Minute,
-		Keyword:        "uptime-bench-canary",
-		KeywordCheck:   adapter.KeywordCheckPresent,
-		Maintenance:    &scenario.Maintenance{StartOffset: 0, Duration: 5 * time.Minute},
+		Target:                "bench",
+		MonitorKind:           adapter.MonitorKindHTTP,
+		CheckFrequency:        time.Minute,
+		Keyword:               "uptime-bench-canary",
+		KeywordCheck:          adapter.KeywordCheckPresent,
+		ResponseTimeThreshold: 2 * time.Second,
+		RequestHeaders:        map[string]string{"X-Uptime-Bench": "token"},
+		Maintenance:           &scenario.Maintenance{StartOffset: 0, Duration: 5 * time.Minute},
 	}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", startedAt, false)
 
 	if provisionErr {
@@ -771,6 +951,15 @@ func TestProvisionAdapters_HappyPath(t *testing.T) {
 	if a.provisionedAs.Keyword != "uptime-bench-canary" {
 		t.Errorf("ProvisionConfig.Keyword = %q", a.provisionedAs.Keyword)
 	}
+	if a.provisionedAs.MonitorKind != adapter.MonitorKindHTTP {
+		t.Errorf("ProvisionConfig.MonitorKind = %q", a.provisionedAs.MonitorKind)
+	}
+	if a.provisionedAs.ResponseTimeThreshold != 2*time.Second {
+		t.Errorf("ProvisionConfig.ResponseTimeThreshold = %v", a.provisionedAs.ResponseTimeThreshold)
+	}
+	if a.provisionedAs.RequestHeaders["X-Uptime-Bench"] != "token" {
+		t.Errorf("ProvisionConfig.RequestHeaders = %+v", a.provisionedAs.RequestHeaders)
+	}
 	if a.provisionedAs.MaintenanceWindow == nil {
 		t.Errorf("ProvisionConfig.MaintenanceWindow should be set when scenario.Maintenance != nil")
 	}
@@ -781,8 +970,8 @@ func TestProvisionAdapters_HappyPath(t *testing.T) {
 
 // TestProvisionAdapters_ProvisionErrorSetsFlag — adapter passes all
 // gates but Provision returns a Go error. Should set provisionErr=true,
-// produce no handle, and write no capability_mismatch row (the adapter
-// was tried; it just failed mid-call).
+// produce no handle, and write an adapter_error row so the provider/API
+// failure is queryable from monitor_reports.
 func TestProvisionAdapters_ProvisionErrorSetsFlag(t *testing.T) {
 	a := &gateTestAdapter{
 		id:           "svc",
@@ -792,7 +981,7 @@ func TestProvisionAdapters_ProvisionErrorSetsFlag(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", CheckFrequency: time.Minute}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if !provisionErr {
@@ -801,8 +990,15 @@ func TestProvisionAdapters_ProvisionErrorSetsFlag(t *testing.T) {
 	if len(handles) != 0 {
 		t.Errorf("handles = %+v, want none (provision failed)", handles)
 	}
-	if len(rec.monitorReportRows) != 0 {
-		t.Errorf("no capability_mismatch row should be written for a Provision error; got %+v", rec.monitorReportRows)
+	if len(rec.monitorReportRows) != 1 {
+		t.Fatalf("expected one adapter_error row, got %+v", rec.monitorReportRows)
+	}
+	row := rec.monitorReportRows[0]
+	if row.ReasonCode != adapter.ReasonAdapterError {
+		t.Errorf("row.ReasonCode = %q, want %q", row.ReasonCode, adapter.ReasonAdapterError)
+	}
+	if !strings.Contains(row.RetrieveUnknownReason, "provider returned 500") {
+		t.Errorf("row.RetrieveUnknownReason = %q, want provider error detail", row.RetrieveUnknownReason)
 	}
 }
 
@@ -835,7 +1031,7 @@ func TestProvisionAdapters_MixedAdapters(t *testing.T) {
 		KeywordCheck:   adapter.KeywordCheckPresent,
 	}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{good, gated, failing}, rec, "run-1", time.Now(), false)
 
 	if !provisionErr {
@@ -844,9 +1040,18 @@ func TestProvisionAdapters_MixedAdapters(t *testing.T) {
 	if len(handles) != 1 || handles[0].handle.ServiceID != "good" {
 		t.Errorf("handles = %+v, want one entry from 'good'", handles)
 	}
-	// Exactly one capability_mismatch row, from 'gated'.
-	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ServiceID != "gated" {
-		t.Errorf("expected one capability_mismatch row from 'gated', got %+v", rec.monitorReportRows)
+	if len(rec.monitorReportRows) != 2 {
+		t.Fatalf("expected capability_mismatch and adapter_error rows, got %+v", rec.monitorReportRows)
+	}
+	rowsByService := map[string]db.MonitorReportRow{}
+	for _, row := range rec.monitorReportRows {
+		rowsByService[row.ServiceID] = row
+	}
+	if rowsByService["gated"].ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("expected capability_mismatch row from 'gated', got %+v", rec.monitorReportRows)
+	}
+	if rowsByService["failing"].ReasonCode != adapter.ReasonAdapterError {
+		t.Errorf("expected adapter_error row from 'failing', got %+v", rec.monitorReportRows)
 	}
 	// 'good' was provisioned, 'gated' was not, 'failing' was attempted (Provision called).
 	if good.provisionedAs == nil {

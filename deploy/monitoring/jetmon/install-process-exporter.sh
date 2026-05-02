@@ -3,11 +3,12 @@ set -euo pipefail
 
 hosts=("$@")
 if [[ "${#hosts[@]}" -eq 0 ]]; then
-  hosts=(jetmon-service-host-1 jetmon-service-host-2)
+  hosts=(jetmon-v1.example.com jetmon-v2.example.com)
 fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-ssh_config="${SSH_CONFIG:-/home/gaarai/.ssh/config}"
+ssh_config="${SSH_CONFIG:-$HOME/.ssh/config}"
+prometheus_cidr="${PROMETHEUS_CIDR:-203.0.113.0/24}"
 
 for host in "${hosts[@]}"; do
   echo "Installing process exporter on ${host}"
@@ -24,7 +25,6 @@ for host in "${hosts[@]}"; do
   ssh -F "$ssh_config" -S none -o BatchMode=yes -o ControlMaster=no "$host" sudo install -m 0644 -o root -g root /tmp/prometheus-process-exporter.default /etc/default/prometheus-process-exporter
   ssh -F "$ssh_config" -S none -o BatchMode=yes -o ControlMaster=no "$host" sudo systemctl enable --now prometheus-process-exporter
   ssh -F "$ssh_config" -S none -o BatchMode=yes -o ControlMaster=no "$host" sudo systemctl restart prometheus-process-exporter
-  ssh -F "$ssh_config" -S none -o BatchMode=yes -o ControlMaster=no "$host" sudo ufw allow from 10.0.0.0/24 to any port 9256 proto tcp
-  ssh -F "$ssh_config" -S none -o BatchMode=yes -o ControlMaster=no "$host" sudo ufw allow from 100.64.0.0/10 to any port 9256 proto tcp
+  ssh -F "$ssh_config" -S none -o BatchMode=yes -o ControlMaster=no "$host" sudo ufw allow from "$prometheus_cidr" to any port 9256 proto tcp
   ssh -F "$ssh_config" -S none -o BatchMode=yes -o ControlMaster=no "$host" curl -fsS http://127.0.0.1:9256/metrics >/dev/null
 done

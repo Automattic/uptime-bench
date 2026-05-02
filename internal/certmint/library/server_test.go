@@ -51,9 +51,9 @@ func TestServer_ManifestRoundTripsThroughHTTP(t *testing.T) {
 	priv := filepath.Join(dir, "privkey.pem")
 	entries := []manifest.Entry{{
 		ID:                "abc123",
-		Domain:            "harmonic.party",
+		Domain:            "example.com",
 		Profile:           "classic",
-		Identifiers:       []string{"harmonic.party", "*.harmonic.party"},
+		Identifiers:       []string{"example.com", "*.example.com"},
 		NotAfter:          time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC),
 		FingerprintSHA256: "deadbeef",
 		Paths:             manifest.Paths{Cert: cert, FullChain: full, PrivKey: priv},

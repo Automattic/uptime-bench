@@ -201,6 +201,11 @@ type Capabilities struct {
 	// MinCheckFrequency is the shortest check interval the service supports.
 	MinCheckFrequency time.Duration
 
+	// MonitorKinds lists the native monitor kinds this adapter can
+	// provision. Empty means HTTP only, which matches the original
+	// adapter contract.
+	MonitorKinds []string
+
 	// SupportsKeyword indicates whether the service can verify a keyword
 	// in the response body. When true, the adapter must honour
 	// ProvisionConfig.Keyword in present-mode (alert when keyword is
@@ -233,9 +238,43 @@ type Capabilities struct {
 	// See docs/inter-run-state-design.md.
 	SupportsCooldownReset bool
 
+	// SupportsResponseTimeThreshold indicates whether the adapter can
+	// configure a monitor-side response-time assertion. Slow-success
+	// scenarios use this to avoid treating services without threshold
+	// support as false negatives.
+	SupportsResponseTimeThreshold bool
+
+	// SupportsRequestHeaders indicates whether the adapter can configure
+	// custom request headers on the monitor probe.
+	SupportsRequestHeaders bool
+
 	// DefaultMaxCallsPerRun is the adapter's default API call budget per run.
 	// 0 means unlimited. The fleet.toml value takes precedence when present.
 	DefaultMaxCallsPerRun int
+}
+
+const (
+	MonitorKindHTTP           = "http"
+	MonitorKindDNS            = "dns"
+	MonitorKindTCP            = "tcp"
+	MonitorKindSSLCertificate = "ssl_certificate"
+	MonitorKindHeartbeat      = "heartbeat"
+)
+
+func (c Capabilities) SupportsMonitorKind(kind string) bool {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = MonitorKindHTTP
+	}
+	if len(c.MonitorKinds) == 0 {
+		return kind == MonitorKindHTTP
+	}
+	for _, supported := range c.MonitorKinds {
+		if supported == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // Target describes the endpoint to monitor.
@@ -247,6 +286,7 @@ type Target struct {
 // ProvisionConfig carries the parameters the adapter uses to configure the monitor.
 type ProvisionConfig struct {
 	CheckFrequency time.Duration
+	MonitorKind    string
 
 	// Keyword and KeywordCheck request body-content monitoring. Empty
 	// Keyword disables keyword checking; the adapter falls back to a
@@ -265,6 +305,14 @@ type ProvisionConfig struct {
 	// the adapter.
 	Keyword      string
 	KeywordCheck string
+
+	// ResponseTimeThreshold requests an alert when the completed response
+	// exceeds this duration. Zero means no threshold assertion.
+	ResponseTimeThreshold time.Duration
+
+	// RequestHeaders are custom headers the monitor should send with its
+	// probe request. Empty means provider defaults.
+	RequestHeaders map[string]string
 
 	// MaintenanceWindow, when non-nil, requests a vendor-side maintenance
 	// window covering [Start, End]. The adapter must configure the
@@ -342,6 +390,12 @@ type RetrieveResult struct {
 // See docs/events.md for the reporting rules and
 // docs/inter-run-state-design.md for the maintenance/cooldown codes.
 const (
+	// ReasonAdapterError: the adapter failed before it could produce a
+	// usable monitor result, usually during provision or retrieval. The
+	// row is operationally invalid for service-behavior scoring but is
+	// still part of provider/API reliability data.
+	ReasonAdapterError = "adapter_error"
+
 	// ReasonCapabilityMismatch: the harness skipped Provision because
 	// the scenario required a capability the adapter doesn't support.
 	// Never counted as a false negative; queryable as the support matrix.

@@ -171,6 +171,75 @@ func TestVHH_HTTPStatusFallsBackTo500(t *testing.T) {
 	}
 }
 
+func TestVHH_HTTPLatencyReturnsHealthyBodyAfterDelay(t *testing.T) {
+	h, reg := newHandler()
+	reg.Set(control.FailureSpec{
+		Type: "http_latency", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{"delay": "10ms"},
+	}, 0)
+
+	start := time.Now()
+	w := get(t, h, "site.local", "/")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if elapsed := time.Since(start); elapsed < 10*time.Millisecond {
+		t.Fatalf("elapsed = %v, want at least 10ms", elapsed)
+	}
+	if !strings.Contains(w.Body.String(), "uptime-bench-canary") {
+		t.Fatal("latency response should still be the healthy page")
+	}
+}
+
+func TestVHH_HTTPHeaderStatusOnlyFailsWhenHeaderMatches(t *testing.T) {
+	h, reg := newHandler()
+	reg.Set(control.FailureSpec{
+		Type: "http_header_status", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{
+			"status_code":  float64(503),
+			"header_name":  "X-Uptime-Bench",
+			"header_value": "token",
+		},
+	}, 0)
+
+	without := request(t, h, http.MethodGet, "site.local", "/")
+	if without.Code != http.StatusOK {
+		t.Fatalf("without header status = %d, want 200", without.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://site.local/", nil)
+	req.Host = "site.local"
+	req.Header.Set("X-Uptime-Bench", "token")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("with header status = %d, want 503", w.Code)
+	}
+}
+
+func TestVHH_HTTPHeaderStatusValueOptionalRequiresPresence(t *testing.T) {
+	h, reg := newHandler()
+	reg.Set(control.FailureSpec{
+		Type: "http_header_status", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{
+			"status_code": float64(503),
+			"header_name": "X-Uptime-Bench",
+		},
+	}, 0)
+
+	without := request(t, h, http.MethodGet, "site.local", "/")
+	if without.Code != http.StatusOK {
+		t.Fatalf("without header status = %d, want 200", without.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://site.local/", nil)
+	req.Host = "site.local"
+	req.Header.Set("X-Uptime-Bench", "any")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("with header status = %d, want 503", w.Code)
+	}
+}
+
 func TestVHH_HTTPMethodStatus_HeadFailsGetHealthy(t *testing.T) {
 	h, reg := newHandler()
 	reg.Set(control.FailureSpec{
@@ -587,7 +656,7 @@ func TestHandleTCP_ForwardsHealthyRequest(t *testing.T) {
 // ─── benchmarks (for the canary regression check) ───────────────────────────
 
 func BenchmarkPeekHTTPHost(b *testing.B) {
-	in := "GET /api/health HTTP/1.1\r\nUser-Agent: monitor/1.0\r\nHost: bench-a.harmonic.party\r\nAccept: */*\r\n\r\n"
+	in := "GET /api/health HTTP/1.1\r\nUser-Agent: monitor/1.0\r\nHost: bench-a.example.com\r\nAccept: */*\r\n\r\n"
 	for i := 0; i < b.N; i++ {
 		br := bufio.NewReaderSize(bytes.NewReader([]byte(in)), 4096)
 		_ = peekHTTPHost(br)

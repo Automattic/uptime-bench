@@ -113,7 +113,7 @@ These are three distinct outcomes and must never be conflated:
 Both Unknown and capability mismatch are recorded with `retrieve_status = unknown`, but they're distinguished by the `reason_code` field (free-form `reason` carries the human-readable detail). Reporting and any accuracy/coverage calculations must use `reason_code` to keep the three categories separate:
 
 - True/false positives and true/false negatives are computed only over rows where `reason_code` is empty and no suppression-specific metadata explains the missing alert.
-- Unknown rates are computed over rows where `reason_code` indicates an adapter-side or API-side problem (e.g. `api_unreachable`, `rate_limited`, `auth_failed`).
+- Unknown rates are computed over rows where `reason_code` indicates an adapter-side or API-side problem. Provision and retrieve failures use `reason_code = "adapter_error"`; adapters may use more specific API codes such as `api_unreachable`, `rate_limited`, or `auth_failed` when they can return a structured Unknown result.
 - Capability-mismatch rates are computed over rows where `reason_code = "capability_mismatch"` and form the **support matrix** — for any given scenario, which services have the feature needed to detect the failure. This is a first-class deliverable of the project, not a noise filter.
 - Maintenance, cooldown, and TLS advisory outcomes are computed as derived metrics (`maintenance_suppressed`, `cooldown_suppressed`, `cooldown_uncertain`, `tls_advisory_detected`, `tls_advisory_missed`, `tls_advisory_false_outage`) and stay out of the false-negative denominator.
 
@@ -134,8 +134,9 @@ Never count Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppr
 
 `cmd/uptime-bench-report` loads `monitor_reports.reason_code` alongside
 `derived_metrics`, surfaces `capability_mismatch` counts as a separate report
-column, and emits bias self-checks so sample imbalance or uncategorized Unknown
-rows are visible before latency numbers.
+column, prints a reason-code table for structured rows such as
+`adapter_error`, and emits bias self-checks so sample imbalance or
+uncategorized Unknown rows are visible before latency numbers.
 
 ---
 

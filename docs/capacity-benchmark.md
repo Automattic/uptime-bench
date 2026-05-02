@@ -16,8 +16,8 @@ make capacity-metrics
 
 Defaults:
 
-- Prometheus: `http://10.0.0.67:9091`
-- instances: `jetmon-service-host-1,jetmon-service-host-2`
+- Prometheus: `http://prometheus.example.com:9090`
+- instances: `jetmon-v1.example.com,jetmon-v2.example.com`
 - window: last `15m`
 - output: table
 
@@ -25,8 +25,8 @@ Equivalent direct command:
 
 ```sh
 bin/uptime-bench-capacity \
-  -prometheus-url=http://10.0.0.67:9091 \
-  -instances=jetmon-service-host-1,jetmon-service-host-2 \
+  -prometheus-url=http://prometheus.example.com:9090 \
+  -instances=jetmon-v1.example.com,jetmon-v2.example.com \
   -duration=15m
 ```
 
@@ -34,8 +34,8 @@ Use exact timestamps for benchmark windows:
 
 ```sh
 bin/uptime-bench-capacity \
-  -prometheus-url=http://10.0.0.67:9091 \
-  -instances=jetmon-service-host-1,jetmon-service-host-2 \
+  -prometheus-url=http://prometheus.example.com:9090 \
+  -instances=jetmon-v1.example.com,jetmon-v2.example.com \
   -start=2026-04-30T18:00:00Z \
   -end=2026-04-30T18:30:00Z \
   -format=json
@@ -45,7 +45,7 @@ For a finished scenario report directory, capture the exact run window from
 `run.meta.tsv` and write capacity artifacts into the report:
 
 ```sh
-make capacity-capture-run CAPACITY_RUN_DIR=reports/unrun90m-20260430-191911Z
+make capacity-capture-run CAPACITY_RUN_DIR=reports/example-run-20260430-191911Z
 ```
 
 This writes `capacity/prometheus-window.{json,txt}` and, by default, a
@@ -58,29 +58,29 @@ The capacity collector expects these scrape labels:
 
 | Job | Required instances | Purpose |
 |---|---|---|
-| `node` | `jetmon-service-host-1`, `jetmon-service-host-2` | host CPU, memory, disk, network, scrape health |
-| `cadvisor` | `jetmon-service-host-1`, `jetmon-service-host-2` | host/system cgroup metrics and cAdvisor scrape health |
-| `dockerstats` | `jetmon-service-host-1`, `jetmon-service-host-2` | Docker container CPU, memory, network, and scrape health |
-| `process` | `jetmon-service-host-1`, `jetmon-service-host-2` | native Jetmon process CPU, RSS, counts, threads, and open file descriptors |
+| `node` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | host CPU, memory, disk, network, scrape health |
+| `cadvisor` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | host/system cgroup metrics and cAdvisor scrape health |
+| `dockerstats` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | Docker container CPU, memory, network, and scrape health |
+| `process` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | native Jetmon process CPU, RSS, counts, threads, and open file descriptors |
 
-The monitoring Prometheus for this work is `10.0.0.67:9091` on
-`jetmon-vm-host-3`; do not use any retired or unrelated Prometheus running on
+The monitoring Prometheus for this work is `prometheus.example.com:9090` on
+`monitoring.example.com`; do not use any retired or unrelated Prometheus running on
 the network.
 
 Useful readiness checks:
 
 ```promql
-up{job=~"node|cadvisor|dockerstats|process",instance=~"jetmon-service-host-1|jetmon-service-host-2"}
-uptime_bench_dockerstats_scrape_success{job="dockerstats",instance=~"jetmon-service-host-1|jetmon-service-host-2"}
-namedprocess_namegroup_num_procs{job="process",instance=~"jetmon-service-host-1|jetmon-service-host-2"}
+up{job=~"node|cadvisor|dockerstats|process",instance=~"jetmon-v1.example.com|jetmon-v2.example.com"}
+uptime_bench_dockerstats_scrape_success{job="dockerstats",instance=~"jetmon-v1.example.com|jetmon-v2.example.com"}
+namedprocess_namegroup_num_procs{job="process",instance=~"jetmon-v1.example.com|jetmon-v2.example.com"}
 ```
 
 All returned series should be `1`.
 
 ## Grafana Dashboards
 
-The Grafana instance for this work is `http://10.0.0.67:3001`. The admin
-password is stored on `jetmon-vm-host-3` in
+The Grafana instance for this work is `http://grafana.example.com:3000`. The admin
+password is stored on `monitoring.example.com` in
 `/home/jetmon/jetmon-monitoring/.env`.
 
 Provisioned dashboards:
@@ -98,14 +98,14 @@ links between fleet overview, host detail, and container detail while preserving
 the selected time range and variables.
 
 The monitoring stack itself is managed in
-`deploy/monitoring/jetmon/`. Sync it to `jetmon-vm-host-3` with:
+`deploy/monitoring/jetmon/`. Sync it to `monitoring.example.com` with:
 
 ```sh
 deploy/monitoring/jetmon/sync-to-host.sh
 ```
 
 Grafana SQLite backups are scheduled by `jetmon-grafana-backup.timer` on
-`jetmon-vm-host-3` and retained under
+`monitoring.example.com` and retained under
 `/home/jetmon/jetmon-monitoring/backups/grafana/`.
 
 The Jetmon hosts currently run Docker 29 with the `overlayfs` containerd
@@ -127,13 +127,13 @@ Example `targets.d/dockerstats_jetmon.yml`:
 
 ```yaml
 - labels:
-    instance: jetmon-service-host-1
+    instance: jetmon-v1.example.com
   targets:
-    - 10.0.0.170:9103
+    - 203.0.113.170:9103
 - labels:
-    instance: jetmon-service-host-2
+    instance: jetmon-v2.example.com
   targets:
-    - 10.0.0.171:9103
+    - 203.0.113.171:9103
 ```
 
 The same example is tracked in
@@ -169,8 +169,8 @@ count, average, p50, p95, max, and last value.
 Deploy the Docker stats exporter to a Jetmon host with:
 
 ```sh
-deploy/dockerstats-exporter.sh 10.0.0.170 jetmon
-deploy/dockerstats-exporter.sh 10.0.0.171 jetmon
+deploy/dockerstats-exporter.sh 203.0.113.170 jetmon
+deploy/dockerstats-exporter.sh 203.0.113.171 jetmon
 ```
 
 The deploy helper installs the binary at
@@ -242,26 +242,27 @@ Host header, use `-connect-address=<target-ip>:80`.
 
 ### Local Target Capacity Lab
 
-For the current Jetmon lab, use the generated target namespace under
-`load.steadycadence.party`:
+For a delegated capacity lab, use a generated target namespace under a placeholder such as
+`load.example.com`:
 
 ```toml
 [[targets]]
 id           = "capacity-a"
-address      = "167.99.13.237"
+address      = "203.0.113.20"
 control_port = 9000
 
   [[targets.generated_sites]]
   id           = "capacity-load"
-  host_pattern = "site-%07d.load.steadycadence.party"
+  host_pattern = "site-%07d.load.example.com"
   start        = 1
   count        = 1000000
   paths        = ["/"]
 ```
 
-This only requires updating the fleet DNS config and restarting the fleet DNS
-services after the updated DNS binary is deployed. It does not require registrar
-changes because `steadycadence.party` already delegates to the fleet DNS hosts.
+This requires updating the private fleet DNS config and restarting the fleet DNS
+services after the updated DNS binary is deployed. In a real run, use a test
+domain that delegates to the fleet DNS hosts; `example.com` is only a committed
+placeholder.
 
 `configs/capacity/targetload.local.toml` defines a one-host lab for
 target-capacity checks. It serves one million generated hosts under
@@ -280,13 +281,13 @@ go build -o /tmp/uptime-bench-target ./cmd/target
 go build -o /tmp/uptime-bench-dns ./cmd/dns
 go build -o /tmp/uptime-bench-targetload ./cmd/uptime-bench-targetload
 
-ssh -F ~/.ssh/config jetmon-deploy-test \
+ssh -F ~/.ssh/config target-lab.example.com \
   'mkdir -p /tmp/uptime-bench-target-capacity/bin'
 scp -F ~/.ssh/config \
   /tmp/uptime-bench-target /tmp/uptime-bench-dns /tmp/uptime-bench-targetload \
-  jetmon-deploy-test:/tmp/uptime-bench-target-capacity/bin/
+  target-lab.example.com:/tmp/uptime-bench-target-capacity/bin/
 scp -F ~/.ssh/config configs/capacity/targetload.local.toml \
-  jetmon-deploy-test:/tmp/uptime-bench-target-capacity/fleet.toml
+  target-lab.example.com:/tmp/uptime-bench-target-capacity/fleet.toml
 ```
 
 On the lab host, run the target and DNS commands in separate terminals or under
@@ -438,8 +439,8 @@ up in checked-in configs or dry-run artifacts. If the DB ports are only bound on
 the service hosts, open SSH tunnels before running the local orchestrator:
 
 ```sh
-ssh -F ~/.ssh/config -N -L 13307:127.0.0.1:3307 jetmon-service-host-1
-ssh -F ~/.ssh/config -N -L 23307:127.0.0.1:3307 jetmon-service-host-2
+ssh -F ~/.ssh/config -N -L 13307:127.0.0.1:3307 jetmon-v1.example.com
+ssh -F ~/.ssh/config -N -L 23307:127.0.0.1:3307 jetmon-v2.example.com
 
 export JETMON_V1_DB_DSN='root:...@tcp(127.0.0.1:13307)/jetmon_db?parseTime=true&loc=UTC'
 export JETMON_V2_DB_DSN='jetmon:...@tcp(127.0.0.1:23307)/jetmon_db?parseTime=true&loc=UTC'

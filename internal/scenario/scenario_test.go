@@ -159,6 +159,22 @@ type    = "http_redirect"
 method  = "POST"
 variant = "loop"
 `, "method must be one of"},
+		{"bad monitor kind", `
+monitor_kind = "browser"
+
+[[failures]]
+type        = "http_status"
+status_code = 503
+`, "monitor_kind must be one of"},
+		{"http_latency missing delay", `
+[[failures]]
+type = "http_latency"
+`, "delay is required for http_latency"},
+		{"http_header_status missing header", `
+[[failures]]
+type        = "http_header_status"
+status_code = 403
+`, "header_name is required for http_header_status"},
 		{"http_method_status bad code", `
 [[failures]]
 type        = "http_method_status"
@@ -189,6 +205,44 @@ duration    = "-1s"
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantSubstr)
 			}
 		})
+	}
+}
+
+func TestMonitorKindThresholdAndHeadersParse(t *testing.T) {
+	const body = `
+id              = "x"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+monitor_kind    = "http"
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "60s"
+response_time_threshold = "2s"
+request_headers = { "X-Uptime-Bench" = "scenario-token" }
+
+[[failures]]
+type        = "http_header_status"
+status_code = 503
+header_name = "X-Uptime-Bench"
+header_value = "scenario-token"
+`
+	sc, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if sc.MonitorKind != "http" {
+		t.Fatalf("MonitorKind = %q, want http", sc.MonitorKind)
+	}
+	if sc.ResponseTimeThreshold != 2*time.Second {
+		t.Fatalf("ResponseTimeThreshold = %v, want 2s", sc.ResponseTimeThreshold)
+	}
+	if sc.RequestHeaders["X-Uptime-Bench"] != "scenario-token" {
+		t.Fatalf("RequestHeaders = %+v", sc.RequestHeaders)
+	}
+	f := sc.Failures[0]
+	if f.Type != "http_header_status" || f.HeaderName != "X-Uptime-Bench" || f.HeaderValue != "scenario-token" || f.StatusCode != 503 {
+		t.Fatalf("failure = %+v, want header-gated 503", f)
 	}
 }
 

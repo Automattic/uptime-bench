@@ -17,12 +17,15 @@ All duration fields use Go's `time.ParseDuration` format: a number followed by a
 | `description` | string | no | — | Human-readable summary of what the scenario tests. |
 | `target` | string | yes | — | ID of the target endpoint to inject failures against. |
 | `monitors` | array of strings | yes | — | Service instance IDs to evaluate, matching the `id` fields in `services.toml` (e.g. `["jetmon-v1", "pingdom"]`). Only enabled services are used; disabled services with a matching ID are skipped. |
+| `monitor_kind` | string | no | `"http"` | Native monitor kind requested from the adapter. Supported schema values are `"http"`, `"dns"`, `"tcp"`, `"ssl_certificate"`, and `"heartbeat"`. Adapters that cannot provision the requested kind are skipped with `reason_code = "capability_mismatch"`. |
 | `check_frequency` | duration string | yes | — | Check interval configured for all monitors during this run. |
 | `grace_period` | duration string | yes | — | Time allowed after failure injection ends for monitors to resolve the incident. |
 | `duration` | duration string | yes | — | How long failure injection is active. All `[[failures]]` blocks run for this duration. |
 | `seed` | integer | no | random | Random seed for reproducible injection. If omitted, the runner generates a seed and records it in the run output. Always specify for formal comparison runs. |
 | `keyword` | string | conditional | canary string | Scenario-level keyword used by both target and monitor for `http_body` content scenarios. Required when any failure is `content = "keyword_injected"` (no default — it is the bad string being injected). Defaults to `"uptime-bench-canary"` for other content variants. |
 | `keyword_check` | string | no | inferred | One of `"present"` or `"absent"`. `"present"` means the monitor alerts when `keyword` is missing from the body (the canary case). `"absent"` means the monitor alerts when `keyword` is found (the injected-bad-keyword case). Defaults to `"absent"` if any failure is `keyword_injected`, otherwise `"present"`. |
+| `response_time_threshold` | duration string | no | — | Monitor-side response-time threshold for slow-success scenarios. Adapters that cannot configure a threshold are skipped with `capability_mismatch`. |
+| `request_headers` | TOML inline table | no | — | Custom headers the monitor should send with the probe, e.g. `{ "X-Uptime-Bench" = "token" }`. Adapters that cannot configure headers are skipped with `capability_mismatch`. |
 
 ### Optional `[maintenance]` block
 
@@ -94,6 +97,48 @@ Delays or withholds the response at a specific phase of the HTTP exchange.
 type  = "http_timeout"
 phase = "ttfb"
 delay = "10s"
+```
+
+---
+
+### `http_latency`
+
+Delays the response and then returns the normal healthy 200 OK body. This tests monitors that support response-time threshold assertions; unlike `http_timeout`, the request eventually succeeds.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `method` | string | no | any | Optional request-method predicate. If set, only `"GET"` or `"HEAD"` requests trigger this latency; other methods receive the healthy response immediately. |
+| `delay` | duration string | yes | — | How long to delay the otherwise-healthy response. Pair with top-level `response_time_threshold`. |
+
+```toml
+response_time_threshold = "2s"
+
+[[failures]]
+type  = "http_latency"
+delay = "5s"
+```
+
+---
+
+### `http_header_status`
+
+Returns a configured HTTP status code only when the probe includes the expected header. This tests monitor support for custom request headers without making ordinary browser traffic unhealthy.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `status_code` | integer | yes | — | HTTP status code to return when the header matches. |
+| `header_name` | string | yes | — | Header name to match. |
+| `header_value` | string | no | any value | Header value to match exactly. If omitted, only header presence is required. |
+| `method` | string | no | any | Optional request-method predicate. |
+
+```toml
+request_headers = { "X-Uptime-Bench" = "header-status" }
+
+[[failures]]
+type         = "http_header_status"
+status_code  = 503
+header_name  = "X-Uptime-Bench"
+header_value = "header-status"
 ```
 
 ---
