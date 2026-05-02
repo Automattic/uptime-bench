@@ -1,10 +1,12 @@
 package jetmoncapacity
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/url"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -197,6 +199,47 @@ func WriteSQL(w io.Writer, plan Plan) error {
 		writeVerifySQL(w, plan.Config, plan.FreshSinceMinutes)
 	}
 	return nil
+}
+
+// RenderSQL renders a SQL lifecycle plan to a string.
+func RenderSQL(plan Plan) (string, error) {
+	var out bytes.Buffer
+	if err := WriteSQL(&out, plan); err != nil {
+		return "", err
+	}
+	return out.String(), nil
+}
+
+// RenderActiveCountSQL renders a verification query for the active row count.
+func RenderActiveCountSQL(c Config) (string, error) {
+	c = c.Normalize()
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`SELECT
+  COUNT(*) AS active_sites
+FROM jetpack_monitor_sites
+WHERE blog_id BETWEEN %d AND %d
+  AND monitor_active = 1;
+`, c.BlogIDStart, c.BlogIDEnd()), nil
+}
+
+// RenderSeedSafetySQL renders a preflight query for destructive seed resets.
+func RenderSeedSafetySQL(c Config) (string, error) {
+	c = c.Normalize()
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	likePattern, err := generatedURLLikePattern(c.URLPattern)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`SELECT
+  COUNT(*) AS total_rows,
+  SUM(CASE WHEN monitor_url LIKE %s ESCAPE '\\' THEN 1 ELSE 0 END) AS matching_url_rows
+FROM jetpack_monitor_sites
+WHERE blog_id BETWEEN %d AND %d;
+`, sqlString(likePattern), c.BlogIDStart, c.BlogIDEnd()), nil
 }
 
 func writeHeader(w io.Writer, plan Plan) {
@@ -428,4 +471,64 @@ func formatMonitorURL(pattern string, number int64) (string, error) {
 
 func sqlString(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func generatedURLLikePattern(pattern string) (string, error) {
+	start, end, err := integerPlaceholderBounds(pattern)
+	if err != nil {
+		return "", err
+	}
+	return sqlLikeEscape(pattern[:start]) + "%" + sqlLikeEscape(pattern[end:]), nil
+}
+
+func integerPlaceholderBounds(pattern string) (int, int, error) {
+	foundStart := -1
+	foundEnd := -1
+	for i := 0; i < len(pattern); i++ {
+		if pattern[i] != '%' {
+			continue
+		}
+		if i+1 < len(pattern) && pattern[i+1] == '%' {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(pattern) {
+			r := rune(pattern[j])
+			if strings.ContainsRune("#0+- ", r) || unicode.IsDigit(r) {
+				j++
+				continue
+			}
+			if r == '.' {
+				j++
+				for j < len(pattern) && unicode.IsDigit(rune(pattern[j])) {
+					j++
+				}
+				continue
+			}
+			break
+		}
+		if j >= len(pattern) {
+			return 0, 0, fmt.Errorf("url pattern contains incomplete fmt placeholder")
+		}
+		if !strings.ContainsRune("vdboxXU", rune(pattern[j])) {
+			return 0, 0, fmt.Errorf("url pattern placeholder must be integer-like")
+		}
+		if foundStart != -1 {
+			return 0, 0, fmt.Errorf("url pattern must contain exactly one fmt integer placeholder")
+		}
+		foundStart = i
+		foundEnd = j + 1
+	}
+	if foundStart == -1 {
+		return 0, 0, fmt.Errorf("url pattern must contain exactly one fmt integer placeholder")
+	}
+	return foundStart, foundEnd, nil
+}
+
+func sqlLikeEscape(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	value = strings.ReplaceAll(value, `_`, `\_`)
+	return value
 }

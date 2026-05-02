@@ -12,9 +12,10 @@ step = "15s"
 rate_window = "2m"
 
 [targets]
-domain = "load.example.com"
-url_pattern = "http://site-%07d.load.example.com/"
+domain = "load.steadycadence.party"
+url_pattern = "http://site-%07d.load.steadycadence.party/"
 count = 1000000
+url_start = 1
 
 [checks]
 interval = "1m"
@@ -43,6 +44,9 @@ bulk_lifecycle = "bridge_or_db_seeded_range"
   bucket_min = 0
   bucket_max = 99
   check_interval = "1m"
+  batch_size = 1000
+  dsn_env = "JETMON_V1_DB_DSN"
+  # dsn_file = "/run/secrets/jetmon-v1-capacity-dsn"
 
 [jetmon_v2]
 api_url = "http://jetmon-v2:8090/api/v1"
@@ -55,3 +59,6 @@ bulk_lifecycle = "api_or_db_seeded_range"
   bucket_min = 0
   bucket_max = 99
   check_interval = "1m"
+  batch_size = 1000
+  dsn_env = "JETMON_V2_DB_DSN"
+  # dsn_file = "/run/secrets/jetmon-v2-capacity-dsn"
