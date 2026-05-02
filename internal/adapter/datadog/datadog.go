@@ -17,7 +17,12 @@
 //	id      = "datadog-synthetics"
 //	type    = "datadog-synthetics"
 //	enabled = true
-//	auth    = { api_key = "<DD-API-KEY>", app_key = "<DD-APPLICATION-KEY>" }
+//	auth    = { api_key = "<DD-API-KEY>", app_key = "<DD-APPLICATION-KEY>", http_method = "GET" }
+//
+// Optional auth keys:
+//
+//	http_method — explicit HTTP method for API tests: "GET" or "HEAD".
+//	              Keyword assertions require GET because HEAD has no body.
 //
 // `url` is optional; the default endpoint is https://api.datadoghq.com.
 //
@@ -60,35 +65,49 @@ var classification = map[string]string{
 
 // Adapter implements adapter.Adapter for Datadog Synthetics.
 type Adapter struct {
-	id     string
-	apiURL string
-	apiKey string
-	appKey string
-	client *http.Client
+	id         string
+	apiURL     string
+	apiKey     string
+	appKey     string
+	httpMethod string
+	client     *http.Client
+}
+
+type Option func(*Adapter)
+
+func WithHTTPMethod(method string) Option {
+	return func(a *Adapter) {
+		a.httpMethod = normalizeHTTPMethod(method)
+	}
 }
 
 // New creates a Datadog Synthetics adapter.
-func New(id, apiURL, apiKey, appKey string) *Adapter {
+func New(id, apiURL, apiKey, appKey string, opts ...Option) *Adapter {
 	if apiURL == "" {
 		apiURL = DefaultAPIURL
 	}
-	return &Adapter{
+	a := &Adapter{
 		id:     id,
 		apiURL: strings.TrimRight(apiURL, "/"),
 		apiKey: apiKey,
 		appKey: appKey,
 		client: &http.Client{Timeout: 30 * time.Second},
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 func (a *Adapter) ServiceID() string { return a.id }
 
 func (a *Adapter) Capabilities() adapter.Capabilities {
+	supportsKeyword := !strings.EqualFold(a.httpMethod, http.MethodHead)
 	return adapter.Capabilities{
 		// Datadog Synthetics minimum is 30 seconds.
 		MinCheckFrequency:          30 * time.Second,
-		SupportsKeyword:            true,
-		SupportsInvertedKeyword:    true, // body assertion with operator=doesNotContain
+		SupportsKeyword:            supportsKeyword,
+		SupportsInvertedKeyword:    supportsKeyword, // body assertion with operator=doesNotContain
 		SupportsAgentChecks:        false,
 		SupportsMaintenanceWindows: true,
 		// Cooldown resets naturally because Deprovision deletes the
@@ -192,15 +211,28 @@ func tickEverySeconds(d time.Duration) int {
 	return tiers[0]
 }
 
+func normalizeHTTPMethod(method string) string {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case http.MethodHead:
+		return http.MethodHead
+	default:
+		return http.MethodGet
+	}
+}
+
 func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
 	if a.apiKey == "" || a.appKey == "" {
 		return adapter.MonitorHandle{}, fmt.Errorf("datadog: api_key and app_key are both required")
 	}
+	requestMethod := normalizeHTTPMethod(a.httpMethod)
 
 	assertions := []testAssertion{
 		{Type: "statusCode", Operator: "is", Target: 200},
 	}
 	if config.Keyword != "" {
+		if requestMethod == http.MethodHead {
+			return adapter.MonitorHandle{}, fmt.Errorf("datadog: keyword monitoring is not supported for HEAD checks")
+		}
 		switch config.KeywordCheck {
 		case adapter.KeywordCheckPresent, "":
 			assertions = append(assertions, testAssertion{
@@ -224,7 +256,7 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		Locations: []string{"aws:us-east-1"}, // most accounts have this; operators on EU/etc may need to override via tags
 		Config: testConfig{
 			Request: testRequest{
-				Method: "GET",
+				Method: requestMethod,
 				URL:    target.URL,
 			},
 			Assertions: assertions,

@@ -62,6 +62,16 @@ func TestCapabilities(t *testing.T) {
 	if !c.SupportsKeyword {
 		t.Error("SupportsKeyword should be true")
 	}
+	if !c.SupportsInvertedKeyword {
+		t.Error("SupportsInvertedKeyword should be true")
+	}
+	head := New("better-uptime-head", "http://x", "tok", WithHTTPMethod("HEAD")).Capabilities()
+	if head.SupportsKeyword {
+		t.Error("HEAD lane should not support keyword checks")
+	}
+	if head.SupportsInvertedKeyword {
+		t.Error("HEAD lane should not support inverted keyword checks")
+	}
 }
 
 func TestNormalize(t *testing.T) {
@@ -122,7 +132,7 @@ func TestProvision_RequestShape(t *testing.T) {
 
 	a := newTestAdapter(srv.URL, "tok-abc")
 	handle, err := a.Provision(context.Background(),
-		adapter.Target{ID: "bench-a", URL: "http://bench-a.harmonic.party/"},
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
 		adapter.ProvisionConfig{CheckFrequency: 3 * time.Minute},
 	)
 	if err != nil {
@@ -143,11 +153,14 @@ func TestProvision_RequestShape(t *testing.T) {
 	if err := json.Unmarshal(c.body, &got); err != nil {
 		t.Fatalf("body unmarshal: %v", err)
 	}
-	if got.URL != "http://bench-a.harmonic.party/" {
+	if got.URL != "http://bench-a.example.com/" {
 		t.Errorf("body.url = %q", got.URL)
 	}
 	if got.MonitorType != "status" {
 		t.Errorf("body.monitor_type = %q, want status", got.MonitorType)
+	}
+	if got.HTTPMethod != http.MethodGet {
+		t.Errorf("http_method = %q, want GET", got.HTTPMethod)
 	}
 	if got.CheckFrequency != 180 {
 		t.Errorf("body.check_frequency = %d, want 180 (3m)", got.CheckFrequency)
@@ -198,10 +211,9 @@ func TestProvision_KeywordPresent(t *testing.T) {
 	}
 }
 
-// TestProvision_KeywordAbsentRejected: absent-mode is unsupported for
-// Better Uptime; the adapter must fail loudly instead of silently
-// provisioning a present-mode monitor.
-func TestProvision_KeywordAbsentRejected(t *testing.T) {
+// TestProvision_KeywordAbsent: absent-mode uses Better Stack's
+// keyword_absence monitor type.
+func TestProvision_KeywordAbsent(t *testing.T) {
 	var c captured
 	srv := fakeAPI(t, &c, 201, `{"data":{"id":"1"}}`)
 	defer srv.Close()
@@ -215,18 +227,70 @@ func TestProvision_KeywordAbsentRejected(t *testing.T) {
 			KeywordCheck:   adapter.KeywordCheckAbsent,
 		},
 	)
-	if err == nil {
-		t.Fatal("expected error for absent-mode (SupportsInvertedKeyword = false)")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "absent") {
-		t.Errorf("err = %v, want one mentioning absent", err)
+	var got newMonitorRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.MonitorType != "keyword_absence" {
+		t.Errorf("monitor_type = %q, want keyword_absence", got.MonitorType)
+	}
+	if got.HTTPMethod != http.MethodGet {
+		t.Errorf("http_method = %q, want GET", got.HTTPMethod)
+	}
+	if got.RequiredKeyword != "HACKED" {
+		t.Errorf("required_keyword = %q, want HACKED", got.RequiredKeyword)
 	}
 }
 
-func TestProvision_CapabilitiesMarkInvertedUnsupported(t *testing.T) {
-	c := newTestAdapter("http://x", "tok").Capabilities()
-	if c.SupportsInvertedKeyword {
-		t.Error("SupportsInvertedKeyword should be false (Better Uptime keyword type only supports the canary direction)")
+func TestProvision_HEADStatusUsesConfiguredMethod(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 201, `{"data":{"id":"1"}}`)
+	defer srv.Close()
+
+	a := New("better-uptime-head", srv.URL, "tok", WithHTTPMethod("HEAD"))
+	a.client = http.DefaultClient
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
+		adapter.ProvisionConfig{CheckFrequency: 3 * time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newMonitorRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.MonitorType != "status" {
+		t.Errorf("monitor_type = %q, want status", got.MonitorType)
+	}
+	if got.HTTPMethod != http.MethodHead {
+		t.Errorf("http_method = %q, want HEAD", got.HTTPMethod)
+	}
+}
+
+func TestProvision_HEADKeywordRejected(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 201, `{"data":{"id":"1"}}`)
+	defer srv.Close()
+
+	a := New("better-uptime-head", srv.URL, "tok", WithHTTPMethod("HEAD"))
+	a.client = http.DefaultClient
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: 3 * time.Minute,
+			Keyword:        "uptime-bench-canary",
+			KeywordCheck:   adapter.KeywordCheckPresent,
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error for keyword check on HEAD lane")
+	}
+	if !strings.Contains(err.Error(), "HEAD") {
+		t.Errorf("err = %v, want one mentioning HEAD", err)
 	}
 }
 
@@ -266,7 +330,7 @@ func TestRetrieve_HappyPath_ResolvedIncident(t *testing.T) {
 				"id": "1001",
 				"attributes": {
 					"name": "uptime-bench: bench-a",
-					"url": "http://bench-a.harmonic.party/",
+					"url": "http://bench-a.example.com/",
 					"cause": "HTTP 503",
 					"started_at": "2026-04-25T08:00:00Z",
 					"resolved_at": "2026-04-25T08:05:00Z",

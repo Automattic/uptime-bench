@@ -61,6 +61,19 @@ func TestCapabilities(t *testing.T) {
 	if c.MinCheckFrequency != 30*time.Second {
 		t.Errorf("MinCheckFrequency = %v, want 30s", c.MinCheckFrequency)
 	}
+	if !c.SupportsKeyword {
+		t.Error("SupportsKeyword should be true")
+	}
+	if !c.SupportsInvertedKeyword {
+		t.Error("SupportsInvertedKeyword should be true")
+	}
+	head := New("datadog-head", "http://x", "ak", "pk", WithHTTPMethod("HEAD")).Capabilities()
+	if head.SupportsKeyword {
+		t.Error("HEAD lane should not support keyword checks")
+	}
+	if head.SupportsInvertedKeyword {
+		t.Error("HEAD lane should not support inverted keyword checks")
+	}
 }
 
 func TestNormalize(t *testing.T) {
@@ -113,7 +126,7 @@ func TestProvision_RequestShape(t *testing.T) {
 
 	a := newTestAdapter(srv.URL, "AK", "PK")
 	handle, err := a.Provision(context.Background(),
-		adapter.Target{ID: "bench-a", URL: "http://bench-a.harmonic.party/"},
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
 		adapter.ProvisionConfig{CheckFrequency: time.Minute},
 	)
 	if err != nil {
@@ -146,7 +159,10 @@ func TestProvision_RequestShape(t *testing.T) {
 	if got.Message == "" {
 		t.Error("message must be non-empty: Datadog rejects the create with 400 otherwise")
 	}
-	if got.Config.Request.URL != "http://bench-a.harmonic.party/" {
+	if got.Config.Request.Method != http.MethodGet {
+		t.Errorf("config.request.method = %q, want GET", got.Config.Request.Method)
+	}
+	if got.Config.Request.URL != "http://bench-a.example.com/" {
 		t.Errorf("config.request.url = %q", got.Config.Request.URL)
 	}
 	if got.Options.TickEvery != 60 {
@@ -165,6 +181,55 @@ func TestProvision_RequestShape(t *testing.T) {
 
 	if handle.MonitorID != "abc-def-ghi" {
 		t.Errorf("handle.MonitorID = %q", handle.MonitorID)
+	}
+}
+
+func TestProvision_HEADStatusUsesConfiguredMethod(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"public_id":"a-b-c"}`)
+	defer srv.Close()
+
+	a := New("datadog-head", srv.URL, "AK", "PK", WithHTTPMethod("HEAD"))
+	a.client = http.DefaultClient
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
+		adapter.ProvisionConfig{CheckFrequency: time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newTestRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Config.Request.Method != http.MethodHead {
+		t.Errorf("config.request.method = %q, want HEAD", got.Config.Request.Method)
+	}
+	if len(got.Config.Assertions) != 1 {
+		t.Fatalf("assertions = %d, want status-only", len(got.Config.Assertions))
+	}
+}
+
+func TestProvision_HEADKeywordRejected(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"public_id":"a-b-c"}`)
+	defer srv.Close()
+
+	a := New("datadog-head", srv.URL, "AK", "PK", WithHTTPMethod("HEAD"))
+	a.client = http.DefaultClient
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: time.Minute,
+			Keyword:        "uptime-bench-canary",
+			KeywordCheck:   adapter.KeywordCheckPresent,
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error for keyword check on HEAD lane")
+	}
+	if !strings.Contains(err.Error(), "HEAD") {
+		t.Errorf("err = %v, want one mentioning HEAD", err)
 	}
 }
 

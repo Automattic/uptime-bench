@@ -83,7 +83,16 @@ var Registry = map[string]Factory{
 		if token == "" {
 			return nil, fmt.Errorf("better-uptime: auth.token is required")
 		}
-		return betteruptime.New(id, apiURL, token), nil
+		var opts []betteruptime.Option
+		if method := strings.TrimSpace(auth["http_method"]); method != "" {
+			switch strings.ToUpper(method) {
+			case "GET", "HEAD":
+				opts = append(opts, betteruptime.WithHTTPMethod(method))
+			default:
+				return nil, fmt.Errorf("better-uptime: auth.http_method must be GET or HEAD")
+			}
+		}
+		return betteruptime.New(id, apiURL, token, opts...), nil
 	},
 	"datadog-synthetics": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
 		apiKey := auth["api_key"]
@@ -91,7 +100,16 @@ var Registry = map[string]Factory{
 		if apiKey == "" || appKey == "" {
 			return nil, fmt.Errorf("datadog-synthetics: auth.api_key and auth.app_key are both required")
 		}
-		return datadog.New(id, apiURL, apiKey, appKey), nil
+		var opts []datadog.Option
+		if method := strings.TrimSpace(auth["http_method"]); method != "" {
+			switch strings.ToUpper(method) {
+			case "GET", "HEAD":
+				opts = append(opts, datadog.WithHTTPMethod(method))
+			default:
+				return nil, fmt.Errorf("datadog-synthetics: auth.http_method must be GET or HEAD")
+			}
+		}
+		return datadog.New(id, apiURL, apiKey, appKey, opts...), nil
 	},
 }
 
