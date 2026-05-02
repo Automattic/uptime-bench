@@ -66,8 +66,8 @@ func TestCapabilities(t *testing.T) {
 	if !c.SupportsKeyword {
 		t.Error("SupportsKeyword should be true")
 	}
-	if c.SupportsInvertedKeyword {
-		t.Error("SupportsInvertedKeyword should be false")
+	if !c.SupportsInvertedKeyword {
+		t.Error("SupportsInvertedKeyword should be true")
 	}
 	if !c.SupportsAgentChecks {
 		t.Error("SupportsAgentChecks should be true")
@@ -198,6 +198,9 @@ func TestProvision_RequestShape(t *testing.T) {
 	if got.CheckKeyword != nil {
 		t.Errorf("check_keyword = %q, want nil", *got.CheckKeyword)
 	}
+	if got.ForbiddenKeyword != nil {
+		t.Errorf("forbidden_keyword = %q, want nil", *got.ForbiddenKeyword)
+	}
 	if got.AlertCooldownMinutes == nil || *got.AlertCooldownMinutes != 0 {
 		t.Errorf("alert_cooldown_minutes = %v, want 0", got.AlertCooldownMinutes)
 	}
@@ -242,11 +245,14 @@ func TestProvision_KeywordPresent(t *testing.T) {
 	if got.CheckKeyword == nil || *got.CheckKeyword != "uptime-bench-canary" {
 		t.Fatalf("check_keyword = %v, want uptime-bench-canary", got.CheckKeyword)
 	}
+	if got.ForbiddenKeyword != nil {
+		t.Fatalf("forbidden_keyword = %v, want nil", got.ForbiddenKeyword)
+	}
 }
 
-func TestProvision_KeywordAbsentRejected(t *testing.T) {
+func TestProvision_KeywordAbsent(t *testing.T) {
 	var c captured
-	srv := fakeAPI(t, &c, http.StatusCreated, `{"id":1,"blog_id":1}`)
+	srv := fakeAPI(t, &c, http.StatusCreated, `{"id":8000000000000125,"blog_id":8000000000000125,"monitor_url":"http://bench-a.example/","monitor_active":true}`)
 	defer srv.Close()
 
 	a := newTestAdapter(srv.URL, "tok")
@@ -258,14 +264,19 @@ func TestProvision_KeywordAbsentRejected(t *testing.T) {
 			KeywordCheck:   adapter.KeywordCheckAbsent,
 		},
 	)
-	if err == nil {
-		t.Fatal("expected error for absent-mode")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
 	}
-	if !strings.Contains(err.Error(), "absent") {
-		t.Fatalf("err = %v, want absent", err)
+
+	var got createSiteRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
 	}
-	if c.method != "" {
-		t.Fatalf("expected no request, got %s %s", c.method, c.path)
+	if got.CheckKeyword != nil {
+		t.Fatalf("check_keyword = %v, want nil", got.CheckKeyword)
+	}
+	if got.ForbiddenKeyword == nil || *got.ForbiddenKeyword != "HACKED" {
+		t.Fatalf("forbidden_keyword = %v, want HACKED", got.ForbiddenKeyword)
 	}
 }
 
