@@ -29,6 +29,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 - [Per-component timing retrieval from adapters](#per-component-timing-retrieval-from-adapters)
 - [Redirect baseline change detection](#redirect-baseline-change-detection)
 - [Heartbeat and agent-based reverse checks](#heartbeat-and-agent-based-reverse-checks)
+- [Internet control-plane and provider-scale stretch tests](#internet-control-plane-and-provider-scale-stretch-tests)
 
 ---
 
@@ -844,6 +845,38 @@ uptime-bench's target fleet is currently passive — it responds to probes. Simu
 - Adapter support to provision a heartbeat monitor (endpoint URL, expected interval).
 
 This architectural extension should be designed when the first monitor service ships heartbeat support. The control API and scenario schema are designed to accommodate new failure types without breaking changes, and the monitor-kind field can now route such scenarios away from HTTP-only adapters.
+
+---
+
+## Internet control-plane and provider-scale stretch tests
+
+**Status:** Research-grade stretch goals. Not scheduled. Some may be impossible to run safely without sacrificial domains, owned network resources, commercial provider partnerships, or a dedicated isolated lab.
+
+The current benchmark mainly controls the target, authoritative DNS, TLS certificates, and HTTP behavior. That already covers a large set of real outages, but it does not fully model failures where the internet control plane, registrar, edge provider, transit path, or monitoring provider control plane fails around an otherwise healthy target.
+
+These tests are valuable because they answer a different question: "Does the monitoring service understand this external dependency or global failure mode, or does it only notice the final HTTP symptom?" They should remain separate capability axes. A provider should not be scored as a false negative for a registrar, BGP, browser, CDN, or heartbeat scenario unless the adapter explicitly provisions that capability and the service claims to support it.
+
+Candidate stretch tracks:
+
+- **Registrar and registry failures:** domain expiration, domain approaching expiration, `clientHold` / `serverHold`, registrar parking pages, registrar lock changes, RDAP/WHOIS lookup failures, and registry-side status drift. These require sacrificial domains or registrar/API control and should never risk production-like domains.
+- **Parent-zone delegation failures:** parent NS records diverge from child-zone NS records, glue records are missing or wrong, DS records are broken, or all parent-delegated nameservers become unreachable. This tests delegation awareness rather than ordinary authoritative DNS behavior. It likely needs real delegated test domains or a controlled resolver/registry simulation.
+- **DNSSEC failures:** bogus signatures, expired RRSIGs, broken DS/DNSKEY chains, NSEC/NSEC3 edge cases, and validation failures that only DNSSEC-validating resolvers see. This requires DNSSEC-capable authoritative infrastructure and careful separation between native DNS monitors and HTTP monitors that only observe downstream lookup failure.
+- **IPv6-specific reachability:** AAAA exists but IPv6 is unreachable while IPv4 works, IPv6 TLS differs from IPv4 TLS, or IPv6 latency is pathological. This is more achievable than BGP work, but it requires an IPv6-capable fleet and report metadata that records which address family a monitor used.
+- **Network path and ASN partitions:** failures scoped to one monitor region, one cloud provider, one ASN, one country, or one known probe CIDR group. The practical version is target-side firewall filtering using verified probe IP metadata. The risky version is real route manipulation.
+- **BGP and transit failures:** destination prefix withdrawal, route leaks, blackholes, route flapping, upstream transit provider outage, or nullrouting by a major ISP. These are high-value but likely require an owned prefix/ASN, a network lab, or provider partnerships. They should not be attempted on shared production networks.
+- **CDN and edge-provider failures:** origin down while CDN serves stale 200s, CDN-branded 52x responses, one edge POP serving stale or poisoned content, cache-key bugs exposing another tenant/user view, or edge-only TLS/cert mismatch. This probably needs either a real CDN sandbox or a benchmark-owned "edge simulator" in front of the target.
+- **WAF, bot-protection, and reputation failures:** monitor probes get 403, 429, or JavaScript challenges while ordinary browser traffic succeeds; monitor-specific user agents are blocked; or a provider's probe IPs are reputation-blocked. This builds on request-header divergence but needs reliable probe IP/source metadata and more request-shape controls.
+- **Multi-region quorum and disagreement:** one region fails, a minority of regions fail, all regions fail, or regions disagree on content. This should measure whether a provider alerts on one failed probe, a quorum, or all probes. It needs adapter-level location selection and report metadata for probe location/quorum policy.
+- **Browser/runtime correctness:** HTML returns 200 but a SPA fails to hydrate, JavaScript throws, client-side routing breaks, Core Web Vitals regress, or a critical third-party browser dependency fails. These belong in a separate browser-check track because their cost, flakiness, and semantics differ from single-probe uptime checks.
+- **Data consistency and stale-state failures:** wrong vhost/tenant served, stale content persists after origin update, logged-in content is cached for anonymous users, or region-localized content is served to the wrong audience. These require baseline learning or paired comparisons rather than a single response assertion.
+- **Monitoring provider control-plane failure:** monitor creation succeeds but result retrieval is delayed, provider APIs rate-limit or timeout, incident logs are incomplete, alert state is stale, or deprovision fails. This is not a target outage, but it is a real reliability dimension for the benchmark; results should be classified as provider reliability data, not detection failures.
+
+Possible implementation strategy:
+
+1. Start with the least dangerous stretch tracks: IPv6-specific failures, regional/ASN firewall partitions, and CDN/edge simulation. These can mostly stay within benchmark-owned infrastructure.
+2. Add schema/report support before live tests: capability flags, `monitor_kind` values where needed, address-family metadata, probe location/quorum metadata, and separate provider-control-plane metrics.
+3. Treat registrar, parent-zone, DNSSEC, BGP, and real transit-provider tests as research projects. Each needs a written safety plan, rollback plan, and explicit non-production test assets before implementation.
+4. Keep all stretch-track results out of the ordinary uptime accuracy denominator unless the service capability is explicitly configured and verified.
 
 ---
 
