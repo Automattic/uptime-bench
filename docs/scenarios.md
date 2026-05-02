@@ -20,6 +20,10 @@ Benchmark prioritization is separate from complexity: [v1] scenarios are the mos
 
 Tag scenarios by **where the failure is observed by the monitor**, not where the root cause lives. Root-cause attribution is a separate concern; many observable failures surface at one layer while originating at another.
 
+## A note on checked-in monitor lists
+
+The `monitors` field in each checked-in scenario file is a single-scenario smoke default. It is not the published comparison set for that scenario. Use the harness `-monitors` override or campaign configuration to run the same scenario against all configured, enabled services.
+
 ---
 
 ## Layer 1: Reachability
