@@ -381,7 +381,7 @@ func (a *Adapter) fetchEvents(ctx context.Context, siteID string, window adapter
 	for page := 0; page < maxEventPages; page++ {
 		q := url.Values{}
 		q.Set("limit", "200")
-		q.Set("check_type__in", "http,tls_expiry")
+		q.Set("check_type__in", "http,tls_expiry,tls_deprecated")
 		q.Set("started_at__gte", window.FailureStarted.UTC().Format(time.RFC3339))
 		q.Set("started_at__lt", window.GracePeriodEnd.UTC().Format(time.RFC3339))
 		if cursor != "" {
