@@ -40,6 +40,44 @@ func TestRunMarksUnsupportedAdaptersSkipped(t *testing.T) {
 	if summaries[0].Skipped != 1 {
 		t.Fatalf("Skipped = %d, want 1", summaries[0].Skipped)
 	}
+	if summaries[0].ReasonCounts["adapter does not implement stale cleanup"] != 1 {
+		t.Fatalf("ReasonCounts = %+v, want unsupported reason", summaries[0].ReasonCounts)
+	}
+}
+
+func TestRunTalliesCleanupReasonsAndKinds(t *testing.T) {
+	summaries := Run(context.Background(), []adapter.Adapter{cleanerAdapter{
+		unsupportedAdapter: unsupportedAdapter{id: "cleaner"},
+		actions: []adapter.CleanupAction{
+			{
+				Candidate: adapter.CleanupCandidate{
+					ResourceID: "1",
+					Kind:       "monitor",
+					Reason:     "stale benchmark resource",
+				},
+				Action: adapter.CleanupActionWouldDelete,
+			},
+			{
+				Candidate: adapter.CleanupCandidate{
+					ResourceID: "2",
+					Kind:       "monitor",
+					Reason:     "stale benchmark resource",
+				},
+				Action: adapter.CleanupActionSkipped,
+			},
+		},
+	}}, adapter.CleanupOptions{})
+
+	if len(summaries) != 1 {
+		t.Fatalf("len(summaries) = %d, want 1", len(summaries))
+	}
+	s := summaries[0]
+	if s.Found != 2 || s.WouldDelete != 1 || s.Skipped != 1 {
+		t.Fatalf("summary = %+v, want found=2 would_delete=1 skipped=1", s)
+	}
+	if s.ReasonCounts["stale benchmark resource"] != 2 || s.KindCounts["monitor"] != 2 {
+		t.Fatalf("diagnostic counts = reasons %+v kinds %+v", s.ReasonCounts, s.KindCounts)
+	}
 }
 
 type unsupportedAdapter struct {
@@ -61,3 +99,12 @@ func (a unsupportedAdapter) Retrieve(context.Context, adapter.MonitorHandle, ada
 func (a unsupportedAdapter) Deprovision(context.Context, adapter.MonitorHandle) error { return nil }
 
 func (a unsupportedAdapter) Normalize(string) string { return adapter.UnrecognizedClassification }
+
+type cleanerAdapter struct {
+	unsupportedAdapter
+	actions []adapter.CleanupAction
+}
+
+func (a cleanerAdapter) CleanupStale(context.Context, adapter.CleanupOptions) (adapter.CleanupResult, error) {
+	return adapter.CleanupResult{Actions: a.actions}, nil
+}

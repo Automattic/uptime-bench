@@ -258,7 +258,7 @@ Expansion acceptance:
 
 ## Provider-state preflight cleanup
 
-**Status:** MVP implemented for public API adapters. `cmd/uptime-bench-cleanup` can run independently before a matrix batch, loads the enabled services and fleet scope, supports dry-run/delete modes, summarizes per-service counts, and uses adapter-owned stale cleanup for UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. Jetmon v1/v2 intentionally remain unsupported by this generic provider cleanup until their synthetic benchmark-site ownership rules are explicit enough to delete safely.
+**Status:** MVP implemented for public API adapters. `cmd/uptime-bench-cleanup` can run independently before a matrix batch, loads the enabled services and fleet scope, supports dry-run/delete modes, summarizes per-service counts, reports reason/kind breakdowns for idempotency diagnostics, and uses adapter-owned stale cleanup for UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime. Jetmon v1/v2 intentionally remain unsupported by this generic provider cleanup until their synthetic benchmark-site ownership rules are explicit enough to delete safely.
 
 Add a cleanup command or harness preflight that lists harness-owned monitors/tests/checks for every enabled provider, filters only resources with uptime-bench-owned names/tags/URLs, and deletes stale resources left by an interrupted run, timed-out provider API call, or host reboot. The command should have a dry-run mode, print per-provider counts, fail closed when ownership is ambiguous, and leave non-benchmark monitors untouched.
 
@@ -276,10 +276,11 @@ Acceptance:
 - Stale cleanup happens before provider capacity checks so leaked monitors do not consume Better Uptime/UptimeRobot/Pingdom caps.
 - ✅ Deletion uses the same idempotent deprovision paths as normal teardown where possible.
 - ✅ Ambiguous matches are reported but not deleted automatically.
+- ✅ Cleanup summaries include reason/kind breakdowns so repeated dry-runs can show whether remaining resources are unsupported, ambiguous, stale, or outside scope.
 
 ## Automated randomized testing campaigns
 
-**Status:** Partially implemented. Methodology locked 2026-04-27. Config parsing, deterministic generation, cooldown-aware scheduling, serial execution, single-target scope preflight, a checked-in starter config, run-rate budget preflight, mixed-content escalation instrumentation, metric derivation, and reporting are in place; remaining work is final published-campaign sampling policy, concurrent execution, and live-campaign hardening.
+**Status:** Partially implemented. Methodology locked 2026-04-27. Config parsing, deterministic generation, cooldown-aware scheduling, serial execution, single-target scope preflight, a checked-in starter config, run-rate budget preflight, mixed-content escalation instrumentation, metric derivation, markdown/JSON finalization, preflight timing estimates, and reporting are in place; remaining work is final published-campaign sampling policy, concurrent execution, and live-campaign hardening.
 
 The harness today runs one scripted scenario at a time. That model is fine for *targeted* tests ("does Pingdom detect a 503?") but it can't produce the data the project actually exists to publish: **min, max, and average detection times of specific kinds of failures across the different services**, computed from enough samples that the numbers are defensible.
 
@@ -513,8 +514,10 @@ When campaign data is published, the methodology section must include, at minimu
 - Total wall-clock duration and any campaign interruptions.
 - Confidence intervals on all reported percentiles.
 - The full count of `capability_mismatch`, `adapter_error`, `maintenance_suppressed`, `cooldown_suppressed`, `cooldown_uncertain`, `tls_advisory_detected`, `tls_advisory_missed`, and `tls_advisory_false_outage` outcomes per service — these are part of the data, not filtered out.
+- Both sample-weighted service scores and scenario/category-normalized service scores so uneven scenario mixes do not hide a provider weakness behind a high-volume easy category.
 - The percentile method used. `cmd/uptime-bench-report` uses the **nearest-rank** convention (`idx = ⌈p·N⌉ − 1` on the sorted sample, NIST / Wikipedia "C = 1"). Different from R's default `quantile()` (type 7, linear interpolation) and numpy's default `percentile()`, which produce slightly different numbers for the same data. Nearest-rank always returns an observed sample value — the published p95 is a number that actually occurred in the campaign — but skeptics recomputing with a different method will see ±1-bucket drift.
 - The aggregation depth. `cmd/uptime-bench-report` accepts either a concrete `campaign_runs.id` (one run) or a stable `campaign_id` from the campaign TOML (every matching run aggregated). The report header line discloses which interpretation matched and how many runs were folded together — quote that line in any published post so readers know the numbers span N runs, not 1.
+- The exact finalization command used. Re-running finalization should recompute derived metrics and refresh `report.md`, machine-readable JSON, and the report manifest without hand-editing output files.
 
 The methodology choices (which failure types are high-discrimination, what the sample-count target is) are explicit human judgments and should be argued for in any published post — different operators will care about different failures, and a transparent methodology lets them re-weight from the raw data if their concerns differ.
 

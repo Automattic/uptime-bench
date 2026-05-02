@@ -11,15 +11,17 @@ import (
 )
 
 type ServiceSummary struct {
-	ServiceID   string
-	Supported   bool
-	Found       int
-	WouldDelete int
-	Deleted     int
-	Skipped     int
-	Errors      int
-	Error       string
-	Actions     []adapter.CleanupAction
+	ServiceID    string
+	Supported    bool
+	Found        int
+	WouldDelete  int
+	Deleted      int
+	Skipped      int
+	Errors       int
+	Error        string
+	ReasonCounts map[string]int
+	KindCounts   map[string]int
+	Actions      []adapter.CleanupAction
 }
 
 func ScopeFromFleet(fl *fleet.Config) adapter.CleanupScope {
@@ -64,8 +66,10 @@ func Run(ctx context.Context, adapters []adapter.Adapter, opts adapter.CleanupOp
 	summaries := make([]ServiceSummary, 0, len(adapters))
 	for _, a := range adapters {
 		summary := ServiceSummary{
-			ServiceID: a.ServiceID(),
-			Actions:   nil,
+			ServiceID:    a.ServiceID(),
+			ReasonCounts: map[string]int{},
+			KindCounts:   map[string]int{},
+			Actions:      nil,
 		}
 		cleaner, ok := a.(adapter.StaleCleaner)
 		if !ok {
@@ -79,6 +83,7 @@ func Run(ctx context.Context, adapters []adapter.Adapter, opts adapter.CleanupOp
 				},
 				Action: adapter.CleanupActionSkipped,
 			}}
+			tallyCleanupAction(&summary, summary.Actions[0])
 			summaries = append(summaries, summary)
 			continue
 		}
@@ -86,7 +91,6 @@ func Run(ctx context.Context, adapters []adapter.Adapter, opts adapter.CleanupOp
 		summary.Supported = true
 		result, err := cleaner.CleanupStale(ctx, opts)
 		if err != nil {
-			summary.Errors++
 			summary.Error = err.Error()
 			summary.Actions = append(summary.Actions, adapter.CleanupAction{
 				Candidate: adapter.CleanupCandidate{
@@ -99,7 +103,8 @@ func Run(ctx context.Context, adapters []adapter.Adapter, opts adapter.CleanupOp
 			})
 		}
 		summary.Actions = append(summary.Actions, result.Actions...)
-		for _, action := range result.Actions {
+		for _, action := range summary.Actions {
+			tallyCleanupAction(&summary, action)
 			if action.Candidate.ResourceID != "" {
 				summary.Found++
 			}
@@ -128,7 +133,7 @@ func FormatSummary(s ServiceSummary) string {
 		status = "error"
 	}
 	return fmt.Sprintf(
-		"%s\t%s\tfound=%d\twould_delete=%d\tdeleted=%d\tskipped=%d\terrors=%d",
+		"%s\t%s\tfound=%d\twould_delete=%d\tdeleted=%d\tskipped=%d\terrors=%d\treasons=%s\tkinds=%s",
 		s.ServiceID,
 		status,
 		s.Found,
@@ -136,7 +141,25 @@ func FormatSummary(s ServiceSummary) string {
 		s.Deleted,
 		s.Skipped,
 		s.Errors,
+		formatIntCounts(s.ReasonCounts),
+		formatIntCounts(s.KindCounts),
 	)
+}
+
+func tallyCleanupAction(summary *ServiceSummary, action adapter.CleanupAction) {
+	if summary == nil {
+		return
+	}
+	reason := strings.TrimSpace(action.Candidate.Reason)
+	if reason == "" {
+		reason = "<none>"
+	}
+	kind := strings.TrimSpace(action.Candidate.Kind)
+	if kind == "" {
+		kind = "<none>"
+	}
+	summary.ReasonCounts[reason]++
+	summary.KindCounts[kind]++
 }
 
 func sortedKeys(values map[string]struct{}) []string {
@@ -146,4 +169,20 @@ func sortedKeys(values map[string]struct{}) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func formatIntCounts(values map[string]int) string {
+	if len(values) == 0 {
+		return "-"
+	}
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s:%d", k, values[k]))
+	}
+	return strings.Join(parts, ",")
 }
