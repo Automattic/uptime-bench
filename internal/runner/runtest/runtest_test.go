@@ -14,6 +14,7 @@ package runtest_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,8 +150,8 @@ func TestRun_RunStartEventFailure_RecordsGroundTruthLogFailure(t *testing.T) {
 // TestRun_AdapterProvisionFailure_RecordsAdapterError — adapter's
 // Provision returns a Go error. The runner doesn't fail the whole run
 // (other adapters might still work) but resolution_reason is set to
-// "adapter_error" so the operator knows downstream metrics for that
-// service are missing.
+// "adapter_error" and a structured monitor_reports row is written so
+// downstream reports can count the provider/API failure.
 func TestRun_AdapterProvisionFailure_RecordsAdapterError(t *testing.T) {
 	f := runtest.NewFixture(t)
 	f.Scenario.Monitors = []string{"failing-svc"}
@@ -172,6 +173,47 @@ func TestRun_AdapterProvisionFailure_RecordsAdapterError(t *testing.T) {
 	}
 	if f.Recorder.CloseRunReason != "adapter_error" {
 		t.Errorf("CloseRunReason = %q, want adapter_error", f.Recorder.CloseRunReason)
+	}
+	if len(f.Recorder.MonitorReports) != 1 {
+		t.Fatalf("MonitorReports = %d, want 1 adapter_error row", len(f.Recorder.MonitorReports))
+	}
+	row := f.Recorder.MonitorReports[0]
+	if row.ServiceID != "failing-svc" || row.ReasonCode != adapter.ReasonAdapterError {
+		t.Fatalf("adapter_error row = %+v", row)
+	}
+	if !strings.Contains(row.RetrieveUnknownReason, "vendor returned 500") {
+		t.Fatalf("RetrieveUnknownReason = %q, want provision error detail", row.RetrieveUnknownReason)
+	}
+}
+
+func TestRun_AdapterRetrieveFailure_RecordsAdapterError(t *testing.T) {
+	f := runtest.NewFixture(t)
+	f.Scenario.Monitors = []string{"retrieve-svc"}
+	f.Adapters = []adapter.Adapter{
+		&failingRetrieveAdapter{
+			id:   "retrieve-svc",
+			caps: adapter.Capabilities{MinCheckFrequency: 30 * time.Second},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := f.Run(ctx); err != nil {
+		t.Fatalf("Run should complete despite adapter Retrieve error; got %v", err)
+	}
+	if f.Recorder.CloseRunReason != "adapter_error" {
+		t.Errorf("CloseRunReason = %q, want adapter_error", f.Recorder.CloseRunReason)
+	}
+	if len(f.Recorder.MonitorReports) != 1 {
+		t.Fatalf("MonitorReports = %d, want 1 adapter_error row", len(f.Recorder.MonitorReports))
+	}
+	row := f.Recorder.MonitorReports[0]
+	if row.ServiceID != "retrieve-svc" || row.ReasonCode != adapter.ReasonAdapterError {
+		t.Fatalf("adapter_error row = %+v", row)
+	}
+	if !strings.Contains(row.RetrieveUnknownReason, "retrieve failed") {
+		t.Fatalf("RetrieveUnknownReason = %q, want retrieve error detail", row.RetrieveUnknownReason)
 	}
 }
 
@@ -311,6 +353,24 @@ func (a *failingProvisionAdapter) Retrieve(context.Context, adapter.MonitorHandl
 	return adapter.RetrieveResult{}, nil
 }
 func (a *failingProvisionAdapter) Deprovision(context.Context, adapter.MonitorHandle) error {
+	return nil
+}
+
+type failingRetrieveAdapter struct {
+	id   string
+	caps adapter.Capabilities
+}
+
+func (a *failingRetrieveAdapter) ServiceID() string                  { return a.id }
+func (a *failingRetrieveAdapter) Capabilities() adapter.Capabilities { return a.caps }
+func (a *failingRetrieveAdapter) Normalize(string) string            { return adapter.UnrecognizedClassification }
+func (a *failingRetrieveAdapter) Provision(context.Context, adapter.Target, adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
+	return adapter.MonitorHandle{ServiceID: a.id, MonitorID: "fake-" + a.id}, nil
+}
+func (a *failingRetrieveAdapter) Retrieve(context.Context, adapter.MonitorHandle, adapter.RunWindow) (adapter.RetrieveResult, error) {
+	return adapter.RetrieveResult{}, errors.New("retrieve failed")
+}
+func (a *failingRetrieveAdapter) Deprovision(context.Context, adapter.MonitorHandle) error {
 	return nil
 }
 

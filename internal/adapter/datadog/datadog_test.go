@@ -521,6 +521,9 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 	if dt.End != end.Unix() {
 		t.Errorf("downtime.end = %d, want %d", dt.End, end.Unix())
 	}
+	if len(dt.Scope) != 1 || dt.Scope[0] != "*" {
+		t.Errorf("downtime.scope = %v, want [*]", dt.Scope)
+	}
 
 	if handle.Fields["monitor_id"] != "277272334" {
 		t.Errorf("handle.Fields[monitor_id] = %q, want 277272334", handle.Fields["monitor_id"])

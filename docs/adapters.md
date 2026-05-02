@@ -239,7 +239,7 @@ func (h *Harness) compatible(a Adapter, s Scenario) error {
 }
 ```
 
-Skipped pairs are recorded in the run output with reason `"capability_mismatch"` — they do not appear as Unknown or false negatives.
+Skipped pairs are recorded in the run output with reason `"capability_mismatch"` — they do not appear as false negatives. Provision and retrieve failures are recorded with reason `"adapter_error"` so provider/API reliability remains queryable even when no usable monitor result was produced.
 
 ### Normalization
 

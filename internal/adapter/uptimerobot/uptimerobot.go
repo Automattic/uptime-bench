@@ -35,6 +35,7 @@ package uptimerobot
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -235,11 +236,23 @@ func intervalSeconds(d time.Duration) int {
 }
 
 func (a *Adapter) friendlyName(target adapter.Target) string {
-	return "uptime-bench: " + a.id + ": " + target.ID
+	return "uptime-bench: " + a.id + ": " + target.ID + ": " + shortURLHash(target.URL)
 }
 
 func legacyFriendlyName(target adapter.Target) string {
 	return "uptime-bench: " + target.ID
+}
+
+func (a *Adapter) legacyFriendlyNames(target adapter.Target) []string {
+	return []string{
+		legacyFriendlyName(target),
+		"uptime-bench: " + a.id + ": " + target.ID,
+	}
+}
+
+func shortURLHash(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("%x", sum[:4])
 }
 
 func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config adapter.ProvisionConfig) (adapter.MonitorHandle, error) {
@@ -265,9 +278,21 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 			defer cancel()
 			recoveredID, recoveryErr := a.adoptSingleMatchingBenchmarkMonitor(recoveryCtx, target, name)
 			if recoveryErr != nil {
-				return adapter.MonitorHandle{}, err
+				monitorID, err = a.createMonitor(ctx, target, config, name)
+				if err != nil {
+					if isAlreadyExists(err) {
+						if cleanupErr := a.deleteMatchingBenchmarkMonitors(ctx, target, name); cleanupErr != nil {
+							return adapter.MonitorHandle{}, fmt.Errorf("uptimerobot: newMonitor already_exists cleanup after uncertainty: %w", cleanupErr)
+						}
+						monitorID, err = a.createMonitor(ctx, target, config, name)
+					}
+					if err != nil {
+						return adapter.MonitorHandle{}, err
+					}
+				}
+			} else {
+				monitorID = recoveredID
 			}
-			monitorID = recoveredID
 		default:
 			return adapter.MonitorHandle{}, err
 		}
@@ -429,7 +454,7 @@ func (a *Adapter) createMWindow(ctx context.Context, targetID string, window *ad
 	form.Set("format", "json")
 	form.Set("friendly_name", "uptime-bench: "+targetID)
 	form.Set("type", "1") // 1 = Once
-	form.Set("start_time", strconv.FormatInt(startUTC.Unix(), 10))
+	form.Set("start_time", strconv.FormatInt(maintenanceStartUnix(startUTC, time.Now()), 10))
 	form.Set("duration", strconv.Itoa(durationMinutes))
 
 	var resp newMWindowResponse
@@ -443,6 +468,24 @@ func (a *Adapter) createMWindow(ctx context.Context, targetID string, window *ad
 		return 0, fmt.Errorf("uptimerobot: newMWindow: response missing mwindow id")
 	}
 	return resp.MWindow.ID, nil
+}
+
+func maintenanceStartUnix(start, now time.Time) int64 {
+	start = ceilSecond(start.UTC())
+	minStart := ceilSecond(now.UTC())
+	if start.Before(minStart) {
+		start = minStart
+	}
+	return start.Unix()
+}
+
+func ceilSecond(t time.Time) time.Time {
+	t = t.UTC()
+	truncated := t.Truncate(time.Second)
+	if truncated.Equal(t) {
+		return truncated
+	}
+	return truncated.Add(time.Second)
 }
 
 // attachMWindow associates a maintenance window with a monitor via
@@ -669,11 +712,20 @@ func (a *Adapter) matchingBenchmarkMonitors(ctx context.Context, target adapter.
 	}
 	var matches []monitor
 	for _, mon := range resp.Monitors {
-		if (mon.FriendlyName == name || mon.FriendlyName == legacyFriendlyName(target)) && sameURL(mon.URL, target.URL) {
+		if (mon.FriendlyName == name || stringIn(mon.FriendlyName, a.legacyFriendlyNames(target))) && sameURL(mon.URL, target.URL) {
 			matches = append(matches, mon)
 		}
 	}
 	return matches, nil
+}
+
+func stringIn(needle string, haystack []string) bool {
+	for _, candidate := range haystack {
+		if needle == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adapter) CleanupStale(ctx context.Context, opts adapter.CleanupOptions) (adapter.CleanupResult, error) {

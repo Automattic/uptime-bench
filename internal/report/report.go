@@ -155,6 +155,13 @@ type ServiceScore struct {
 	CategoryNormalizedPassRate *float64 `json:"category_normalized_pass_rate,omitempty"`
 }
 
+type reasonCodeRow struct {
+	failureType string
+	serviceID   string
+	reasonCode  string
+	count       int
+}
+
 type summaryKey struct {
 	failureType string
 	serviceID   string
@@ -909,6 +916,24 @@ func writeMarkdown(w io.Writer, r Report) error {
 			return err
 		}
 	}
+	reasonRows := collectReasonCodeRows(r.Summaries)
+	if len(reasonRows) > 0 {
+		if _, err := fmt.Fprint(w, "\n## Reason Codes\n\n"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| Failure Type | Service | Reason Code | Runs |"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| --- | --- | --- | ---: |"); err != nil {
+			return err
+		}
+		for _, row := range reasonRows {
+			if _, err := fmt.Fprintf(w, "| %s | %s | %s | %d |\n",
+				row.failureType, row.serviceID, row.reasonCode, row.count); err != nil {
+				return err
+			}
+		}
+	}
 	if len(r.Summaries) > 0 {
 		if _, err := fmt.Fprint(w, "\n## Failure-Type Details\n\n"); err != nil {
 			return err
@@ -930,6 +955,33 @@ func writeMarkdown(w io.Writer, r Report) error {
 		}
 	}
 	return nil
+}
+
+func collectReasonCodeRows(summaries []Summary) []reasonCodeRow {
+	var rows []reasonCodeRow
+	for _, s := range summaries {
+		for code, count := range s.ReasonCodes {
+			if code == "" || count <= 0 {
+				continue
+			}
+			rows = append(rows, reasonCodeRow{
+				failureType: s.FailureType,
+				serviceID:   s.ServiceID,
+				reasonCode:  code,
+				count:       count,
+			})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].failureType != rows[j].failureType {
+			return rows[i].failureType < rows[j].failureType
+		}
+		if rows[i].serviceID != rows[j].serviceID {
+			return rows[i].serviceID < rows[j].serviceID
+		}
+		return rows[i].reasonCode < rows[j].reasonCode
+	})
+	return rows
 }
 
 // metaCommentLine renders Meta as a one-line `#`-prefixed comment for

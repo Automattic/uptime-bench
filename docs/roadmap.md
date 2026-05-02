@@ -7,10 +7,11 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 2. [Alert cooldown interaction between runs](#alert-cooldown-interaction-between-runs) — blocked on Jetmon v1 bridge write-mode provisioning.
 3. [TLS monitor-facing validation](#tls-monitor-facing-validation)
 4. [Live maintenance-window validation](#live-maintenance-window-validation)
-5. [Provider-state preflight cleanup](#provider-state-preflight-cleanup)
-6. [Campaign hardening dry run](#campaign-hardening-dry-run)
-7. [Next-wave adapter expansion](#next-wave-adapter-expansion)
-8. [Jetmon capacity benchmark](#jetmon-capacity-benchmark)
+5. [Report-driven provider reliability](#report-driven-provider-reliability)
+6. [Provider-state preflight cleanup](#provider-state-preflight-cleanup)
+7. [Campaign hardening dry run](#campaign-hardening-dry-run)
+8. [Next-wave adapter expansion](#next-wave-adapter-expansion)
+9. [Jetmon capacity benchmark](#jetmon-capacity-benchmark)
 
 **Lower-priority follow-ups:**
 - [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
@@ -255,6 +256,55 @@ Expansion acceptance:
 - The first live smoke for each adapter covers at least `http-503`, one HEAD/GET mismatch, one content/keyword scenario if supported, and cleanup verification.
 - Self-hosted adapters are labeled as single-origin/self-hosted in reports so they are not confused with global SaaS probe networks.
 - Any adapter relying on an unstable or internal upstream API must pin the upstream version and document the automation risk.
+
+## Report-driven provider reliability
+
+**Status:** In progress after `reports/v2-regression-9am-20260502-063755Z/`.
+The latest long run had no Jetmon v2, Pingdom, or Better Uptime adapter
+errors, but it exposed 56 provision-time errors across UptimeRobot and Datadog
+Synthetics:
+
+- UptimeRobot: 39 total (`maintenance start_time invalid_parameter`: 15,
+  `newMonitor already_exists`: 22, API timeout after `newMonitor`: 2).
+- Datadog Synthetics: 17 total (`downtime invalid scope`: 17).
+
+Implemented hardening from that report:
+
+- UptimeRobot one-shot maintenance windows now round/clamp `start_time` to the
+  next full second so a subsecond run start is not sent as a timestamp that is
+  already just barely in the past.
+- UptimeRobot monitor names now include a short hash of the monitor URL, and
+  the runner spreads monitor URLs across configured site paths with a
+  per-scenario query token. This reduces duplicate-name and duplicate-URL
+  collisions in parallel matrices while keeping failures scoped to the same
+  path the monitor checks.
+- UptimeRobot uncertain create timeouts retry safely after attempting to adopt
+  a single matching harness-owned monitor.
+- Datadog downtime creation now sends an explicit global scope alongside the
+  monitor id.
+- Provision/retrieve failures now write `monitor_reports` rows with
+  `reason_code = "adapter_error"`, and markdown campaign reports include a
+  reason-code table so these failures are visible without reconstructing them
+  from logs.
+
+Acceptance for the next run:
+
+- Live smoke UptimeRobot and Datadog on
+  `maintenance-http-503-full-cover`; both should provision maintenance without
+  adapter errors and should score as maintenance-suppressed if the vendor
+  behaves as expected.
+- The next matrix should show zero, or nearly zero, UptimeRobot
+  `already_exists` errors. If they persist, enhance stale cleanup to search by
+  benchmark URL in addition to exact friendly name and add a plan-level
+  duplicate URL preflight.
+- Report generation should next bucket adapter-error reasons by provider error
+  text, not only by the structured `adapter_error` code, so maintenance
+  timestamp errors, duplicate monitor collisions, and API timeouts are separated
+  automatically.
+- Geo-scoped `http-geo-503` remains a benchmark validation gap, not a
+  service-specific finding, because every service failed it in the latest run.
+  Before publishing geo results, audit probe CIDRs against actual source IPs
+  observed by the target and flag services with unverifiable probe ranges.
 
 ## Provider-state preflight cleanup
 

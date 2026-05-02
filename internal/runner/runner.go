@@ -6,10 +6,12 @@ package runner
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -91,6 +93,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	if err != nil {
 		return "", fmt.Errorf("runner: %w", err)
 	}
+	endpoint := targetEndpointForScenario(sc, target)
 
 	token, err := readFleetToken(fl)
 	if err != nil {
@@ -106,6 +109,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		"grace_period":    sc.GracePeriod.String(),
 		"duration":        sc.Duration.String(),
 		"failures":        len(sc.Failures),
+		"monitor_url":     monitorTargetURLForEndpoint(sc, endpoint),
 	}
 	for k, v := range o.parameters {
 		params[k] = v
@@ -176,7 +180,7 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		budgets[a.ServiceID()] = limit
 	}
 
-	handles, provisionErr := provisionAdapters(ctx, sc, target, adapters, database, runID, startedAt, o.requireCooldownReset)
+	handles, provisionErr := provisionAdapters(ctx, sc, endpoint, adapters, database, runID, startedAt, o.requireCooldownReset)
 	if provisionErr {
 		resolutionReason = "adapter_error"
 	}
@@ -229,12 +233,14 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			if len(f.Regions) > 0 && len(sourceCIDRs) == 0 {
 				log.Printf("runner: warning: failure %s has regions %v but no matching probe_ranges found in services.toml", f.Type, f.Regions)
 			}
+			host, path := targetHostPathForFailure(endpoint, f)
 			req := control.ActivateRequest{
 				RunID: runID,
 				Seed:  seed,
 				Failure: control.FailureSpec{
 					Type:        f.Type,
-					Host:        targetHostForFailure(target, f),
+					Host:        host,
+					Path:        path,
 					Duration:    targetAutoExpiry,
 					Rate:        f.Rate,
 					Params:      fp,
@@ -255,10 +261,12 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 				failureStarted = time.Now()
 			}
 		} else {
+			host, path := targetHostPathForFailure(endpoint, f)
 			req := control.DeactivateRequest{
 				RunID:       runID,
 				FailureType: f.Type,
-				Host:        targetHostForFailure(target, f),
+				Host:        host,
+				Path:        path,
 			}
 			if err := targetClient.Deactivate(ctx, req); err != nil {
 				log.Printf("runner: deactivate %s: %v", f.Type, err)
@@ -307,6 +315,11 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		result, err := p.a.Retrieve(ctx, p.handle, window)
 		if err != nil {
 			log.Printf("runner: retrieve %s: %v", p.a.ServiceID(), err)
+			logMonitorReport(ctx, database, runID, p.a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     fmt.Sprintf("retrieve %s: %v", p.a.ServiceID(), err),
+				ReasonCode: adapter.ReasonAdapterError,
+			})
 			resolutionReason = "adapter_error"
 			continue
 		}
@@ -424,17 +437,13 @@ func logMonitorReport(ctx context.Context, database recorder, runID string, a ad
 	}
 }
 
-// maintenanceWindowFor converts a scenario's relative [maintenance]
-// offsets into absolute timestamps anchored at startedAt (the run's
-// canonical start). Returns nil when the scenario has no [maintenance]
-// block. A few seconds of drift between startedAt and the actual first
-// failure activation is acceptable because vendor maintenance APIs are
-// minute-grained.
 // provisionAdapters walks the adapter list, applies capability gates,
 // and provisions adapters that pass. Capability mismatches produce a
 // monitor_reports row with reason_code = "capability_mismatch" and skip
 // Provision; adapters whose Provision call returns an error contribute
-// to provisionErr but produce no row (the runner's existing behaviour).
+// to provisionErr and produce a monitor_reports row with reason_code =
+// "adapter_error" so provider/API reliability is queryable from the
+// database instead of only from runner logs.
 //
 // Extracted from Run() so the gate logic is unit-testable without
 // spinning up the full Run() machinery (target HTTP plane, control
@@ -443,7 +452,7 @@ func logMonitorReport(ctx context.Context, database recorder, runID string, a ad
 func provisionAdapters(
 	ctx context.Context,
 	sc *scenario.Scenario,
-	target fleet.Target,
+	endpoint targetEndpoint,
 	adapters []adapter.Adapter,
 	database recorder,
 	runID string,
@@ -498,7 +507,7 @@ func provisionAdapters(
 			continue
 		}
 
-		tgt := adapter.Target{ID: sc.Target, URL: monitorTargetURL(sc, target)}
+		tgt := adapter.Target{ID: sc.Target, URL: monitorTargetURLForEndpoint(sc, endpoint)}
 		cfg := adapter.ProvisionConfig{
 			CheckFrequency: sc.CheckFrequency,
 			Keyword:        sc.Keyword,
@@ -508,6 +517,11 @@ func provisionAdapters(
 		handle, err := a.Provision(ctx, tgt, cfg)
 		if err != nil {
 			log.Printf("runner: provision %s: %v", a.ServiceID(), err)
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     fmt.Sprintf("provision %s: %v", a.ServiceID(), err),
+				ReasonCode: adapter.ReasonAdapterError,
+			})
 			provisionErr = true
 			continue
 		}
@@ -517,7 +531,16 @@ func provisionAdapters(
 	return handles, provisionErr
 }
 
+type targetEndpoint struct {
+	host string
+	path string
+}
+
 func monitorTargetURL(sc *scenario.Scenario, target fleet.Target) string {
+	return monitorTargetURLForEndpoint(sc, targetEndpointForScenario(sc, target))
+}
+
+func monitorTargetURLForEndpoint(sc *scenario.Scenario, endpoint targetEndpoint) string {
 	// Use the first site's hostname so adapters register against the
 	// domain name rather than the infrastructure address. Monitoring
 	// services check by domain, not by IP.
@@ -525,10 +548,92 @@ func monitorTargetURL(sc *scenario.Scenario, target fleet.Target) string {
 	if scenarioUsesTLS(sc) {
 		scheme = "https"
 	}
-	if len(target.Sites) > 0 {
-		return fmt.Sprintf("%s://%s/", scheme, target.Sites[0].Host)
+	u := url.URL{
+		Scheme: scheme,
+		Host:   endpoint.host,
+		Path:   endpoint.path,
 	}
-	return fmt.Sprintf("%s://%s", scheme, target.Address)
+	if token := monitorURLToken(sc); token != "" {
+		u.RawQuery = "ub=" + token
+	}
+	return u.String()
+}
+
+func targetEndpointForScenario(sc *scenario.Scenario, target fleet.Target) targetEndpoint {
+	if len(target.Sites) == 0 {
+		return targetEndpoint{host: target.Address}
+	}
+	site := target.Sites[0]
+	return targetEndpoint{
+		host: site.Host,
+		path: selectMonitorPath(sc, site.Paths),
+	}
+}
+
+func selectMonitorPath(sc *scenario.Scenario, paths []string) string {
+	normalized := normalizeSitePaths(paths)
+	if len(normalized) == 0 {
+		return "/"
+	}
+	candidates := normalized
+	if len(normalized) > 1 {
+		nonRoot := make([]string, 0, len(normalized)-1)
+		for _, path := range normalized {
+			if path != "/" {
+				nonRoot = append(nonRoot, path)
+			}
+		}
+		if len(nonRoot) > 0 {
+			candidates = nonRoot
+		}
+	}
+	return candidates[stableScenarioIndex(sc, len(candidates))]
+}
+
+func normalizeSitePaths(paths []string) []string {
+	if len(paths) == 0 {
+		return []string{"/"}
+	}
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			path = "/"
+		}
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		if !seen[path] {
+			out = append(out, path)
+			seen[path] = true
+		}
+	}
+	if len(out) == 0 {
+		return []string{"/"}
+	}
+	return out
+}
+
+func stableScenarioIndex(sc *scenario.Scenario, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	key := ""
+	if sc != nil {
+		key = sc.ID
+	}
+	sum := sha256.Sum256([]byte(key))
+	return int(uint64(sum[0])<<56|uint64(sum[1])<<48|uint64(sum[2])<<40|uint64(sum[3])<<32|
+		uint64(sum[4])<<24|uint64(sum[5])<<16|uint64(sum[6])<<8|uint64(sum[7])) % n
+}
+
+func monitorURLToken(sc *scenario.Scenario) string {
+	if sc == nil || strings.TrimSpace(sc.ID) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(sc.ID))
+	return hex.EncodeToString(sum[:4])
 }
 
 func scenarioUsesTLS(sc *scenario.Scenario) bool {
@@ -543,6 +648,12 @@ func scenarioUsesTLS(sc *scenario.Scenario) bool {
 	return false
 }
 
+// maintenanceWindowFor converts a scenario's relative [maintenance]
+// offsets into absolute timestamps anchored at startedAt (the run's
+// canonical start). Returns nil when the scenario has no [maintenance]
+// block. A few seconds of drift between startedAt and the actual first
+// failure activation is acceptable because vendor maintenance APIs are
+// minute-grained.
 func maintenanceWindowFor(sc *scenario.Scenario, startedAt time.Time) *adapter.MaintenanceWindow {
 	if sc == nil || sc.Maintenance == nil {
 		return nil
@@ -632,17 +743,17 @@ func collectCIDRs(regions []string, svcCfg *serviceconfig.Config) []string {
 	return cidrs
 }
 
-func targetHostForFailure(t fleet.Target, f scenario.Failure) string {
+func targetHostPathForFailure(endpoint targetEndpoint, f scenario.Failure) (string, string) {
 	switch f.Type {
-	case "tcp_refused", "tcp_timeout",
+	case "tcp_refused",
 		"dns_nxdomain", "dns_servfail", "dns_timeout",
 		"dns_cname_nxdomain", "dns_latency", "dns_ns_unavailable":
-		return ""
+		return "", ""
+	case "tcp_timeout",
+		"tls_expired", "tls_expiring", "tls_invalid", "tls_handshake", "tls_deprecated":
+		return endpoint.host, ""
 	}
-	if len(t.Sites) > 0 {
-		return t.Sites[0].Host
-	}
-	return ""
+	return endpoint.host, endpoint.path
 }
 
 // failureEvent is one activate or deactivate that should fire at a specific

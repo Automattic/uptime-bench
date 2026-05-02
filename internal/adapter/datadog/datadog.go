@@ -308,10 +308,11 @@ func (a *Adapter) fetchMonitorID(ctx context.Context, publicID string) (int64, e
 // seconds; monitor_id targets a specific monitor (vs. tag-based scope
 // which we don't use for this).
 type createDowntimeRequest struct {
-	Start     int64  `json:"start"`
-	End       int64  `json:"end"`
-	MonitorID int64  `json:"monitor_id"`
-	Message   string `json:"message,omitempty"`
+	Start     int64    `json:"start"`
+	End       int64    `json:"end"`
+	MonitorID int64    `json:"monitor_id"`
+	Scope     []string `json:"scope"`
+	Message   string   `json:"message,omitempty"`
 }
 
 type createDowntimeResponse struct {
@@ -323,6 +324,7 @@ func (a *Adapter) createDowntime(ctx context.Context, monitorID int64, targetID 
 		Start:     window.Start.Unix(),
 		End:       window.End.Unix(),
 		MonitorID: monitorID,
+		Scope:     []string{"*"},
 		Message:   "uptime-bench: " + targetID,
 	}
 	var resp createDowntimeResponse

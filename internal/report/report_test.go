@@ -321,7 +321,12 @@ func TestWriteMarkdownIncludesServiceScores(t *testing.T) {
 		ServiceScores: []ServiceScore{
 			{ServiceID: "svc", Passed: 1, Failed: 1, Comparable: 2, SampleWeightedPassRate: &rate},
 		},
-		Summaries: []Summary{{FailureType: "http_status", ServiceID: "svc", Samples: 2}},
+		Summaries: []Summary{{
+			FailureType: "http_status",
+			ServiceID:   "svc",
+			Samples:     2,
+			ReasonCodes: map[string]int{"adapter_error": 1},
+		}},
 	}
 
 	var buf bytes.Buffer
@@ -334,6 +339,9 @@ func TestWriteMarkdownIncludesServiceScores(t *testing.T) {
 	}
 	if !strings.Contains(out, "## Failure-Type Details") {
 		t.Fatalf("markdown missing detail table: %q", out)
+	}
+	if !strings.Contains(out, "## Reason Codes") || !strings.Contains(out, "| http_status | svc | adapter_error | 1 |") {
+		t.Fatalf("markdown missing reason-code table: %q", out)
 	}
 }
 

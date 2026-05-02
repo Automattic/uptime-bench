@@ -583,6 +583,51 @@ func TestMonitorTargetURLFallsBackToAddress(t *testing.T) {
 	}
 }
 
+func TestMonitorTargetURLUsesConfiguredNonRootPathAndScenarioToken(t *testing.T) {
+	target := fleet.Target{
+		ID:      "bench",
+		Address: "192.0.2.1",
+		Sites: []fleet.Site{{
+			ID:    "bench-a",
+			Host:  "bench-a.example",
+			Paths: []string{"/", "/api/health", "/shop"},
+		}},
+	}
+	sc := &scenario.Scenario{
+		ID:       "sample-http-503-bench-a-r1",
+		Target:   "bench",
+		Failures: []scenario.Failure{{Type: "http_status"}},
+	}
+	got := monitorTargetURL(sc, target)
+	if !strings.HasPrefix(got, "http://bench-a.example/") {
+		t.Fatalf("monitorTargetURL = %q, want bench-a.example URL", got)
+	}
+	if strings.HasPrefix(got, "http://bench-a.example/?") {
+		t.Fatalf("monitorTargetURL = %q, should prefer a configured non-root path when available", got)
+	}
+	if !strings.Contains(got, "?ub=") {
+		t.Fatalf("monitorTargetURL = %q, want per-scenario query token", got)
+	}
+}
+
+func TestTargetHostPathForFailureScopesHTTPToSelectedPath(t *testing.T) {
+	endpoint := targetEndpoint{host: "bench-a.example", path: "/api/health"}
+	host, path := targetHostPathForFailure(endpoint, scenario.Failure{Type: "http_status"})
+	if host != "bench-a.example" || path != "/api/health" {
+		t.Fatalf("host/path = %q/%q, want selected HTTP endpoint", host, path)
+	}
+
+	host, path = targetHostPathForFailure(endpoint, scenario.Failure{Type: "tls_expiring"})
+	if host != "bench-a.example" || path != "" {
+		t.Fatalf("TLS host/path = %q/%q, want host-only failure", host, path)
+	}
+
+	host, path = targetHostPathForFailure(endpoint, scenario.Failure{Type: "tcp_refused"})
+	if host != "" || path != "" {
+		t.Fatalf("tcp_refused host/path = %q/%q, want global failure", host, path)
+	}
+}
+
 // TestProvisionAdapters_MinCheckFrequencyGate — adapter requires
 // MinCheckFrequency = 5m; scenario asks for 30s. Adapter should not be
 // provisioned; one capability_mismatch row should be written.
@@ -596,7 +641,7 @@ func TestProvisionAdapters_MinCheckFrequencyGate(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", CheckFrequency: 30 * time.Second}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if provisionErr {
@@ -630,7 +675,7 @@ func TestProvisionAdapters_KeywordGate(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", Keyword: "uptime-bench-canary", KeywordCheck: "present"}
 
-	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
+	_, _ = provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if a.provisionedAs != nil {
@@ -658,7 +703,7 @@ func TestProvisionAdapters_InvertedKeywordGate(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", Keyword: "HACKED", KeywordCheck: adapter.KeywordCheckAbsent}
 
-	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
+	_, _ = provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if a.provisionedAs != nil {
@@ -686,7 +731,7 @@ func TestProvisionAdapters_MaintenanceWindowGate(t *testing.T) {
 		Maintenance: &scenario.Maintenance{StartOffset: 0, Duration: 5 * time.Minute},
 	}
 
-	_, _ = provisionAdapters(context.Background(), sc, gateTestTarget(),
+	_, _ = provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if a.provisionedAs != nil {
@@ -713,7 +758,7 @@ func TestProvisionAdapters_CooldownResetGate(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", CheckFrequency: time.Minute}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), true)
 
 	if provisionErr {
@@ -756,7 +801,7 @@ func TestProvisionAdapters_HappyPath(t *testing.T) {
 		Maintenance:    &scenario.Maintenance{StartOffset: 0, Duration: 5 * time.Minute},
 	}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", startedAt, false)
 
 	if provisionErr {
@@ -781,8 +826,8 @@ func TestProvisionAdapters_HappyPath(t *testing.T) {
 
 // TestProvisionAdapters_ProvisionErrorSetsFlag — adapter passes all
 // gates but Provision returns a Go error. Should set provisionErr=true,
-// produce no handle, and write no capability_mismatch row (the adapter
-// was tried; it just failed mid-call).
+// produce no handle, and write an adapter_error row so the provider/API
+// failure is queryable from monitor_reports.
 func TestProvisionAdapters_ProvisionErrorSetsFlag(t *testing.T) {
 	a := &gateTestAdapter{
 		id:           "svc",
@@ -792,7 +837,7 @@ func TestProvisionAdapters_ProvisionErrorSetsFlag(t *testing.T) {
 	rec := &fakeRecorder{}
 	sc := &scenario.Scenario{Target: "bench", CheckFrequency: time.Minute}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
 
 	if !provisionErr {
@@ -801,8 +846,15 @@ func TestProvisionAdapters_ProvisionErrorSetsFlag(t *testing.T) {
 	if len(handles) != 0 {
 		t.Errorf("handles = %+v, want none (provision failed)", handles)
 	}
-	if len(rec.monitorReportRows) != 0 {
-		t.Errorf("no capability_mismatch row should be written for a Provision error; got %+v", rec.monitorReportRows)
+	if len(rec.monitorReportRows) != 1 {
+		t.Fatalf("expected one adapter_error row, got %+v", rec.monitorReportRows)
+	}
+	row := rec.monitorReportRows[0]
+	if row.ReasonCode != adapter.ReasonAdapterError {
+		t.Errorf("row.ReasonCode = %q, want %q", row.ReasonCode, adapter.ReasonAdapterError)
+	}
+	if !strings.Contains(row.RetrieveUnknownReason, "provider returned 500") {
+		t.Errorf("row.RetrieveUnknownReason = %q, want provider error detail", row.RetrieveUnknownReason)
 	}
 }
 
@@ -835,7 +887,7 @@ func TestProvisionAdapters_MixedAdapters(t *testing.T) {
 		KeywordCheck:   adapter.KeywordCheckPresent,
 	}
 
-	handles, provisionErr := provisionAdapters(context.Background(), sc, gateTestTarget(),
+	handles, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
 		[]adapter.Adapter{good, gated, failing}, rec, "run-1", time.Now(), false)
 
 	if !provisionErr {
@@ -844,9 +896,18 @@ func TestProvisionAdapters_MixedAdapters(t *testing.T) {
 	if len(handles) != 1 || handles[0].handle.ServiceID != "good" {
 		t.Errorf("handles = %+v, want one entry from 'good'", handles)
 	}
-	// Exactly one capability_mismatch row, from 'gated'.
-	if len(rec.monitorReportRows) != 1 || rec.monitorReportRows[0].ServiceID != "gated" {
-		t.Errorf("expected one capability_mismatch row from 'gated', got %+v", rec.monitorReportRows)
+	if len(rec.monitorReportRows) != 2 {
+		t.Fatalf("expected capability_mismatch and adapter_error rows, got %+v", rec.monitorReportRows)
+	}
+	rowsByService := map[string]db.MonitorReportRow{}
+	for _, row := range rec.monitorReportRows {
+		rowsByService[row.ServiceID] = row
+	}
+	if rowsByService["gated"].ReasonCode != adapter.ReasonCapabilityMismatch {
+		t.Errorf("expected capability_mismatch row from 'gated', got %+v", rec.monitorReportRows)
+	}
+	if rowsByService["failing"].ReasonCode != adapter.ReasonAdapterError {
+		t.Errorf("expected adapter_error row from 'failing', got %+v", rec.monitorReportRows)
 	}
 	// 'good' was provisioned, 'gated' was not, 'failing' was attempted (Provision called).
 	if good.provisionedAs == nil {

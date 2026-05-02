@@ -342,6 +342,12 @@ type RetrieveResult struct {
 // See docs/events.md for the reporting rules and
 // docs/inter-run-state-design.md for the maintenance/cooldown codes.
 const (
+	// ReasonAdapterError: the adapter failed before it could produce a
+	// usable monitor result, usually during provision or retrieval. The
+	// row is operationally invalid for service-behavior scoring but is
+	// still part of provider/API reliability data.
+	ReasonAdapterError = "adapter_error"
+
 	// ReasonCapabilityMismatch: the harness skipped Provision because
 	// the scenario required a capability the adapter doesn't support.
 	// Never counted as a false negative; queryable as the support matrix.

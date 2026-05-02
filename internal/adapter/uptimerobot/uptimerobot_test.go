@@ -501,6 +501,57 @@ func TestProvision_TimeoutAfterCreateAdoptsMatchingMonitor(t *testing.T) {
 	}
 }
 
+func TestProvision_TimeoutBeforeCreateRetries(t *testing.T) {
+	var newMonitorCalls int
+	var requests []adaptertest.RequestRecord
+	var requestsMu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestsMu.Lock()
+		requests = append(requests, adaptertest.RequestRecord{Method: r.Method, Path: r.URL.Path, Body: body})
+		requestsMu.Unlock()
+		switch r.URL.Path {
+		case "/newMonitor":
+			newMonitorCalls++
+			if newMonitorCalls == 1 {
+				time.Sleep(80 * time.Millisecond)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"stat":"ok","monitor":{"id":999,"status":1}}`))
+		case "/getMonitors":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"stat":"ok","monitors":[]}`))
+		default:
+			t.Errorf("unexpected request path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	a := New("uptimerobot", srv.URL, "k")
+	a.client = &http.Client{Timeout: 20 * time.Millisecond}
+	handle, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{CheckFrequency: 5 * time.Minute},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if handle.MonitorID != "999" {
+		t.Fatalf("MonitorID = %q, want retried monitor 999", handle.MonitorID)
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	gotOrder := make([]string, 0, len(requests))
+	for _, r := range requests {
+		gotOrder = append(gotOrder, r.Path)
+	}
+	if strings.Join(gotOrder, ",") != "/newMonitor,/getMonitors,/newMonitor" {
+		t.Fatalf("request order = %v, want newMonitor, getMonitors, newMonitor", gotOrder)
+	}
+}
+
 func TestProvision_MissingMonitorID(t *testing.T) {
 	var c captured
 	srv := fakeAPI(t, &c, 200, `{"stat":"ok","monitor":{"id":0,"status":1}}`)
@@ -875,7 +926,7 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 	})
 	defer srv.Close()
 
-	start := time.Date(2026, 4, 28, 14, 30, 0, 0, time.UTC)
+	start := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
 	end := start.Add(45 * time.Minute) // 45 minutes, well within the day
 
 	a := newTestAdapter(srv.URL, "u123-XXX")
@@ -926,6 +977,26 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 
 	if handle.Fields["maintenance_id"] != "9000" {
 		t.Errorf("handle.Fields[maintenance_id] = %q, want 9000", handle.Fields["maintenance_id"])
+	}
+}
+
+func TestMaintenanceStartUnixCeilsFractionalStart(t *testing.T) {
+	start := time.Date(2026, 5, 2, 12, 0, 0, int(500*time.Millisecond), time.UTC)
+	now := start.Add(-time.Minute)
+	got := maintenanceStartUnix(start, now)
+	want := start.Truncate(time.Second).Add(time.Second).Unix()
+	if got != want {
+		t.Fatalf("maintenanceStartUnix = %d, want %d", got, want)
+	}
+}
+
+func TestMaintenanceStartUnixClampsPastStart(t *testing.T) {
+	start := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	now := start.Add(1500 * time.Millisecond)
+	got := maintenanceStartUnix(start, now)
+	want := now.Truncate(time.Second).Add(time.Second).Unix()
+	if got != want {
+		t.Fatalf("maintenanceStartUnix = %d, want %d", got, want)
 	}
 }
 
