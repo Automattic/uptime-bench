@@ -1,0 +1,13 @@
+id          = "dns-ns-unavailable-servfail"
+version     = "1"
+description = "One authoritative nameserver returns SERVFAIL — tests nameserver-specific error tolerance"
+target      = "bench-a"
+monitors    = ["jetmon-v1"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 4007
+
+[[failures]]
+type = "dns_ns_unavailable"
+mode = "servfail"

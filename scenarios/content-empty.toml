@@ -1,0 +1,16 @@
+id          = "content-empty"
+version     = "1"
+description = "Page returns 200 OK with a near-empty body — tests white-screen and body-size/content checks"
+target      = "bench-a"
+monitors    = ["jetmon-v1"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 2007
+
+keyword       = "uptime-bench-canary"
+keyword_check = "present"
+
+[[failures]]
+type    = "http_body"
+content = "empty"

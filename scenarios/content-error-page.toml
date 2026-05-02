@@ -1,0 +1,16 @@
+id          = "content-error-page"
+version     = "1"
+description = "Page returns 200 OK with a CMS-style database error page — tests semantic content checks"
+target      = "bench-a"
+monitors    = ["jetmon-v1"]
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 2008
+
+keyword       = "uptime-bench-canary"
+keyword_check = "present"
+
+[[failures]]
+type    = "http_body"
+content = "error_page"

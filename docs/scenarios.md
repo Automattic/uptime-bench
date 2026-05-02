@@ -35,18 +35,18 @@ Can the monitor reach the site at all? These failures happen before any connecti
 - **[v2]** Domain suspended or in client/server hold status
 
 ### DNS resolution
-- **[v1]** NXDOMAIN for apex and `www` subdomain
-- **[v1]** SERVFAIL from authoritative nameservers
-- **[v1]** Timeout contacting authoritative nameservers
+- **[v1]** NXDOMAIN for apex and `www` subdomain — `dns_nxdomain`; checked in as `dns-nxdomain.toml`
+- **[v1]** SERVFAIL from authoritative nameservers — `dns_servfail`; checked in as `dns-servfail.toml`
+- **[v1]** Timeout contacting authoritative nameservers — `dns_timeout`; checked in as `dns-timeout.toml`
 - **[v1]** Resolver returns REFUSED
 - **[v2]** DNSSEC validation failure (bogus signatures, expired signatures, broken chain of trust)
 - **[v2]** CNAME chain exceeds resolver depth limit
-- **[v1]** CNAME pointing to NXDOMAIN target
+- **[v1]** CNAME pointing to NXDOMAIN target — `dns_cname_nxdomain`; checked in as `dns-cname-nxdomain.toml`
 
 ### Nameserver availability
 - **[v2]** All authoritative nameservers for a domain go silent — domain becomes unresolvable without NXDOMAIN or SERVFAIL *(requires controlling the fleet's authoritative nameservers)*
-- **[v2]** Partial nameserver failure — one NS is unreachable while others remain up; tests resolver retry and fallback behavior *(requires multi-NS fleet)*
-- **[v3]** Nameserver responds but with significantly increased latency — DNS resolution succeeds but slowly *(see also `dns_latency` type)*
+- **[v2]** Partial nameserver failure — one NS is unreachable while others remain up; tests resolver retry and fallback behavior — `dns_ns_unavailable`; checked in as `dns-ns-unavailable-silent.toml` and `dns-ns-unavailable-servfail.toml`
+- **[v3]** Nameserver responds but with significantly increased latency — DNS resolution succeeds but slowly — `dns_latency`; checked in as `dns-latency.toml`
 - **[v2]** Registrar-level NS delegation failure: all nameservers listed in the parent zone are simultaneously unreachable *(tests the hardest class of DNS outage — no fallback is possible)*
 
 ### DNS configuration
@@ -84,7 +84,7 @@ The connection itself — TCP, TLS, and the cryptographic handshake.
 ### TCP
 - **[v1]** Connection refused (port closed)
 - **[v1]** Connection reset mid-handshake
-- **[v1]** Connection timeout (SYN with no SYN-ACK)
+- **[v1]** Connection timeout (SYN with no SYN-ACK) — `tcp_timeout`; checked in as `tcp-timeout.toml`
 - **[v2]** Half-open connections (handshake completes but no data flows)
 - **[v1]** Slow handshake exceeding threshold
 
@@ -170,8 +170,8 @@ The systems between the internet and the origin server.
 The server accepts the connection and speaks HTTP — but does it respond correctly and promptly?
 
 ### Connection-level HTTP failures
-- **[v1]** TCP connection accepted, no HTTP response sent (hang)
-- **[v1]** Response timeout (server slow to first byte beyond threshold)
+- **[v1]** TCP connection accepted, no HTTP response sent (hang) — `http_timeout phase="total"`; checked in as `http-timeout-total.toml`
+- **[v1]** Response timeout (server slow to first byte beyond threshold) — `http_timeout phase="ttfb"`; checked in as `http-timeout-ttfb.toml`
 - **[v1]** Connection closed mid-response (truncated body)
 - **[v2]** Method-scoped timeout/truncation: HEAD succeeds but GET stalls before first byte or closes mid-response; inverse HEAD-stalls/GET-healthy cases catch false-down HEAD-only checks
 - **[v2]** Invalid HTTP framing (bad Content-Length, chunked encoding errors)
@@ -197,8 +197,8 @@ The server accepts the connection and speaks HTTP — but does it respond correc
 - **[v3]** Slow-loris-style responses (bytes trickle in over long duration)
 
 ### Redirect behavior
-- **[v1]** Redirect loop (A → B → A)
-- **[v1]** Redirect chain too long (>5 hops)
+- **[v1]** Redirect loop (A → B → A) — `http_redirect variant="loop"`; checked in as `http-redirect-loop.toml`
+- **[v1]** Redirect chain too long (>5 hops) — `http_redirect variant="chain"`; checked in as `http-redirect-chain.toml`
 - **[v1]** Redirect to wrong host
 - **[v1]** HTTPS → HTTP downgrade in redirect chain
 - **[v2]** Redirect strips path or query string when it shouldn't
@@ -222,9 +222,9 @@ The response is valid HTTP — but is the payload actually correct? Layer 5 spli
 
 ### Correctness: silent application failures
 - **[v1]** CMS fatal error rendered with 200 OK (WSOD)
-- **[v1]** "Error establishing a database connection" served as HTML with 200
+- **[v1]** "Error establishing a database connection" served as HTML with 200 — `http_body content="error_page"`; checked in as `content-error-page.toml`
 - **[v1]** PHP fatal errors or stack traces in response body
-- **[v1]** White-screen-of-death (empty or near-empty body, 200 OK)
+- **[v1]** White-screen-of-death (empty or near-empty body, 200 OK) — `http_body content="empty"`; checked in as `content-empty.toml`
 - **[v2]** Python/Ruby/Node tracebacks leaked to response body
 
 ### Correctness: maintenance and transitional states

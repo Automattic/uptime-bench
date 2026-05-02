@@ -10,8 +10,9 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 5. [Report-driven provider reliability](#report-driven-provider-reliability)
 6. [Provider-state preflight cleanup](#provider-state-preflight-cleanup)
 7. [Campaign hardening dry run](#campaign-hardening-dry-run)
-8. [Next-wave adapter expansion](#next-wave-adapter-expansion)
-9. [Jetmon capacity benchmark](#jetmon-capacity-benchmark)
+8. [Provider feature coverage gaps](#provider-feature-coverage-gaps)
+9. [Next-wave adapter expansion](#next-wave-adapter-expansion)
+10. [Jetmon capacity benchmark](#jetmon-capacity-benchmark)
 
 **Lower-priority follow-ups:**
 - [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
@@ -158,7 +159,7 @@ Current state: scenario-level `keyword` / `keyword_check` are parsed, defaulted 
 
 - **Scenario format** — `keyword` is a top-level scenario field (not per-failure), since it's a property of monitor configuration. Sibling field `keyword_check` takes values `present` (alert when keyword absent — the canary case) or `absent` (alert when keyword present — the injected-bad-keyword case). When a scenario contains any content failure but doesn't set `keyword` explicitly, the runner defaults `keyword = "uptime-bench-canary"` and `keyword_check = "present"`.
 - **Capability gating** — when the scenario sets a keyword and the adapter's `SupportsKeyword == false`, the runner skips Provision and writes a single `monitor_reports` row with `Status = Unknown` and a structured `reason_code = "capability_mismatch"` plus a free-form Reason describing the missing capability. Same pattern the runner already uses for `MinCheckFrequency`. **Capability-mismatch results are first-class data**, not noise — they are the support matrix for "which services support which features," which is a project deliverable. Reporting must distinguish them from genuine false negatives (see [events.md](events.md)).
-- **Better Uptime asymmetry** — Better Uptime's `monitor_type = "keyword"` may only support presence checks. If verified during implementation, scenarios with `keyword_check = "absent"` against Better Uptime get gated as a capability mismatch (`SupportsKeyword: true` becomes a more granular pair: `SupportsKeywordPresent` / `SupportsKeywordAbsent`, or a single `SupportsKeyword` flag plus a `SupportsInvertedKeyword` qualifier). The asymmetry is recorded in the data, not papered over.
+- **Better Uptime inverted keyword support** — Better Stack's monitor API supports both `monitor_type = "keyword"` and `monitor_type = "keyword_absence"`. The adapter now exposes `SupportsInvertedKeyword = true` on GET lanes and gates keyword checks on HEAD lanes, where no response body exists.
 
 ### Implementation order
 
@@ -169,10 +170,10 @@ Current state: scenario-level `keyword` / `keyword_check` are parsed, defaulted 
    - **Pingdom**: `newCheckRequest` carries `shouldcontain` (present check) or `shouldnotcontain` (absent check). Type stays `"http"`.
    - **UptimeRobot**: switch `type` from `1` (HTTP) to `2` (Keyword); set `keyword_type=1` for "exists" (present check) or `keyword_type=2` for "not exists" (absent check); set `keyword_value`.
    - **Datadog**: append a `body` assertion to the existing `Assertions` list with operator `contains` (present) or `does not contain` (absent).
-   - **Better Uptime**: switch `monitor_type` from `"status"` to `"keyword"`; set `required_keyword` (present check). If absent-mode is unsupported by the API (verify against the live API as part of this step), set the capability flag accordingly and let the runner gate it.
+   - **Better Uptime**: switch `monitor_type` from `"status"` to `"keyword"` for present checks and `"keyword_absence"` for absent checks; set `required_keyword`. Keyword monitors force GET.
 5. ✅ **Tests** — unit tests for each adapter's keyword branches; integration test that asserts capability gating writes a `monitor_reports` row with the expected `reason_code` instead of a Provision call; corpus check covers the new scenario fields.
 
-Remaining follow-up: broaden live API smoke coverage for each vendor's keyword branch, especially inverted keyword checks and Better Uptime's asymmetric support. Jetmon v1 remains `SupportsKeyword = false` for this comparable keyword axis.
+Remaining follow-up: broaden live API smoke coverage for each vendor's keyword branch, especially inverted keyword checks and Better Uptime's `keyword_absence` mode. Jetmon v1 remains `SupportsKeyword = false` for this comparable keyword axis.
 
 ---
 
@@ -235,6 +236,42 @@ Acceptance:
 - Every replay either produces usable metrics or a classified, queryable reason such as `capability_mismatch`, `adapter_error`, `cooldown_suppressed`, or `cooldown_uncertain`.
 - `uptime-bench-report` produces table, TSV, and JSON output from the resulting campaign run.
 - No monitor, target, or DNS state is left active after the dry run.
+
+## Provider feature coverage gaps
+
+**Status:** In progress. A provider feature pass found several service capabilities that uptime-bench should model explicitly before or alongside the next adapter wave. Some are now represented as scenario files; others need new adapter capability fields or monitor-kind support so results are not distorted by forcing every provider into an HTTP-status monitor shape.
+
+Implemented locally in the scenario corpus:
+
+- Additional content-body failures: `content-empty` and `content-error-page`.
+- Redirect coverage: `http-redirect-loop` and `http-redirect-chain`.
+- Timeout coverage: `http-timeout-body` and `http-timeout-total` in addition to the existing TTFB stall.
+- TCP coverage: `tcp-timeout` in addition to `tcp-refused`.
+- DNS coverage: `dns-nxdomain`, `dns-servfail`, `dns-timeout`, `dns-cname-nxdomain`, `dns-latency`, and both `dns_ns_unavailable` modes.
+
+Adapter-surface improvements started:
+
+- Better Uptime now supports GET/HEAD status-lane configuration and `keyword_absence` for forbidden-content checks on GET lanes.
+- Datadog Synthetics now supports GET/HEAD HTTP API-test configuration and disables body assertions on HEAD lanes.
+- `services.example.toml` documents the optional `http_method` setting for Better Uptime and Datadog Synthetics.
+
+Feature gaps to model next:
+
+- **Native monitor kind selection.** Datadog, Better Stack, Uptime Kuma, and Gatus expose non-HTTP monitor/check kinds such as DNS, TCP/port, SSL/certificate, and heartbeat checks. Add scenario-level or service-level monitor-kind selection so a DNS outage can be evaluated both as "HTTP monitor failed during DNS lookup" and "native DNS monitor detected DNS failure" without conflating the two.
+- **Certificate and domain-expiry products.** Current TLS scenarios test HTTPS probe behavior. Several services also have dedicated SSL/certificate or domain-expiration monitors; those need separate scenarios and adapter provisioning paths because their expected classifications and timing differ from ordinary HTTPS checks.
+- **Heartbeat/push checks.** UptimeRobot, Better Stack, Uptime Kuma, and Gatus all support reverse heartbeat-style checks. Add non-HTTP scenarios that deliberately stop sending check-ins and measure dead-man-switch behavior separately from probe-based uptime.
+- **Response-time thresholds.** Add "slow but eventually successful" HTTP and DNS scenarios that should fire only when a provider has a response-time assertion threshold. This is distinct from timeout scenarios, which end in an incomplete request.
+- **Header and auth-sensitive checks.** Add target-side variants for custom headers, auth requirements, and user-agent divergence. This will let adapters exercise provider support for request headers and reduce false confidence from anonymous GET-only checks.
+- **ICMP/ping checks.** Treat ping checks as a separate monitor kind. They probably require host/firewall-level failure injection rather than the current HTTP/DNS/target control APIs.
+- **Browser/API assertion checks.** Datadog and Checkly can run richer API or browser assertions. Keep these out of the first comparison table, but track them as a separate capability axis because they test application behavior beyond a single probe response.
+- **Regional quorum and probe-location behavior.** Several services support configurable locations or region counts. Campaigns should eventually record whether an alert requires one failed region, all regions, or a quorum, and whether location selection can be pinned for geo-failure tests.
+
+Acceptance:
+
+- Scenario docs and campaign configs include the new scenario files without requiring temporary one-off TOML copies.
+- Adapter capability reporting distinguishes unsupported monitor kinds from false negatives.
+- New monitor-kind adapter paths include stale-resource cleanup before they are enabled in campaign runs.
+- Reports can break out "HTTP monitor observing DNS/TLS/TCP failure" from "native DNS/TLS/TCP monitor" so service comparisons stay fair.
 
 ## Next-wave adapter expansion
 
@@ -696,9 +733,9 @@ The first capacity track compares Jetmon v1 and Jetmon v2 as active monitor coun
 
 Implemented:
 
-- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-service-host-1` and `jetmon-service-host-2`.
+- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-v1.example.com` and `jetmon-v2.example.com`.
 - `cmd/uptime-bench-dockerstats-exporter` exposes Docker API container stats as Prometheus metrics for hosts where cAdvisor cannot identify Docker 29 `overlayfs` / containerd-snapshotter writable layers.
-- The exporter is deployed on both Jetmon hosts at `10.0.0.170:9103` and `10.0.0.171:9103`.
+- The exporter is deployed on both Jetmon hosts at `203.0.113.170:9103` and `203.0.113.171:9103`.
 - `fleet.toml` supports `[[targets.generated_sites]]` ranges so DNS can resolve million-scale synthetic hostnames without expanding all hosts into the zone map.
 - `cmd/uptime-bench-targetload` can probe generated host ranges against DNS and HTTP before those hosts are loaded into Jetmon.
 - `docs/capacity-benchmark.md` records the test shape, stop thresholds, target direction, and bulk lifecycle approach.
