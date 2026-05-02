@@ -580,6 +580,9 @@ func rawClassification(ev eventResponse) string {
 	if strings.EqualFold(ev.CheckType, "tls_expiry") {
 		return "tls_expiry"
 	}
+	if strings.EqualFold(ev.CheckType, "tls_deprecated") {
+		return "tls_deprecated"
+	}
 	if code, ok := metadataInt(ev.Metadata, "error_code"); ok {
 		switch code {
 		case jetmonErrorTimeout:
