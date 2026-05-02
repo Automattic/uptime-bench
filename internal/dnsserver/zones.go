@@ -174,7 +174,7 @@ func nxdomainWithSOA(query []byte, qEnd int, apex ZoneApex) []byte {
 
 	// AUTHORITY-section SOA. The owner name is the zone apex; we
 	// can't reuse the question-section pointer here because the
-	// queried name isn't necessarily the apex (e.g. unknown.harmonic.party).
+	// queried name isn't necessarily the apex (e.g. unknown.example.com).
 	// Emit the apex name uncompressed.
 	apexName := encodeName(apex.Name)
 	auth := make([]byte, 0, len(apexName)+10+len(rdata))

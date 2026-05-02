@@ -125,11 +125,11 @@ func TestSplitHostPath(t *testing.T) {
 		wantHost string
 		wantPath string
 	}{
-		{"http://bench-a.harmonic.party/", "bench-a.harmonic.party", "/"},
-		{"https://bench-a.harmonic.party/health", "bench-a.harmonic.party", "/health"},
-		{"http://bench-a.harmonic.party", "bench-a.harmonic.party", "/"},
-		{"bench-a.harmonic.party", "bench-a.harmonic.party", "/"},
-		{"http://bench-a.harmonic.party/api/v2/health", "bench-a.harmonic.party", "/api/v2/health"},
+		{"http://bench-a.example.com/", "bench-a.example.com", "/"},
+		{"https://bench-a.example.com/health", "bench-a.example.com", "/health"},
+		{"http://bench-a.example.com", "bench-a.example.com", "/"},
+		{"bench-a.example.com", "bench-a.example.com", "/"},
+		{"http://bench-a.example.com/api/v2/health", "bench-a.example.com", "/api/v2/health"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -173,7 +173,7 @@ func TestProvision_RequestShape(t *testing.T) {
 
 	a := newTestAdapter(srv.URL, "tok-abc")
 	handle, err := a.Provision(context.Background(),
-		adapter.Target{ID: "bench-a", URL: "http://bench-a.harmonic.party/"},
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example.com/"},
 		adapter.ProvisionConfig{CheckFrequency: 5 * time.Minute},
 	)
 	if err != nil {
@@ -203,7 +203,7 @@ func TestProvision_RequestShape(t *testing.T) {
 	if got.Type != "http" {
 		t.Errorf("body.type = %q, want http", got.Type)
 	}
-	if got.Host != "bench-a.harmonic.party" {
+	if got.Host != "bench-a.example.com" {
 		t.Errorf("body.host = %q", got.Host)
 	}
 	if got.URL != "/" {
@@ -219,7 +219,7 @@ func TestProvision_RequestShape(t *testing.T) {
 	if handle.MonitorID != "777" {
 		t.Errorf("handle.MonitorID = %q", handle.MonitorID)
 	}
-	if handle.Fields["host"] != "bench-a.harmonic.party" {
+	if handle.Fields["host"] != "bench-a.example.com" {
 		t.Errorf("handle.Fields[host] = %q", handle.Fields["host"])
 	}
 	if handle.Fields["path"] != "/" {

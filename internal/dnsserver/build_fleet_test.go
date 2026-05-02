@@ -142,7 +142,7 @@ func TestBuildFromFleet_UsesDomainNameserverHostsForOutOfZoneDelegation(t *testi
 	}
 	apex := z.Apex["example.org"]
 	if len(apex.NSHostnames) != 2 || apex.NSHostnames[0] != "ns1.example.com" || apex.NSHostnames[1] != "ns2.example.com" {
-		t.Fatalf("NSHostnames = %v, want out-of-zone harmonic-style hosts", apex.NSHostnames)
+		t.Fatalf("NSHostnames = %v, want out-of-zone nameserver hosts", apex.NSHostnames)
 	}
 	if _, ok := z.Records["bench-a.example.org"]; !ok {
 		t.Fatal("target A record missing for out-of-zone delegation domain")

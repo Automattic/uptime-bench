@@ -4,7 +4,7 @@
 //
 //	JETMON_BRIDGE_URL=http://localhost:7400 \
 //	JETMON_BRIDGE_TOKEN=test-bench-token \
-//	JETMON_TARGET_URL=http://bench-a.harmonic.party/ \
+//	JETMON_TARGET_URL=http://bench-a.example.com/ \
 //	go test -tags live -run Live ./internal/adapter/jetmonv1/ -v
 //
 // Without the `live` build tag this file is skipped entirely.
@@ -25,7 +25,7 @@
 //     docker exec docker-mysql-1 mysql -u root -pjetmon_test jetmon_db -e \
 //     "INSERT INTO jetpack_monitor_sites \
 //     (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval, last_status_change) \
-//     VALUES (9001, 0, 'http://bench-a.harmonic.party/', 1, 1, 5, NOW());"
+//     VALUES (9001, 0, 'http://bench-a.example.com/', 1, 1, 5, NOW());"
 //
 // The two tests cover both halves of the adapter contract: read mode
 // (just the lookup, no DB writes) and write mode (creates and deactivates
