@@ -462,6 +462,15 @@ func provisionAdapters(
 ) (handles []provisioned, provisionErr bool) {
 	for _, a := range adapters {
 		caps := a.Capabilities()
+		if !caps.SupportsMonitorKind(sc.MonitorKind) {
+			log.Printf("runner: skip %s: scenario requires monitor_kind=%s (not supported)", a.ServiceID(), sc.MonitorKind)
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     fmt.Sprintf("scenario requires monitor_kind = %s; adapter does not support it", sc.MonitorKind),
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
 		if sc.CheckFrequency < caps.MinCheckFrequency {
 			log.Printf("runner: skip %s: check_frequency %v < min %v", a.ServiceID(), sc.CheckFrequency, caps.MinCheckFrequency)
 			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
@@ -498,6 +507,24 @@ func provisionAdapters(
 			})
 			continue
 		}
+		if sc.ResponseTimeThreshold > 0 && !caps.SupportsResponseTimeThreshold {
+			log.Printf("runner: skip %s: scenario requires response-time threshold (not supported)", a.ServiceID())
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     "scenario requires response_time_threshold; adapter SupportsResponseTimeThreshold = false",
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
+		if len(sc.RequestHeaders) > 0 && !caps.SupportsRequestHeaders {
+			log.Printf("runner: skip %s: scenario requires custom request headers (not supported)", a.ServiceID())
+			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
+				Status:     adapter.RetrieveUnknown,
+				Reason:     "scenario requires request_headers; adapter SupportsRequestHeaders = false",
+				ReasonCode: adapter.ReasonCapabilityMismatch,
+			})
+			continue
+		}
 		if requireCooldownReset && !caps.SupportsCooldownReset {
 			log.Printf("runner: skip %s: campaign requires cooldown reset support", a.ServiceID())
 			logMonitorReport(ctx, database, runID, a, adapter.RetrieveResult{
@@ -510,9 +537,12 @@ func provisionAdapters(
 
 		tgt := adapter.Target{ID: sc.Target, URL: monitorTargetURLForEndpoint(sc, endpoint)}
 		cfg := adapter.ProvisionConfig{
-			CheckFrequency: sc.CheckFrequency,
-			Keyword:        sc.Keyword,
-			KeywordCheck:   sc.KeywordCheck,
+			CheckFrequency:        sc.CheckFrequency,
+			MonitorKind:           sc.MonitorKind,
+			Keyword:               sc.Keyword,
+			KeywordCheck:          sc.KeywordCheck,
+			ResponseTimeThreshold: sc.ResponseTimeThreshold,
+			RequestHeaders:        sc.RequestHeaders,
 		}
 		cfg.MaintenanceWindow = maintenanceWindowFor(sc, startedAt)
 		handle, err := a.Provision(ctx, tgt, cfg)
@@ -670,6 +700,15 @@ func failureParams(sc *scenario.Scenario, f scenario.Failure) map[string]any {
 	p := map[string]any{"rate": f.Rate}
 	if f.StatusCode != 0 {
 		p["status_code"] = f.StatusCode
+	}
+	if f.HeaderName != "" {
+		p["header_name"] = f.HeaderName
+	}
+	if f.HeaderValue != "" {
+		p["header_value"] = f.HeaderValue
+	}
+	if sc != nil && len(sc.RequestHeaders) > 0 {
+		p["request_headers"] = sc.RequestHeaders
 	}
 	if f.Method != "" {
 		p["method"] = f.Method

@@ -1,0 +1,18 @@
+id          = "http-header-status"
+version     = "1"
+description = "Probe with a configured custom header receives 503 while ordinary GET remains healthy"
+target      = "bench-a"
+monitors    = ["jetmon-v2"]
+monitor_kind = "http"
+check_frequency = "60s"
+grace_period    = "180s"
+duration        = "300s"
+seed            = 1018
+
+request_headers = { "X-Uptime-Bench" = "header-status" }
+
+[[failures]]
+type         = "http_header_status"
+status_code  = 503
+header_name  = "X-Uptime-Bench"
+header_value = "header-status"

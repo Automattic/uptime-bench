@@ -79,6 +79,10 @@ type Capabilities struct {
     // Provision returns *FrequencyError if the requested interval is shorter.
     MinCheckFrequency time.Duration
 
+    // MonitorKinds lists native monitor kinds the adapter can provision.
+    // Empty means HTTP only.
+    MonitorKinds []string
+
     // SupportsKeyword indicates whether the service can verify a keyword
     // in the response body. When true, the adapter honors
     // ProvisionConfig.Keyword in present-mode.
@@ -101,6 +105,14 @@ type Capabilities struct {
     // SupportsCooldownReset indicates whether Deprovision or a reset path can
     // clear vendor-side alert cooldown before the next run.
     SupportsCooldownReset bool
+
+    // SupportsResponseTimeThreshold indicates whether the adapter can configure
+    // a monitor-side response-time assertion.
+    SupportsResponseTimeThreshold bool
+
+    // SupportsRequestHeaders indicates whether the adapter can configure custom
+    // request headers on monitor probes.
+    SupportsRequestHeaders bool
 
     // DefaultMaxCallsPerRun is the adapter's own default API call budget per
     // run. The harness uses this when no per-adapter limit is set in fleet.toml.
@@ -126,6 +138,9 @@ type ProvisionConfig struct {
     // this interval, Provision returns *FrequencyError.
     CheckFrequency time.Duration
 
+    // MonitorKind is the requested native monitor kind. Empty means HTTP.
+    MonitorKind string
+
     // Keyword is the string the monitor should verify in the response body.
     // Empty means no keyword check. Ignored if Capabilities.SupportsKeyword is false.
     Keyword string
@@ -137,6 +152,12 @@ type ProvisionConfig struct {
     // MaintenanceWindow requests vendor-side alert suppression for [Start, End].
     // The runner only passes this when SupportsMaintenanceWindows is true.
     MaintenanceWindow *MaintenanceWindow
+
+    // ResponseTimeThreshold requests a slow-response assertion. Zero disables it.
+    ResponseTimeThreshold time.Duration
+
+    // RequestHeaders are custom headers the monitor should send.
+    RequestHeaders map[string]string
 }
 
 // FrequencyError is returned by Provision when the service cannot meet the
@@ -257,6 +278,9 @@ func (h *Harness) compatible(a Adapter, s Scenario) error {
             MinAchievable: caps.MinCheckFrequency,
         }
     }
+    if !caps.SupportsMonitorKind(s.MonitorKind) {
+        return fmt.Errorf("%s: does not support monitor kind %s", a.ServiceID(), s.MonitorKind)
+    }
     if s.RequiresKeyword && !caps.SupportsKeyword {
         return fmt.Errorf("%s: does not support keyword checks", a.ServiceID())
     }
@@ -265,6 +289,12 @@ func (h *Harness) compatible(a Adapter, s Scenario) error {
     }
     if s.RequiresMaintenanceWindow && !caps.SupportsMaintenanceWindows {
         return fmt.Errorf("%s: does not support maintenance windows", a.ServiceID())
+    }
+    if s.RequiresResponseTimeThreshold && !caps.SupportsResponseTimeThreshold {
+        return fmt.Errorf("%s: does not support response-time thresholds", a.ServiceID())
+    }
+    if s.RequiresRequestHeaders && !caps.SupportsRequestHeaders {
+        return fmt.Errorf("%s: does not support custom request headers", a.ServiceID())
     }
     return nil
 }

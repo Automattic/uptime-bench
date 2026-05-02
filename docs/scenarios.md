@@ -192,6 +192,7 @@ The server accepts the connection and speaks HTTP — but does it respond correc
 
 ### Network timing breakdown
 - **[v1]** Total response time exceeds threshold
+- **[v1]** Slow successful response exceeds configured monitor threshold — `http_latency` plus `response_time_threshold`; checked in as `http-latency-threshold.toml`
 - **[v1]** Time to First Byte (TTFB) exceeds threshold
 - **[v2]** DNS lookup time exceeds threshold
 - **[v2]** TCP connect time exceeds threshold
@@ -210,6 +211,7 @@ The server accepts the connection and speaks HTTP — but does it respond correc
 
 ### Header anomalies
 - **[v1]** Missing `Content-Type`
+- **[v1]** Monitor-specific custom header receives a failure response — `http_header_status`; checked in as `http-header-status.toml`
 - **[v2]** Wrong `Content-Type` (HTML served as `text/plain`)
 - **[v2]** Missing security headers when expected
 - **[v3]** Malformed `Cache-Control` causing CDN misbehavior

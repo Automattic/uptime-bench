@@ -151,6 +151,7 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 		SupportsAgentChecks:        true,
 		SupportsMaintenanceWindows: true,
 		SupportsCooldownReset:      true,
+		SupportsRequestHeaders:     true,
 		DefaultMaxCallsPerRun:      0, // self-hosted internal API
 	}
 }
@@ -215,6 +216,10 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		return adapter.MonitorHandle{}, err
 	}
 	checkKeyword, forbiddenKeyword := keywordRules(config)
+	customHeaders := config.RequestHeaders
+	if customHeaders == nil {
+		customHeaders = map[string]string{}
+	}
 
 	var lastErr error
 	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
@@ -232,7 +237,7 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 			CheckKeyword:         checkKeyword,
 			ForbiddenKeyword:     forbiddenKeyword,
 			RedirectPolicy:       "follow",
-			CustomHeaders:        map[string]string{},
+			CustomHeaders:        customHeaders,
 			AlertCooldownMinutes: &cooldown,
 			CheckInterval:        checkInterval,
 		}

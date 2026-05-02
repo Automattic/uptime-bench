@@ -926,7 +926,8 @@ func TestProvision_WithMaintenanceWindow(t *testing.T) {
 	})
 	defer srv.Close()
 
-	start := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	nowUTC := time.Now().UTC()
+	start := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), 12, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
 	end := start.Add(45 * time.Minute) // 45 minutes, well within the day
 
 	a := newTestAdapter(srv.URL, "u123-XXX")

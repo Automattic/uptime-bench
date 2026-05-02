@@ -78,6 +78,9 @@ func TestCapabilities(t *testing.T) {
 	if !c.SupportsCooldownReset {
 		t.Error("SupportsCooldownReset should be true")
 	}
+	if !c.SupportsRequestHeaders {
+		t.Error("SupportsRequestHeaders should be true")
+	}
 }
 
 func TestNormalize(t *testing.T) {
@@ -204,6 +207,9 @@ func TestProvision_RequestShape(t *testing.T) {
 	if got.AlertCooldownMinutes == nil || *got.AlertCooldownMinutes != 0 {
 		t.Errorf("alert_cooldown_minutes = %v, want 0", got.AlertCooldownMinutes)
 	}
+	if got.CustomHeaders == nil {
+		t.Error("custom_headers should be an empty map, not nil")
+	}
 
 	if handle.MonitorID != "8000000000000123" {
 		t.Errorf("MonitorID = %q, want response site id", handle.MonitorID)
@@ -216,6 +222,35 @@ func TestProvision_RequestShape(t *testing.T) {
 	}
 	if handle.Fields["check_interval"] != "5" {
 		t.Errorf("check_interval field = %q, want 5", handle.Fields["check_interval"])
+	}
+}
+
+func TestProvision_CustomHeaders(t *testing.T) {
+	var c captured
+	body := `{"id":8000000000000123,"blog_id":8000000000000123,"monitor_url":"http://bench-a.example/","monitor_active":true,"bucket_no":17,"check_interval":5,"current_state":"Up","current_severity":0,"redirect_policy":"follow"}`
+	srv := fakeAPI(t, &c, http.StatusCreated, body)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok-abc")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency: 5 * time.Minute,
+			RequestHeaders: map[string]string{
+				"X-Uptime-Bench": "token",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	var got createSiteRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatalf("body unmarshal: %v", err)
+	}
+	if got.CustomHeaders["X-Uptime-Bench"] != "token" {
+		t.Fatalf("custom_headers = %+v, want X-Uptime-Bench token", got.CustomHeaders)
 	}
 }
 

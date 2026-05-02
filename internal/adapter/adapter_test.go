@@ -34,3 +34,21 @@ func TestEmptyCleanupScopeMatchesEverything(t *testing.T) {
 		t.Fatal("empty cleanup scope should match any host")
 	}
 }
+
+func TestCapabilitiesSupportsMonitorKind(t *testing.T) {
+	var httpOnly Capabilities
+	if !httpOnly.SupportsMonitorKind(MonitorKindHTTP) {
+		t.Fatal("empty MonitorKinds should support HTTP")
+	}
+	if httpOnly.SupportsMonitorKind(MonitorKindDNS) {
+		t.Fatal("empty MonitorKinds should not support DNS")
+	}
+
+	caps := Capabilities{MonitorKinds: []string{MonitorKindHTTP, MonitorKindDNS}}
+	if !caps.SupportsMonitorKind(MonitorKindDNS) {
+		t.Fatal("explicit MonitorKinds should support DNS")
+	}
+	if caps.SupportsMonitorKind(MonitorKindHeartbeat) {
+		t.Fatal("explicit MonitorKinds should not support heartbeat unless listed")
+	}
+}

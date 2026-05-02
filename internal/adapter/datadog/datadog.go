@@ -113,8 +113,10 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 		// Cooldown resets naturally because Deprovision deletes the
 		// synthetic test (and its attached monitor) per run; the next
 		// Provision creates a fresh one with no inherited alert state.
-		SupportsCooldownReset: true,
-		DefaultMaxCallsPerRun: 100, // generous; Datadog rate limits per endpoint
+		SupportsCooldownReset:         true,
+		SupportsResponseTimeThreshold: true,
+		SupportsRequestHeaders:        true,
+		DefaultMaxCallsPerRun:         100, // generous; Datadog rate limits per endpoint
 	}
 }
 
@@ -150,8 +152,9 @@ type testConfig struct {
 }
 
 type testRequest struct {
-	Method string `json:"method"`
-	URL    string `json:"url"`
+	Method  string            `json:"method"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // testAssertion describes one validation Datadog applies to the response.
@@ -229,6 +232,13 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 	assertions := []testAssertion{
 		{Type: "statusCode", Operator: "is", Target: 200},
 	}
+	if config.ResponseTimeThreshold > 0 {
+		assertions = append(assertions, testAssertion{
+			Type:     "responseTime",
+			Operator: "lessThan",
+			Target:   int(config.ResponseTimeThreshold.Round(time.Millisecond) / time.Millisecond),
+		})
+	}
 	if config.Keyword != "" {
 		if requestMethod == http.MethodHead {
 			return adapter.MonitorHandle{}, fmt.Errorf("datadog: keyword monitoring is not supported for HEAD checks")
@@ -256,8 +266,9 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 		Locations: []string{"aws:us-east-1"}, // most accounts have this; operators on EU/etc may need to override via tags
 		Config: testConfig{
 			Request: testRequest{
-				Method: requestMethod,
-				URL:    target.URL,
+				Method:  requestMethod,
+				URL:     target.URL,
+				Headers: config.RequestHeaders,
 			},
 			Assertions: assertions,
 		},
@@ -409,6 +420,7 @@ type resultsResponse struct {
 
 type resultEntry struct {
 	ResultID  string `json:"result_id"`
+	Location  string `json:"location,omitempty"`
 	CheckTime int64  `json:"check_time"` // milliseconds since epoch
 	Status    int    `json:"status"`     // 0 = pass, 1 = fail
 	Result    struct {
@@ -471,6 +483,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 				RetrievedAt:       now,
 				Metadata: map[string]any{
 					"result_id":  r.ResultID,
+					"location":   r.Location,
 					"event_type": r.Result.EventType,
 				},
 			})
@@ -482,6 +495,7 @@ func (a *Adapter) Retrieve(ctx context.Context, handle adapter.MonitorHandle, wi
 				RetrievedAt:       now,
 				Metadata: map[string]any{
 					"result_id":  r.ResultID,
+					"location":   r.Location,
 					"event_type": r.Result.EventType,
 				},
 			})

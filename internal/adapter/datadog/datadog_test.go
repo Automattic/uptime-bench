@@ -74,6 +74,12 @@ func TestCapabilities(t *testing.T) {
 	if head.SupportsInvertedKeyword {
 		t.Error("HEAD lane should not support inverted keyword checks")
 	}
+	if !c.SupportsResponseTimeThreshold {
+		t.Error("SupportsResponseTimeThreshold should be true")
+	}
+	if !c.SupportsRequestHeaders {
+		t.Error("SupportsRequestHeaders should be true")
+	}
 }
 
 func TestNormalize(t *testing.T) {
@@ -297,6 +303,39 @@ func TestProvision_KeywordAbsent(t *testing.T) {
 	}
 }
 
+func TestProvision_ResponseTimeThresholdAndHeaders(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, 200, `{"public_id":"a-b-c"}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "AK", "PK")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:        time.Minute,
+			ResponseTimeThreshold: 2500 * time.Millisecond,
+			RequestHeaders:        map[string]string{"X-Uptime-Bench": "token"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	var got newTestRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Config.Request.Headers["X-Uptime-Bench"] != "token" {
+		t.Fatalf("headers = %+v, want X-Uptime-Bench token", got.Config.Request.Headers)
+	}
+	if len(got.Config.Assertions) != 2 {
+		t.Fatalf("want 2 assertions (statusCode + responseTime), got %d", len(got.Config.Assertions))
+	}
+	rt := got.Config.Assertions[1]
+	if rt.Type != "responseTime" || rt.Operator != "lessThan" || rt.Target != float64(2500) {
+		t.Errorf("responseTime assertion = %+v, want lessThan 2500ms", rt)
+	}
+}
+
 func TestProvision_ErrorMessageInBody(t *testing.T) {
 	var c captured
 	srv := fakeAPI(t, &c, 200, `{"errors":["invalid url"]}`)
@@ -350,7 +389,7 @@ func TestRetrieve_CoalescesPassFailTransitions(t *testing.T) {
 	body := `{
 		"results": [
 			{"result_id":"r1","check_time":1714000000000,"status":0,"result":{"eventType":"Recovered"}},
-			{"result_id":"r2","check_time":1714000060000,"status":1,"result":{"eventType":"Alert"}},
+			{"result_id":"r2","location":"aws:us-east-1","check_time":1714000060000,"status":1,"result":{"eventType":"Alert"}},
 			{"result_id":"r3","check_time":1714000120000,"status":0,"result":{"eventType":"Recovered"}}
 		]
 	}`
@@ -375,6 +414,9 @@ func TestRetrieve_CoalescesPassFailTransitions(t *testing.T) {
 	}
 	if res.Reports[0].EventType != adapter.EventAlertFired {
 		t.Errorf("Reports[0] = %q, want alert_fired", res.Reports[0].EventType)
+	}
+	if res.Reports[0].Metadata["location"] != "aws:us-east-1" {
+		t.Errorf("Reports[0].Metadata[location] = %v", res.Reports[0].Metadata["location"])
 	}
 	if res.Reports[1].EventType != adapter.EventAlertResolved {
 		t.Errorf("Reports[1] = %q, want alert_resolved", res.Reports[1].EventType)

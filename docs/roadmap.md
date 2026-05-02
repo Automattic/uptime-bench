@@ -248,23 +248,26 @@ Implemented locally in the scenario corpus:
 - Timeout coverage: `http-timeout-body` and `http-timeout-total` in addition to the existing TTFB stall.
 - TCP coverage: `tcp-timeout` in addition to `tcp-refused`.
 - DNS coverage: `dns-nxdomain`, `dns-servfail`, `dns-timeout`, `dns-cname-nxdomain`, `dns-latency`, and both `dns_ns_unavailable` modes.
+- Slow-success coverage: `http-latency-threshold` exercises response-time threshold assertions without turning the HTTP request into a timeout.
+- Header-sensitive coverage: `http-header-status` verifies that an adapter can configure custom request headers and that the target can fail only matching monitor probes.
 
 Adapter-surface improvements started:
 
 - Better Uptime now supports GET/HEAD status-lane configuration and `keyword_absence` for forbidden-content checks on GET lanes.
-- Datadog Synthetics now supports GET/HEAD HTTP API-test configuration and disables body assertions on HEAD lanes.
+- Datadog Synthetics now supports GET/HEAD HTTP API-test configuration, disables body assertions on HEAD lanes, configures custom request headers, configures response-time assertions, and preserves result location metadata when the API returns it.
+- Jetmon v2 now receives custom request headers from scenario config through its adapter.
 - `services.example.toml` documents the optional `http_method` setting for Better Uptime and Datadog Synthetics.
+- Scenario parsing, adapter capabilities, and runner capability gating now understand native `monitor_kind` values (`http`, `dns`, `tcp`, `ssl_certificate`, `heartbeat`), custom `request_headers`, and `response_time_threshold`.
 
 Feature gaps to model next:
 
-- **Native monitor kind selection.** Datadog, Better Stack, Uptime Kuma, and Gatus expose non-HTTP monitor/check kinds such as DNS, TCP/port, SSL/certificate, and heartbeat checks. Add scenario-level or service-level monitor-kind selection so a DNS outage can be evaluated both as "HTTP monitor failed during DNS lookup" and "native DNS monitor detected DNS failure" without conflating the two.
-- **Certificate and domain-expiry products.** Current TLS scenarios test HTTPS probe behavior. Several services also have dedicated SSL/certificate or domain-expiration monitors; those need separate scenarios and adapter provisioning paths because their expected classifications and timing differ from ordinary HTTPS checks.
-- **Heartbeat/push checks.** UptimeRobot, Better Stack, Uptime Kuma, and Gatus all support reverse heartbeat-style checks. Add non-HTTP scenarios that deliberately stop sending check-ins and measure dead-man-switch behavior separately from probe-based uptime.
-- **Response-time thresholds.** Add "slow but eventually successful" HTTP and DNS scenarios that should fire only when a provider has a response-time assertion threshold. This is distinct from timeout scenarios, which end in an incomplete request.
-- **Header and auth-sensitive checks.** Add target-side variants for custom headers, auth requirements, and user-agent divergence. This will let adapters exercise provider support for request headers and reduce false confidence from anonymous GET-only checks.
-- **ICMP/ping checks.** Treat ping checks as a separate monitor kind. They probably require host/firewall-level failure injection rather than the current HTTP/DNS/target control APIs.
-- **Browser/API assertion checks.** Datadog and Checkly can run richer API or browser assertions. Keep these out of the first comparison table, but track them as a separate capability axis because they test application behavior beyond a single probe response.
-- **Regional quorum and probe-location behavior.** Several services support configurable locations or region counts. Campaigns should eventually record whether an alert requires one failed region, all regions, or a quorum, and whether location selection can be pinned for geo-failure tests.
+- **Native DNS/TCP/SSL monitor adapter paths.** The schema/gating layer is implemented, but every current adapter still provisions HTTP monitors unless explicitly extended. This is deferred because each provider uses a different request and result schema for native DNS, TCP/port, and SSL/certificate monitors; enabling those paths without stale cleanup and classification tests would produce misleading comparisons.
+- **Dedicated certificate and domain-expiry products.** Current TLS scenarios test HTTPS probe behavior. Native SSL/certificate monitor kinds should come next after one provider adapter is wired through `monitor_kind = "ssl_certificate"`. Domain-expiry monitors remain deferred because reliable simulation requires registrar/RDAP behavior rather than only target TLS behavior.
+- **Heartbeat/push checks.** `monitor_kind = "heartbeat"` is reserved, but no adapter provisions heartbeat monitors yet. The intended first implementation is harness-owned heartbeat sending: adapter provisions a heartbeat endpoint, the harness sends check-ins during healthy periods, and `heartbeat_stopped` pauses those check-ins. This is deferred until the first adapter exposes heartbeat creation and stale cleanup.
+- **Header/auth-sensitive checks beyond custom headers.** Custom request-header support is implemented for Datadog and Jetmon v2. Authentication flows and user-agent divergence remain deferred because they need clearer cross-provider request-shape controls and target fixtures beyond a single deterministic header.
+- **ICMP/ping checks.** Treat ping checks as a separate monitor kind. Deferred because credible ICMP failure injection needs host/firewall-level or isolated-VM control; doing this on the shared target fleet could interfere with concurrent HTTP/DNS/TLS scenarios.
+- **Browser/API assertion checks.** Datadog and Checkly can run richer API or browser assertions. Deferred from the first comparison table because browser checks have different cost, flake, dependency, and timing behavior than single-probe uptime checks. API assertions should be the first sub-track when a provider adapter needs richer structured checks.
+- **Regional quorum and probe-location behavior.** Datadog result location metadata is now preserved when present. Provider-controlled location selection and alert quorum are deferred because they require provider-specific provisioning fields and report dimensions; publishable geo results should wait until location/quorum settings are explicit in run metadata.
 
 Acceptance:
 
@@ -764,18 +767,18 @@ The `offset` field is honored by the runner: failures activate at `scenario_star
 
 ## Method-sensitive HTTP behavior beyond status
 
-**Status:** Partially implemented. `http_method_status` covers the two high-priority HEAD/GET status mismatches: HEAD failure with healthy GET, and healthy HEAD with GET failure. Measurement now scores `http_method_status method="HEAD"` as a healthy-GET false-down trap rather than as a missed outage when no alert fires, while `method="GET"` remains a visitor-visible outage. The target also honors optional `method = "GET"` / `"HEAD"` predicates for `http_redirect`, `http_timeout`, `http_partial`, and `http_body`, with shipped scenarios for GET-only redirect loops, GET-only truncated bodies, GET-only TTFB stalls, and HEAD-only TTFB stalls. Header-sensitive behaviors remain deferred until the method cases produce real benchmark data.
+**Status:** Partially implemented. `http_method_status` covers the two high-priority HEAD/GET status mismatches: HEAD failure with healthy GET, and healthy HEAD with GET failure. Measurement now scores `http_method_status method="HEAD"` as a healthy-GET false-down trap rather than as a missed outage when no alert fires, while `method="GET"` remains a visitor-visible outage. The target also honors optional `method = "GET"` / `"HEAD"` predicates for `http_redirect`, `http_timeout`, `http_partial`, and `http_body`, with shipped scenarios for GET-only redirect loops, GET-only truncated bodies, GET-only TTFB stalls, and HEAD-only TTFB stalls. One custom-header status variant is implemented; broader user-agent, accept-header, auth, and body-shape divergence remains deferred until the method cases produce more benchmark data.
 
 These are expected Jetmon-v1 pitfalls if it relies on shallow HEAD/status checks, and they should become Jetmon-v2 regression cases if v2 probes the user-visible GET path:
 
 - **Method-scoped redirects:** HEAD returns 200 while GET enters a redirect loop. Inverse cases such as GET healthy but HEAD redirected/challenged, wrong-host redirects, and HTTPS downgrade redirects remain future variants.
 - **Method-scoped latency and truncation:** HEAD returns quickly with 200 while GET stalls before first byte or closes mid-response; the inverse HEAD-stalls/GET-healthy case is also represented for TTFB stalls. Body-phase stalls remain future variants.
-- **Request-header divergence:** the origin, WAF, cache, or bot protection serves different status/content for monitor-specific `User-Agent`, `Accept`, `Accept-Language`, or missing browser-like headers. This can create either false-up or false-down results depending on which request shape the monitor uses.
+- **Request-header divergence:** the origin, WAF, cache, or bot protection serves different status/content for monitor-specific `User-Agent`, `Accept`, `Accept-Language`, auth headers, or missing browser-like headers. The checked-in `http-header-status` scenario covers a deterministic custom-header status failure; richer request-shape divergence can create either false-up or false-down results depending on which headers the monitor actually sends.
 
 Implementation shape:
 
-- Extend the target failure matcher beyond `(type, host, path)` to include optional request predicates. `method` is implemented; selected headers and maybe user-agent substring remain deferred.
-- Add method/header-scoped variants for `http_redirect`, `http_timeout`, `http_partial`, and selected `http_body` scenarios once the matcher can express them cleanly. Method-scoped target support exists now; remaining work is adding header-scoped variants and deciding which method/body combinations deserve campaign weight.
+- Extend the target failure matcher beyond `(type, host, path)` to include optional request predicates. `method` and one custom-header status path are implemented; user-agent substring and richer header predicates remain deferred.
+- Add method/header-scoped variants for `http_redirect`, `http_timeout`, `http_partial`, and selected `http_body` scenarios once the matcher can express them cleanly. Method-scoped target support exists now; remaining work is adding richer header-scoped variants and deciding which method/body combinations deserve campaign weight.
 - Keep the existing content scenarios as the baseline for "GET body is bad while HEAD/status looks fine"; those already cover ransomware, defacement, malicious script, SEO spam, keyword missing, and keyword injection.
 
 ---
@@ -830,7 +833,7 @@ Simulating this requires:
 
 ## Heartbeat and agent-based reverse checks
 
-**Status:** Not implemented. Deferred until monitor services ship this capability.
+**Status:** Not implemented. `monitor_kind = "heartbeat"` is reserved in the scenario schema; provisioning and target-side sender support are deferred until a first adapter implementation is selected.
 
 Heartbeat monitoring (dead-man's switch) and agent-based checks (wp-cron, scheduled task monitoring) require the monitored system to actively send signals to the monitor, rather than the monitor probing the site.
 
@@ -840,7 +843,7 @@ uptime-bench's target fleet is currently passive — it responds to probes. Simu
 - A control command (`heartbeat_stopped`) that pauses the sender for the failure window.
 - Adapter support to provision a heartbeat monitor (endpoint URL, expected interval).
 
-This architectural extension should be designed when the first monitor service ships heartbeat support. The control API and scenario schema are designed to accommodate new failure types without breaking changes.
+This architectural extension should be designed when the first monitor service ships heartbeat support. The control API and scenario schema are designed to accommodate new failure types without breaking changes, and the monitor-kind field can now route such scenarios away from HTTP-only adapters.
 
 ---
 
