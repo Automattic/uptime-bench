@@ -15,6 +15,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/adapter"
@@ -846,14 +847,23 @@ func deprovisionAll(handles []provisioned) int {
 	if len(handles) == 0 {
 		return 0
 	}
-	errs := 0
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(handles))
 	for _, p := range handles {
-		if err := deprovisionOne(p); err != nil {
-			log.Printf("runner: deprovision %s: %v", p.a.ServiceID(), err)
-			errs++
-		}
+		p := p
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := deprovisionOne(p); err != nil {
+				log.Printf("runner: deprovision %s: %v", p.a.ServiceID(), err)
+				errCh <- err
+			}
+		}()
 	}
-	return errs
+	wg.Wait()
+	close(errCh)
+	return len(errCh)
 }
 
 func deprovisionOne(p provisioned) error {
