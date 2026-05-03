@@ -283,6 +283,17 @@ func serviceLifecycle(id string, svc ServiceConfig, target TargetConfig, checks 
 		path := strings.TrimSpace(lc.DSNFile)
 		info, err := os.Stat(path)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return ServiceLifecycle{
+					ID:      id,
+					Config:  plan,
+					DSNEnv:  strings.TrimSpace(lc.DSNEnv),
+					DSNFile: path,
+					APIURL:  strings.TrimSpace(svc.APIURL),
+					Bridge:  strings.TrimSpace(svc.BridgeURL),
+					BulkVia: strings.TrimSpace(svc.BulkLifecycle),
+				}, nil
+			}
 			return ServiceLifecycle{}, fmt.Errorf("%s lifecycle: stat dsn_file: %w", id, err)
 		}
 		if info.IsDir() {

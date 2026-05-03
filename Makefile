@@ -169,8 +169,8 @@ REPORT_OUT_DIR ?=
 report-campaign: $(BINARY_REPORT)
 	$(BINARY_REPORT) -campaign=$(CAMPAIGN) -format=$(REPORT_FORMAT)
 
-PROMETHEUS_URL ?= http://localhost:9090
-CAPACITY_INSTANCES ?= jetmon-v1.example.com,jetmon-v2.example.com
+PROMETHEUS_URL ?= http://10.0.0.67:9091
+CAPACITY_INSTANCES ?= jetmon-service-host-1,jetmon-service-host-2
 CAPACITY_DURATION ?= 15m
 CAPACITY_FORMAT ?= table
 CAPACITY_RUN_DIR ?=
@@ -327,12 +327,13 @@ help:
 	@echo "  make provider-cleanup Dry-run stale provider resource cleanup"
 	@echo "    [CLEANUP_FLEET=fleet.toml] [CLEANUP_SERVICES=services.toml] [CLEANUP_DRY_RUN=true]"
 	@echo "  make capacity-metrics Summarize Jetmon v1/v2 Prometheus capacity metrics"
-	@echo "    [PROMETHEUS_URL=http://localhost:9090] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
+	@echo "    [PROMETHEUS_URL=http://10.0.0.67:9091] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
 	@echo "  make capacity-capture-run CAPACITY_RUN_DIR=reports/<run-tag>"
 	@echo "    Capture the exact run.meta.tsv window into reports/<run-tag>/capacity/"
 	@echo "  make capacity-jetmon-run"
 	@echo "    Generate or apply guarded Jetmon v1/v2 capacity lifecycle artifacts"
 	@echo "    [JETMON_CAPACITY_RUN_ARGS='-mode=run-batch -active-count=10 -duration=5m [-apply]']"
+	@echo "  deploy/capacity-db-access.sh  Provision stable DSN files and SSH tunnels for live capacity runs"
 	@echo "  deploy/dockerstats-exporter.sh HOST [USER]  Deploy per-container Prometheus exporter"
 	@echo "  bin/uptime-bench-targetload -url-pattern=...  Probe generated target/DNS capacity"
 	@echo ""

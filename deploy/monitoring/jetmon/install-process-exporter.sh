@@ -3,12 +3,12 @@ set -euo pipefail
 
 hosts=("$@")
 if [[ "${#hosts[@]}" -eq 0 ]]; then
-  hosts=(jetmon-v1.example.com jetmon-v2.example.com)
+  hosts=(jetmon-service-host-1 jetmon-service-host-2)
 fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ssh_config="${SSH_CONFIG:-$HOME/.ssh/config}"
-prometheus_cidr="${PROMETHEUS_CIDR:-203.0.113.0/24}"
+prometheus_cidr="${PROMETHEUS_CIDR:-10.0.0.0/24}"
 
 for host in "${hosts[@]}"; do
   echo "Installing process exporter on ${host}"

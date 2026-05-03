@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -128,6 +130,12 @@ type RunManifest struct {
 	WindowStart      *time.Time          `json:"window_start,omitempty"`
 	WindowEnd        *time.Time          `json:"window_end,omitempty"`
 	DeactivatedAt    *time.Time          `json:"deactivated_at,omitempty"`
+	LifecycleStatus  string              `json:"lifecycle_status,omitempty"`
+	HealthStatus     string              `json:"health_status,omitempty"`
+	PrometheusStatus string              `json:"prometheus_status,omitempty"`
+	PrometheusError  string              `json:"prometheus_error,omitempty"`
+	CleanupStatus    string              `json:"cleanup_status,omitempty"`
+	CleanupError     string              `json:"cleanup_error,omitempty"`
 	Services         []ServiceManifest   `json:"services"`
 	Artifacts        []Artifact          `json:"artifacts"`
 	Executions       []ExecutionManifest `json:"executions,omitempty"`
@@ -171,18 +179,36 @@ type ExecutionManifest struct {
 
 // ServiceHealth is a compact DB-derived health snapshot.
 type ServiceHealth struct {
-	Service                string   `json:"service"`
-	Action                 string   `json:"action"`
-	Status                 string   `json:"status"`
-	Reason                 string   `json:"reason,omitempty"`
-	BenchmarkSites         *int64   `json:"benchmark_sites,omitempty"`
-	ActiveSites            *int64   `json:"active_sites,omitempty"`
-	ExpectedActiveSites    *int64   `json:"expected_active_sites,omitempty"`
-	StaleActiveSites       *int64   `json:"stale_active_sites,omitempty"`
-	MissedCheckPercent     *float64 `json:"missed_check_percent,omitempty"`
-	OpenEvents             *int64   `json:"open_events,omitempty"`
-	RecentCheckHistoryRows *int64   `json:"recent_check_history_rows,omitempty"`
-	FreshnessMeasured      bool     `json:"freshness_measured"`
+	Service                string            `json:"service"`
+	Action                 string            `json:"action"`
+	Status                 string            `json:"status"`
+	Reason                 string            `json:"reason,omitempty"`
+	BenchmarkSites         *int64            `json:"benchmark_sites,omitempty"`
+	ActiveSites            *int64            `json:"active_sites,omitempty"`
+	ExpectedActiveSites    *int64            `json:"expected_active_sites,omitempty"`
+	StaleActiveSites       *int64            `json:"stale_active_sites,omitempty"`
+	MissedCheckPercent     *float64          `json:"missed_check_percent,omitempty"`
+	OpenEvents             *int64            `json:"open_events,omitempty"`
+	RecentCheckHistoryRows *int64            `json:"recent_check_history_rows,omitempty"`
+	RecentChecksPerMinute  *float64          `json:"recent_checks_per_minute,omitempty"`
+	FreshnessWindowMinutes int               `json:"freshness_window_minutes,omitempty"`
+	FreshnessSamples       *int64            `json:"freshness_samples,omitempty"`
+	FreshestCheckAgeSec    *float64          `json:"freshest_check_age_sec,omitempty"`
+	AverageCheckAgeSec     *float64          `json:"average_check_age_sec,omitempty"`
+	P50CheckAgeSec         *float64          `json:"p50_check_age_sec,omitempty"`
+	P95CheckAgeSec         *float64          `json:"p95_check_age_sec,omitempty"`
+	P99CheckAgeSec         *float64          `json:"p99_check_age_sec,omitempty"`
+	OldestCheckAgeSec      *float64          `json:"oldest_check_age_sec,omitempty"`
+	StaleBuckets           []BucketFreshness `json:"stale_buckets,omitempty"`
+	FreshnessMeasured      bool              `json:"freshness_measured"`
+}
+
+// BucketFreshness summarizes stale rows in one scheduler bucket.
+type BucketFreshness struct {
+	BucketNo         int     `json:"bucket_no"`
+	ActiveSites      int64   `json:"active_sites"`
+	StaleActiveSites int64   `json:"stale_active_sites"`
+	StalePercent     float64 `json:"stale_percent"`
 }
 
 // ThresholdFinding records one pass/fail/not-measured threshold check.
@@ -350,59 +376,89 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 		defer cancel()
 		cleanupErr := r.applyAction(cleanupCtx, dir, activated, OperationDeactivate, "cleanup-deactivate", 0, true, false, m)
 		if cleanupErr != nil {
+			m.CleanupStatus = "fail"
+			m.CleanupError = cleanupErr.Error()
 			err = errors.Join(err, fmt.Errorf("cleanup failed: %w", cleanupErr))
+		} else {
+			m.CleanupStatus = "pass"
 		}
 	}()
 
+	if apply {
+		if err := r.preflightPrometheus(ctx, cfg, promURL, m); err != nil {
+			return err
+		}
+	}
+
+	m.LifecycleStatus = "running"
 	if apply {
 		activated, err = r.activateServices(ctx, dir, services, activeCount, true, m)
 	} else {
 		err = r.activateServicesDryRun(ctx, dir, services, activeCount, m)
 	}
 	if err != nil {
+		m.LifecycleStatus = "fail"
 		return err
 	}
 	if !apply {
 		if err := r.applyAction(ctx, dir, services, OperationDeactivate, "deactivate", 0, false, false, m); err != nil {
+			m.LifecycleStatus = "fail"
 			return err
 		}
+		m.LifecycleStatus = "pass"
 		return r.verifyServices(ctx, dir, services, "verify", false, activeCount, m)
 	}
 
 	start := r.Clock.Now().UTC()
 	m.WindowStart = &start
 	if err := WriteManifest(dir, *m); err != nil {
+		m.LifecycleStatus = "fail"
 		return fmt.Errorf("write activation manifest: %w", err)
 	}
 	if err := r.Sleeper.Sleep(ctx, duration); err != nil {
+		m.LifecycleStatus = "fail"
 		return fmt.Errorf("batch window interrupted: %w", err)
 	}
 	end := r.Clock.Now().UTC()
 	m.WindowEnd = &end
 
 	if err := r.verifyServices(ctx, dir, services, "window-end-verify", true, activeCount, m); err != nil {
+		m.LifecycleStatus = "fail"
 		return err
 	}
 	if err := r.applyAction(ctx, dir, services, OperationDeactivate, "deactivate", 0, true, false, m); err != nil {
+		m.CleanupStatus = "fail"
+		m.CleanupError = err.Error()
 		return err
 	}
 	activated = nil
 	deactivatedAt := r.Clock.Now().UTC()
 	m.DeactivatedAt = &deactivatedAt
+	m.CleanupStatus = "deactivated"
 
 	if err := r.collectPrometheus(ctx, dir, cfg, promURL, start, end, m); err != nil {
-		return err
+		m.PrometheusStatus = "fail"
+		m.PrometheusError = err.Error()
+		m.Notes = append(m.Notes, "Prometheus capture failed: "+err.Error())
 	}
 	if err := r.verifyServices(ctx, dir, services, "post-deactivate-verify", true, 0, m); err != nil {
+		m.CleanupStatus = "fail"
+		m.CleanupError = err.Error()
 		return err
 	}
+	m.CleanupStatus = "pass"
 	m.Thresholds = append(m.Thresholds, EvaluateThresholds(m.Health, m.PrometheusURL, cfg.StopThreshold, m.loadPrometheusReport(dir))...)
+	setHealthStatus(m)
 	setStopRecommendation(m)
+	m.LifecycleStatus = "pass"
 	return nil
 }
 
 func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLifecycle, cfg RunConfig, duration, cooldown time.Duration, apply, forceReseed bool, promURL string, m *RunManifest) error {
 	if apply {
+		if err := r.preflightPrometheus(ctx, cfg, promURL, m); err != nil {
+			return err
+		}
 		if err := r.collectBaseline(ctx, dir, cfg, promURL, m); err != nil {
 			return err
 		}
@@ -611,7 +667,17 @@ func (r Runner) assertSeedSafe(ctx context.Context, service ServiceLifecycle, fo
 
 func (r Runner) execServiceSQL(ctx context.Context, service ServiceLifecycle, sqlText string) (SQLExecutionResult, error) {
 	if !service.HasDSN {
-		return SQLExecutionResult{}, fmt.Errorf("%s requires a DSN; set %s or configure dsn_file", service.ID, service.DSNEnv)
+		var hints []string
+		if service.DSNEnv != "" {
+			hints = append(hints, "set "+service.DSNEnv)
+		}
+		if service.DSNFile != "" {
+			hints = append(hints, "create dsn_file "+service.DSNFile)
+		}
+		if len(hints) == 0 {
+			hints = append(hints, "configure dsn_env or dsn_file")
+		}
+		return SQLExecutionResult{}, fmt.Errorf("%s requires a DSN; %s", service.ID, strings.Join(hints, " or "))
 	}
 	return r.Executor.ExecuteSQL(ctx, service.DSN, sqlText)
 }
@@ -630,12 +696,64 @@ func (r Runner) collectPrometheus(ctx context.Context, dir string, cfg RunConfig
 	return r.collectPrometheusTo(ctx, filepath.Join(dir, "prometheus-window.json"), cfg, promURL, start, end, m)
 }
 
+func (r Runner) preflightPrometheus(ctx context.Context, cfg RunConfig, promURL string, m *RunManifest) error {
+	promURL = strings.TrimSpace(promURL)
+	if promURL == "" {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = "prometheus_url is required for live capacity windows"
+		return fmt.Errorf("prometheus preflight: prometheus_url is required for live capacity windows")
+	}
+	if len(cfg.Instances) == 0 {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = "instances are required for live capacity windows"
+		return fmt.Errorf("prometheus preflight: instances are required for live capacity windows")
+	}
+	if refs := placeholderPrometheusReferences(promURL, cfg.Instances); len(refs) > 0 {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = "example Prometheus configuration in live apply run: " + strings.Join(refs, ", ")
+		return fmt.Errorf("prometheus preflight: refusing live apply run with example Prometheus configuration: %s", strings.Join(refs, ", "))
+	}
+	step, err := cfg.StepDuration()
+	if err != nil {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = err.Error()
+		return fmt.Errorf("prometheus preflight step: %w", err)
+	}
+	rateWindow, err := cfg.RateWindowDuration()
+	if err != nil {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = err.Error()
+		return fmt.Errorf("prometheus preflight rate window: %w", err)
+	}
+	end := r.Clock.Now().UTC()
+	window := rateWindow + 2*step
+	if window < time.Minute {
+		window = time.Minute
+	}
+	report, err := r.Collector.Collect(ctx, promURL, cfg.Instances, end.Add(-window), end, step, rateWindow)
+	if err != nil {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = err.Error()
+		return fmt.Errorf("prometheus preflight: %w", err)
+	}
+	missing := missingScrapeUpInstances(report, cfg.Instances)
+	if len(missing) > 0 {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = "missing scrape_up series for instances: " + strings.Join(missing, ", ")
+		return fmt.Errorf("prometheus preflight: missing scrape_up series for instances: %s", strings.Join(missing, ", "))
+	}
+	m.PrometheusStatus = "preflight_pass"
+	return nil
+}
+
 func (r Runner) collectPrometheusTo(ctx context.Context, path string, cfg RunConfig, promURL string, start, end time.Time, m *RunManifest) error {
 	if strings.TrimSpace(promURL) == "" {
+		m.PrometheusStatus = "skipped"
 		m.Notes = append(m.Notes, "Prometheus capture skipped: prometheus_url is empty")
 		return nil
 	}
 	if len(cfg.Instances) == 0 {
+		m.PrometheusStatus = "skipped"
 		m.Notes = append(m.Notes, "Prometheus capture skipped: instances is empty")
 		return nil
 	}
@@ -659,6 +777,8 @@ func (r Runner) collectPrometheusTo(ctx context.Context, path string, cfg RunCon
 		return fmt.Errorf("write prometheus report: %w", err)
 	}
 	m.Artifacts = append(m.Artifacts, Artifact{Action: strings.TrimSuffix(filepath.Base(path), ".json"), Path: path})
+	m.PrometheusStatus = "pass"
+	m.PrometheusError = ""
 	return nil
 }
 
@@ -705,6 +825,24 @@ func WriteSummary(dir string, m RunManifest) error {
 	if m.DeactivatedAt != nil {
 		fmt.Fprintf(&b, "Deactivated At: %s\n", m.DeactivatedAt.Format(time.RFC3339))
 	}
+	if m.LifecycleStatus != "" {
+		fmt.Fprintf(&b, "Lifecycle Status: %s\n", m.LifecycleStatus)
+	}
+	if m.HealthStatus != "" {
+		fmt.Fprintf(&b, "Health Status: %s\n", m.HealthStatus)
+	}
+	if m.PrometheusStatus != "" {
+		fmt.Fprintf(&b, "Prometheus Status: %s\n", m.PrometheusStatus)
+	}
+	if m.PrometheusError != "" {
+		fmt.Fprintf(&b, "Prometheus Error: %s\n", m.PrometheusError)
+	}
+	if m.CleanupStatus != "" {
+		fmt.Fprintf(&b, "Cleanup Status: %s\n", m.CleanupStatus)
+	}
+	if m.CleanupError != "" {
+		fmt.Fprintf(&b, "Cleanup Error: %s\n", m.CleanupError)
+	}
 	if m.Error != "" {
 		fmt.Fprintf(&b, "Error: %s\n", m.Error)
 	}
@@ -723,19 +861,43 @@ func WriteSummary(dir string, m RunManifest) error {
 	if len(m.Health) > 0 {
 		fmt.Fprintln(&b, "\nService Health:")
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "SERVICE\tACTION\tSTATUS\tACTIVE\tEXPECTED\tMISSED_CHECK_%\tREASON")
+		fmt.Fprintln(tw, "SERVICE\tACTION\tSTATUS\tACTIVE\tEXPECTED\tSTALE\tMISSED_CHECK_%\tRECENT_ROWS\tRECENT/MIN\tP95_AGE_SEC\tOLDEST_AGE_SEC\tREASON")
 		for _, h := range m.Health {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				h.Service,
 				h.Action,
 				h.Status,
 				formatIntPtr(h.ActiveSites),
 				formatIntPtr(h.ExpectedActiveSites),
+				formatIntPtr(h.StaleActiveSites),
 				formatFloatPtr(h.MissedCheckPercent),
+				formatIntPtr(h.RecentCheckHistoryRows),
+				formatFloatPtr(h.RecentChecksPerMinute),
+				formatFloatPtr(h.P95CheckAgeSec),
+				formatFloatPtr(h.OldestCheckAgeSec),
 				h.Reason,
 			)
 		}
 		_ = tw.Flush()
+	}
+	if bucketRows := summaryBucketRows(m.Health, 20); len(bucketRows) > 0 {
+		fmt.Fprintln(&b, "\nBucket Staleness:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SERVICE\tACTION\tBUCKET\tACTIVE\tSTALE\tSTALE_%")
+		for _, row := range bucketRows {
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%.2f\n",
+				row.Service,
+				row.Action,
+				row.Bucket.BucketNo,
+				row.Bucket.ActiveSites,
+				row.Bucket.StaleActiveSites,
+				row.Bucket.StalePercent,
+			)
+		}
+		_ = tw.Flush()
+		if omitted := countBucketRows(m.Health) - len(bucketRows); omitted > 0 {
+			fmt.Fprintf(&b, "... %d additional bucket rows omitted from summary; see run.json for the full list.\n", omitted)
+		}
 	}
 	if len(m.Thresholds) > 0 {
 		fmt.Fprintln(&b, "\nThresholds:")
@@ -837,7 +999,34 @@ func serviceHealthFromVerify(service ServiceLifecycle, action string, result SQL
 	}
 	if history, ok := firstInt64(result, "recent_check_history_rows"); ok {
 		health.RecentCheckHistoryRows = &history
+		if defaultFreshSinceMinutes > 0 {
+			recentPerMinute := float64(history) / float64(defaultFreshSinceMinutes)
+			health.RecentChecksPerMinute = &recentPerMinute
+			health.FreshnessWindowMinutes = defaultFreshSinceMinutes
+		}
 	}
+	if samples, ok := firstInt64(result, "freshness_samples"); ok {
+		health.FreshnessSamples = &samples
+	}
+	if freshest, ok := firstFloat64(result, "freshest_check_age_sec"); ok {
+		health.FreshestCheckAgeSec = &freshest
+	}
+	if average, ok := firstFloat64(result, "average_check_age_sec"); ok {
+		health.AverageCheckAgeSec = &average
+	}
+	if p50, ok := firstFloat64(result, "p50_check_age_sec"); ok {
+		health.P50CheckAgeSec = &p50
+	}
+	if p95, ok := firstFloat64(result, "p95_check_age_sec"); ok {
+		health.P95CheckAgeSec = &p95
+	}
+	if p99, ok := firstFloat64(result, "p99_check_age_sec"); ok {
+		health.P99CheckAgeSec = &p99
+	}
+	if oldest, ok := firstFloat64(result, "oldest_check_age_sec"); ok {
+		health.OldestCheckAgeSec = &oldest
+	}
+	health.StaleBuckets = bucketFreshnessRows(result)
 	return health
 }
 
@@ -953,6 +1142,70 @@ func setStopRecommendation(m *RunManifest) {
 	}
 }
 
+func setHealthStatus(m *RunManifest) {
+	if len(m.Health) == 0 {
+		m.HealthStatus = "not_measured"
+		return
+	}
+	m.HealthStatus = "pass"
+	for _, h := range m.Health {
+		if h.Status == "fail" {
+			m.HealthStatus = "fail"
+			return
+		}
+	}
+	for _, finding := range m.Thresholds {
+		if finding.Name == "missed_check_percent" && finding.Status == "fail" {
+			m.HealthStatus = "fail"
+			return
+		}
+	}
+}
+
+func placeholderPrometheusReferences(promURL string, instances []string) []string {
+	var refs []string
+	if parsed, err := url.Parse(promURL); err == nil {
+		if isPlaceholderHost(parsed.Hostname()) {
+			refs = append(refs, promURL)
+		}
+	} else if strings.Contains(strings.ToLower(promURL), "example.") {
+		refs = append(refs, promURL)
+	}
+	for _, instance := range instances {
+		if isPlaceholderHost(instance) {
+			refs = append(refs, instance)
+		}
+	}
+	return refs
+}
+
+func isPlaceholderHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), ".")
+	return host == "example.com" ||
+		host == "example.net" ||
+		host == "example.org" ||
+		strings.HasSuffix(host, ".example.com") ||
+		strings.HasSuffix(host, ".example.net") ||
+		strings.HasSuffix(host, ".example.org")
+}
+
+func missingScrapeUpInstances(report capacitybench.Report, instances []string) []string {
+	present := make(map[string]bool, len(instances))
+	for _, summary := range report.Summaries {
+		if summary.Query != "scrape_up" || summary.Samples == 0 || summary.Last < 1 {
+			continue
+		}
+		present[summary.Labels["instance"]] = true
+	}
+	var missing []string
+	for _, instance := range instances {
+		if !present[instance] {
+			missing = append(missing, instance)
+		}
+	}
+	return missing
+}
+
 func firstInt64(result SQLExecutionResult, column string) (int64, bool) {
 	for _, stmt := range result.Statements {
 		for i, col := range stmt.Columns {
@@ -974,6 +1227,130 @@ func firstInt64(result SQLExecutionResult, column string) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func firstFloat64(result SQLExecutionResult, column string) (float64, bool) {
+	for _, stmt := range result.Statements {
+		for i, col := range stmt.Columns {
+			if col != column {
+				continue
+			}
+			if len(stmt.Rows) == 0 || i >= len(stmt.Rows[0]) {
+				return 0, false
+			}
+			value := stmt.Rows[0][i]
+			if value == "NULL" || value == "" {
+				return 0, false
+			}
+			parsed, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return 0, false
+			}
+			return parsed, true
+		}
+	}
+	return 0, false
+}
+
+func bucketFreshnessRows(result SQLExecutionResult) []BucketFreshness {
+	stmt, ok := statementWithColumns(result, "bucket_no", "active_sites", "stale_active_sites")
+	if !ok {
+		return nil
+	}
+	bucketIdx := columnIndex(stmt.Columns, "bucket_no")
+	activeIdx := columnIndex(stmt.Columns, "active_sites")
+	staleIdx := columnIndex(stmt.Columns, "stale_active_sites")
+	var rows []BucketFreshness
+	for _, row := range stmt.Rows {
+		if bucketIdx >= len(row) || activeIdx >= len(row) || staleIdx >= len(row) {
+			continue
+		}
+		bucketNo, err := strconv.Atoi(row[bucketIdx])
+		if err != nil {
+			continue
+		}
+		active, err := strconv.ParseInt(row[activeIdx], 10, 64)
+		if err != nil {
+			continue
+		}
+		stale, err := strconv.ParseInt(row[staleIdx], 10, 64)
+		if err != nil {
+			continue
+		}
+		var stalePercent float64
+		if active > 0 {
+			stalePercent = float64(stale) / float64(active) * 100
+		}
+		rows = append(rows, BucketFreshness{
+			BucketNo:         bucketNo,
+			ActiveSites:      active,
+			StaleActiveSites: stale,
+			StalePercent:     stalePercent,
+		})
+	}
+	return rows
+}
+
+func statementWithColumns(result SQLExecutionResult, columns ...string) (SQLStatementResult, bool) {
+	for _, stmt := range result.Statements {
+		matches := true
+		for _, column := range columns {
+			if columnIndex(stmt.Columns, column) == -1 {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return stmt, true
+		}
+	}
+	return SQLStatementResult{}, false
+}
+
+func columnIndex(columns []string, want string) int {
+	for i, column := range columns {
+		if column == want {
+			return i
+		}
+	}
+	return -1
+}
+
+type summaryBucketRow struct {
+	Service string
+	Action  string
+	Bucket  BucketFreshness
+}
+
+func summaryBucketRows(health []ServiceHealth, limit int) []summaryBucketRow {
+	var rows []summaryBucketRow
+	for _, h := range health {
+		for _, bucket := range h.StaleBuckets {
+			rows = append(rows, summaryBucketRow{
+				Service: h.Service,
+				Action:  h.Action,
+				Bucket:  bucket,
+			})
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Bucket.StalePercent == rows[j].Bucket.StalePercent {
+			return rows[i].Bucket.StaleActiveSites > rows[j].Bucket.StaleActiveSites
+		}
+		return rows[i].Bucket.StalePercent > rows[j].Bucket.StalePercent
+	})
+	if limit > 0 && len(rows) > limit {
+		return rows[:limit]
+	}
+	return rows
+}
+
+func countBucketRows(health []ServiceHealth) int {
+	var count int
+	for _, h := range health {
+		count += len(h.StaleBuckets)
+	}
+	return count
 }
 
 func appendReason(existing, extra string) string {

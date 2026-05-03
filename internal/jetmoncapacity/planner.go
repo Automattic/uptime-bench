@@ -354,6 +354,45 @@ FROM jetmon_check_history
 WHERE blog_id BETWEEN %d AND %d
   AND checked_at >= UTC_TIMESTAMP() - INTERVAL %d MINUTE;
 `, c.BlogIDStart, c.BlogIDEnd(), freshSinceMinutes)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "-- Freshness lag percentiles for active checked rows in the benchmark-owned range.")
+	fmt.Fprintf(w, `WITH freshness AS (
+  SELECT TIMESTAMPDIFF(SECOND, last_checked_at, UTC_TIMESTAMP()) AS check_age_sec
+  FROM jetpack_monitor_sites
+  WHERE blog_id BETWEEN %d AND %d
+    AND monitor_active = 1
+    AND last_checked_at IS NOT NULL
+),
+ranked AS (
+  SELECT
+    check_age_sec,
+    CUME_DIST() OVER (ORDER BY check_age_sec) AS cumulative_rank
+  FROM freshness
+)
+SELECT
+  COUNT(*) AS freshness_samples,
+  MIN(check_age_sec) AS freshest_check_age_sec,
+  AVG(check_age_sec) AS average_check_age_sec,
+  MIN(CASE WHEN cumulative_rank >= 0.50 THEN check_age_sec END) AS p50_check_age_sec,
+  MIN(CASE WHEN cumulative_rank >= 0.95 THEN check_age_sec END) AS p95_check_age_sec,
+  MIN(CASE WHEN cumulative_rank >= 0.99 THEN check_age_sec END) AS p99_check_age_sec,
+  MAX(check_age_sec) AS oldest_check_age_sec
+FROM ranked;
+`, c.BlogIDStart, c.BlogIDEnd())
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "-- Stale active sites by scheduler bucket.")
+	fmt.Fprintf(w, `SELECT
+  bucket_no,
+  COUNT(*) AS active_sites,
+  SUM(CASE WHEN last_checked_at IS NULL OR last_checked_at < UTC_TIMESTAMP() - INTERVAL %d MINUTE THEN 1 ELSE 0 END) AS stale_active_sites
+FROM jetpack_monitor_sites
+WHERE blog_id BETWEEN %d AND %d
+  AND monitor_active = 1
+GROUP BY bucket_no
+ORDER BY bucket_no;
+`, freshSinceMinutes, c.BlogIDStart, c.BlogIDEnd())
 }
 
 func writeInsertBatchSQL(w io.Writer, c Config, offset, n int) error {

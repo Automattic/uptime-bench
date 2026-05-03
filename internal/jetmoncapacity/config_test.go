@@ -164,6 +164,34 @@ func TestServiceLifecyclesReadsDSNFile(t *testing.T) {
 	}
 }
 
+func TestServiceLifecyclesAllowsMissingDSNFileForPlanning(t *testing.T) {
+	cfg := RunConfig{
+		Targets: TargetConfig{URLPattern: "http://site-%d.example.test/", Count: 10},
+		Checks:  ChecksConfig{Interval: "1m"},
+		JetmonV1: ServiceConfig{Lifecycle: LifecycleConfig{
+			Schema:      SchemaV1,
+			BlogIDStart: 100,
+			Count:       10,
+			DSNFile:     filepath.Join(t.TempDir(), "missing-dsn"),
+		}},
+		JetmonV2: ServiceConfig{Lifecycle: LifecycleConfig{
+			Schema:      SchemaV2,
+			BlogIDStart: 200,
+			Count:       10,
+		}},
+	}
+	services, err := cfg.ServiceLifecycles([]string{"jetmon-v1"})
+	if err != nil {
+		t.Fatalf("ServiceLifecycles: %v", err)
+	}
+	if services[0].HasDSN {
+		t.Fatalf("HasDSN = true, want false for missing dsn_file")
+	}
+	if services[0].DSNFile == "" {
+		t.Fatalf("DSNFile was not preserved: %#v", services[0])
+	}
+}
+
 func TestServiceLifecyclesRejectsLooseDSNFilePermissions(t *testing.T) {
 	dir := t.TempDir()
 	dsnPath := filepath.Join(dir, "dsn")

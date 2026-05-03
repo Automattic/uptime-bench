@@ -736,7 +736,7 @@ The first capacity track compares Jetmon v1 and Jetmon v2 as active monitor coun
 
 Implemented:
 
-- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-v1.example.com` and `jetmon-v2.example.com`.
+- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-service-host-1` and `jetmon-service-host-2`.
 - `cmd/uptime-bench-dockerstats-exporter` exposes Docker API container stats as Prometheus metrics for hosts where cAdvisor cannot identify Docker 29 `overlayfs` / containerd-snapshotter writable layers.
 - The exporter is deployed on both Jetmon hosts at `203.0.113.170:9103` and `203.0.113.171:9103`.
 - `fleet.toml` supports `[[targets.generated_sites]]` ranges so DNS can resolve million-scale synthetic hostnames without expanding all hosts into the zone map.
