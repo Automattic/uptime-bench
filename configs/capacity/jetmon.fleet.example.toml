@@ -21,6 +21,7 @@ url_start = 1
 [target_preflight]
 timeout = "5s"
 expected_status = 200
+check_sources = ["runner"]
 # Set skip_http=true only when planning or when the runner cannot reach the
 # generated target namespace. Live apply runs should leave HTTP checks enabled.
 skip_http = false

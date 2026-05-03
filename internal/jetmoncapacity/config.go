@@ -44,9 +44,10 @@ type TargetConfig struct {
 // TargetPreflightConfig controls exact activated-target validation before a
 // live capacity window starts.
 type TargetPreflightConfig struct {
-	SkipHTTP       bool   `toml:"skip_http"`
-	Timeout        string `toml:"timeout"`
-	ExpectedStatus int    `toml:"expected_status"`
+	SkipHTTP       bool     `toml:"skip_http"`
+	Timeout        string   `toml:"timeout"`
+	ExpectedStatus int      `toml:"expected_status"`
+	CheckSources   []string `toml:"check_sources"`
 }
 
 // ChecksConfig describes the monitor check cadence.
@@ -151,6 +152,7 @@ func (c RunConfig) Normalize() RunConfig {
 	if c.TargetPreflight.ExpectedStatus == 0 {
 		c.TargetPreflight.ExpectedStatus = http.StatusOK
 	}
+	c.TargetPreflight.CheckSources = normalizeCheckSources(c.TargetPreflight.CheckSources)
 	if c.Checks.Interval == "" {
 		c.Checks.Interval = "1m"
 	}
@@ -179,6 +181,23 @@ func (c RunConfig) Normalize() RunConfig {
 		c.JetmonV2.Lifecycle.Schema = SchemaV2
 	}
 	return c
+}
+
+func normalizeCheckSources(sources []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(sources))
+	for _, source := range sources {
+		source = strings.TrimSpace(source)
+		if source == "" || seen[source] {
+			continue
+		}
+		seen[source] = true
+		out = append(out, source)
+	}
+	if len(out) == 0 {
+		return []string{"runner"}
+	}
+	return out
 }
 
 // Validate checks the run config without requiring live DB credentials.
