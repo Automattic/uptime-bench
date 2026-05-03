@@ -1,0 +1,1445 @@
+package jetmoncapacity
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/Automattic/uptime-bench/internal/capacitybench"
+)
+
+// RunOptions describes one capacity runner invocation.
+type RunOptions struct {
+	ConfigPath       string
+	Mode             string
+	Services         []string
+	ActiveCount      int
+	DurationOverride time.Duration
+	OutDir           string
+	Apply            bool
+	ForceReseed      bool
+	PrometheusURL    string
+}
+
+// Runner executes guarded Jetmon capacity lifecycle runs.
+type Runner struct {
+	Executor  SQLExecutor
+	Collector PrometheusCollector
+	Clock     Clock
+	Sleeper   Sleeper
+}
+
+// SQLExecutor executes rendered SQL against a service DB.
+type SQLExecutor interface {
+	ExecuteSQL(ctx context.Context, dsn string, sqlText string) (SQLExecutionResult, error)
+}
+
+// PrometheusCollector captures one Prometheus window.
+type PrometheusCollector interface {
+	Collect(ctx context.Context, promURL string, instances []string, start, end time.Time, step, rateWindow time.Duration) (capacitybench.Report, error)
+}
+
+// Clock is injected so run windows can be tested without wall-clock sleeps.
+type Clock interface {
+	Now() time.Time
+}
+
+// Sleeper waits for batch windows and cooldowns.
+type Sleeper interface {
+	Sleep(ctx context.Context, duration time.Duration) error
+}
+
+// DefaultSQLExecutor uses the package MySQL executor.
+type DefaultSQLExecutor struct{}
+
+// ExecuteSQL executes SQL on a MySQL DSN.
+func (DefaultSQLExecutor) ExecuteSQL(ctx context.Context, dsn string, sqlText string) (SQLExecutionResult, error) {
+	return ExecuteSQL(ctx, dsn, sqlText)
+}
+
+// DefaultPrometheusCollector uses capacitybench's default query set.
+type DefaultPrometheusCollector struct{}
+
+// Collect captures a capacity metrics window.
+func (DefaultPrometheusCollector) Collect(ctx context.Context, promURL string, instances []string, start, end time.Time, step, rateWindow time.Duration) (capacitybench.Report, error) {
+	instanceRegex, err := capacitybench.InstanceRegex(instances)
+	if err != nil {
+		return capacitybench.Report{}, fmt.Errorf("prometheus instances: %w", err)
+	}
+	client := &capacitybench.PrometheusClient{
+		BaseURL: promURL,
+		Client:  &http.Client{Timeout: 30 * time.Second},
+	}
+	summaries, err := capacitybench.Collect(ctx, client, capacitybench.DefaultQueries(instanceRegex, rateWindow), start, end, step)
+	if err != nil {
+		return capacitybench.Report{}, fmt.Errorf("prometheus collect: %w", err)
+	}
+	return capacitybench.Report{
+		PrometheusURL: promURL,
+		Start:         start,
+		End:           end,
+		Step:          step.String(),
+		Instances:     instances,
+		Summaries:     summaries,
+	}, nil
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now().UTC() }
+
+type realSleeper struct{}
+
+func (realSleeper) Sleep(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// RunManifest is the operator-facing artifact for one invocation or batch.
+type RunManifest struct {
+	ID               string              `json:"id"`
+	Mode             string              `json:"mode"`
+	Apply            bool                `json:"apply"`
+	ForceReseed      bool                `json:"force_reseed,omitempty"`
+	ConfigPath       string              `json:"config_path"`
+	OutDir           string              `json:"out_dir"`
+	ActiveCount      int                 `json:"active_count,omitempty"`
+	BatchCount       int                 `json:"batch_count,omitempty"`
+	BatchDuration    string              `json:"batch_duration,omitempty"`
+	Cooldown         string              `json:"cooldown,omitempty"`
+	EstimatedRuntime string              `json:"estimated_runtime,omitempty"`
+	PrometheusURL    string              `json:"prometheus_url,omitempty"`
+	Instances        []string            `json:"instances,omitempty"`
+	CreatedAt        time.Time           `json:"created_at"`
+	WindowStart      *time.Time          `json:"window_start,omitempty"`
+	WindowEnd        *time.Time          `json:"window_end,omitempty"`
+	DeactivatedAt    *time.Time          `json:"deactivated_at,omitempty"`
+	LifecycleStatus  string              `json:"lifecycle_status,omitempty"`
+	HealthStatus     string              `json:"health_status,omitempty"`
+	PrometheusStatus string              `json:"prometheus_status,omitempty"`
+	PrometheusError  string              `json:"prometheus_error,omitempty"`
+	CleanupStatus    string              `json:"cleanup_status,omitempty"`
+	CleanupError     string              `json:"cleanup_error,omitempty"`
+	Services         []ServiceManifest   `json:"services"`
+	Artifacts        []Artifact          `json:"artifacts"`
+	Executions       []ExecutionManifest `json:"executions,omitempty"`
+	Health           []ServiceHealth     `json:"health,omitempty"`
+	Thresholds       []ThresholdFinding  `json:"thresholds,omitempty"`
+	StopRecommended  bool                `json:"stop_recommended,omitempty"`
+	StopReason       string              `json:"stop_reason,omitempty"`
+	Error            string              `json:"error,omitempty"`
+	Notes            []string            `json:"notes,omitempty"`
+}
+
+// ServiceManifest describes one service namespace in a manifest.
+type ServiceManifest struct {
+	ID                   string `json:"id"`
+	Schema               string `json:"schema"`
+	BlogIDStart          int64  `json:"blog_id_start"`
+	BlogIDEnd            int64  `json:"blog_id_end"`
+	ReservedCount        int    `json:"reserved_count"`
+	URLNumberStart       int64  `json:"url_number_start"`
+	BucketMin            int    `json:"bucket_min"`
+	BucketMax            int    `json:"bucket_max"`
+	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+	DSNEnv               string `json:"dsn_env,omitempty"`
+	DSNFile              string `json:"dsn_file,omitempty"`
+	HasDSN               bool   `json:"has_dsn"`
+}
+
+// Artifact records a generated file path.
+type Artifact struct {
+	Service string `json:"service,omitempty"`
+	Action  string `json:"action,omitempty"`
+	Path    string `json:"path"`
+}
+
+// ExecutionManifest records one SQL execution.
+type ExecutionManifest struct {
+	Service string             `json:"service"`
+	Action  string             `json:"action"`
+	Result  SQLExecutionResult `json:"result"`
+}
+
+// ServiceHealth is a compact DB-derived health snapshot.
+type ServiceHealth struct {
+	Service                string            `json:"service"`
+	Action                 string            `json:"action"`
+	Status                 string            `json:"status"`
+	Reason                 string            `json:"reason,omitempty"`
+	BenchmarkSites         *int64            `json:"benchmark_sites,omitempty"`
+	ActiveSites            *int64            `json:"active_sites,omitempty"`
+	ExpectedActiveSites    *int64            `json:"expected_active_sites,omitempty"`
+	StaleActiveSites       *int64            `json:"stale_active_sites,omitempty"`
+	MissedCheckPercent     *float64          `json:"missed_check_percent,omitempty"`
+	OpenEvents             *int64            `json:"open_events,omitempty"`
+	RecentCheckHistoryRows *int64            `json:"recent_check_history_rows,omitempty"`
+	RecentChecksPerMinute  *float64          `json:"recent_checks_per_minute,omitempty"`
+	FreshnessWindowMinutes int               `json:"freshness_window_minutes,omitempty"`
+	FreshnessSamples       *int64            `json:"freshness_samples,omitempty"`
+	FreshestCheckAgeSec    *float64          `json:"freshest_check_age_sec,omitempty"`
+	AverageCheckAgeSec     *float64          `json:"average_check_age_sec,omitempty"`
+	P50CheckAgeSec         *float64          `json:"p50_check_age_sec,omitempty"`
+	P95CheckAgeSec         *float64          `json:"p95_check_age_sec,omitempty"`
+	P99CheckAgeSec         *float64          `json:"p99_check_age_sec,omitempty"`
+	OldestCheckAgeSec      *float64          `json:"oldest_check_age_sec,omitempty"`
+	StaleBuckets           []BucketFreshness `json:"stale_buckets,omitempty"`
+	FreshnessMeasured      bool              `json:"freshness_measured"`
+}
+
+// BucketFreshness summarizes stale rows in one scheduler bucket.
+type BucketFreshness struct {
+	BucketNo         int     `json:"bucket_no"`
+	ActiveSites      int64   `json:"active_sites"`
+	StaleActiveSites int64   `json:"stale_active_sites"`
+	StalePercent     float64 `json:"stale_percent"`
+}
+
+// ThresholdFinding records one pass/fail/not-measured threshold check.
+type ThresholdFinding struct {
+	Name   string  `json:"name"`
+	Status string  `json:"status"`
+	Series string  `json:"series,omitempty"`
+	Value  float64 `json:"value,omitempty"`
+	Limit  float64 `json:"limit,omitempty"`
+	Reason string  `json:"reason,omitempty"`
+}
+
+// Run executes one capacity runner invocation.
+func (r Runner) Run(ctx context.Context, opts RunOptions) (RunManifest, error) {
+	r = r.withDefaults()
+	if opts.ConfigPath == "" {
+		opts.ConfigPath = "configs/capacity/jetmon.example.toml"
+	}
+	cfg, err := LoadRunConfig(opts.ConfigPath)
+	if err != nil {
+		return RunManifest{}, fmt.Errorf("load config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return RunManifest{}, fmt.Errorf("config: %w", err)
+	}
+	services, err := cfg.ServiceLifecycles(opts.Services)
+	if err != nil {
+		return RunManifest{}, fmt.Errorf("services: %w", err)
+	}
+	mode := strings.ToLower(strings.TrimSpace(opts.Mode))
+	if mode == "" {
+		mode = "plan"
+	}
+	if !ValidRunMode(mode) {
+		return RunManifest{}, fmt.Errorf("unsupported mode %q", opts.Mode)
+	}
+	if opts.Apply && mode == "plan" {
+		return RunManifest{}, fmt.Errorf("-apply is not valid with -mode=plan")
+	}
+	duration, err := cfg.BatchDuration()
+	if err != nil {
+		return RunManifest{}, err
+	}
+	if opts.DurationOverride > 0 {
+		duration = opts.DurationOverride
+	}
+	cooldown, err := cfg.CooldownDuration()
+	if err != nil {
+		return RunManifest{}, err
+	}
+	activeCount := opts.ActiveCount
+	if activeCount == 0 && len(cfg.Batches.Sizes) > 0 {
+		activeCount = cfg.Batches.Sizes[0]
+	}
+	if mode == "activate" || mode == "run-batch" {
+		if activeCount <= 0 {
+			return RunManifest{}, fmt.Errorf("active count must be positive")
+		}
+		if activeCount > cfg.Targets.Count {
+			return RunManifest{}, fmt.Errorf("active count %d exceeds target count %d", activeCount, cfg.Targets.Count)
+		}
+	}
+
+	outDir := opts.OutDir
+	if outDir == "" {
+		outDir = filepath.Join("reports", "capacity", fmt.Sprintf("%s-%s", safeName(cfg.ID), r.Clock.Now().UTC().Format("20060102-150405Z")))
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return RunManifest{}, fmt.Errorf("create out dir: %w", err)
+	}
+
+	manifest := RunManifest{
+		ID:            cfg.ID,
+		Mode:          mode,
+		Apply:         opts.Apply,
+		ForceReseed:   opts.ForceReseed,
+		ConfigPath:    opts.ConfigPath,
+		OutDir:        outDir,
+		BatchDuration: duration.String(),
+		Cooldown:      cooldown.String(),
+		PrometheusURL: firstNonEmpty(opts.PrometheusURL, cfg.PrometheusURL),
+		Instances:     cfg.Instances,
+		CreatedAt:     r.Clock.Now().UTC(),
+		Services:      ServiceSummaries(services),
+	}
+	if mode == "activate" || mode == "run-batch" {
+		manifest.ActiveCount = activeCount
+	}
+	if mode == "run-suite" {
+		manifest.BatchCount = len(cfg.Batches.Sizes)
+		manifest.EstimatedRuntime = estimateSuiteRuntime(len(cfg.Batches.Sizes), duration, cooldown).String()
+	}
+	if !opts.Apply {
+		manifest.Notes = append(manifest.Notes, "dry-run only: no live Jetmon databases were modified")
+	}
+
+	switch mode {
+	case "plan":
+		err = r.writeAllPlans(ctx, outDir, services, cfg.Batches.Sizes, &manifest)
+	case "seed":
+		err = r.applyAction(ctx, outDir, services, OperationSeed, "seed", 0, opts.Apply, opts.ForceReseed, &manifest)
+	case "activate":
+		_, err = r.activateServices(ctx, outDir, services, activeCount, opts.Apply, &manifest)
+	case "deactivate":
+		err = r.applyAction(ctx, outDir, services, OperationDeactivate, "deactivate", 0, opts.Apply, false, &manifest)
+	case "verify":
+		err = r.verifyServices(ctx, outDir, services, "verify", opts.Apply, -1, &manifest)
+	case "run-batch":
+		err = r.runBatch(ctx, outDir, services, cfg, activeCount, duration, opts.Apply, manifest.PrometheusURL, &manifest)
+	case "run-suite":
+		err = r.runSuite(ctx, outDir, services, cfg, duration, cooldown, opts.Apply, opts.ForceReseed, manifest.PrometheusURL, &manifest)
+	}
+	if err != nil {
+		manifest.Error = err.Error()
+	}
+	if summaryErr := WriteSummary(outDir, manifest); summaryErr != nil {
+		err = errors.Join(err, fmt.Errorf("write summary: %w", summaryErr))
+	} else {
+		manifest.Artifacts = append(manifest.Artifacts, Artifact{Action: "summary", Path: filepath.Join(outDir, "summary.txt")})
+	}
+	if writeErr := WriteManifest(outDir, manifest); writeErr != nil {
+		err = errors.Join(err, fmt.Errorf("write manifest: %w", writeErr))
+	}
+	return manifest, err
+}
+
+func (r Runner) withDefaults() Runner {
+	if r.Executor == nil {
+		r.Executor = DefaultSQLExecutor{}
+	}
+	if r.Collector == nil {
+		r.Collector = DefaultPrometheusCollector{}
+	}
+	if r.Clock == nil {
+		r.Clock = realClock{}
+	}
+	if r.Sleeper == nil {
+		r.Sleeper = realSleeper{}
+	}
+	return r
+}
+
+func (r Runner) writeAllPlans(ctx context.Context, dir string, services []ServiceLifecycle, sizes []int, m *RunManifest) error {
+	if err := r.applyAction(ctx, dir, services, OperationSeed, "seed", 0, false, false, m); err != nil {
+		return err
+	}
+	for _, size := range sizes {
+		if err := r.applyAction(ctx, dir, services, OperationActivate, "activate", size, false, false, m); err != nil {
+			return err
+		}
+	}
+	if err := r.applyAction(ctx, dir, services, OperationDeactivate, "deactivate", 0, false, false, m); err != nil {
+		return err
+	}
+	return r.verifyServices(ctx, dir, services, "verify", false, 0, m)
+}
+
+func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLifecycle, cfg RunConfig, activeCount int, duration time.Duration, apply bool, promURL string, m *RunManifest) (err error) {
+	var activated []ServiceLifecycle
+	defer func() {
+		if !apply || len(activated) == 0 {
+			return
+		}
+		cleanupCtx, cancel := cleanupContext()
+		defer cancel()
+		cleanupErr := r.applyAction(cleanupCtx, dir, activated, OperationDeactivate, "cleanup-deactivate", 0, true, false, m)
+		if cleanupErr != nil {
+			m.CleanupStatus = "fail"
+			m.CleanupError = cleanupErr.Error()
+			err = errors.Join(err, fmt.Errorf("cleanup failed: %w", cleanupErr))
+		} else {
+			m.CleanupStatus = "pass"
+		}
+	}()
+
+	if apply {
+		if err := r.preflightPrometheus(ctx, cfg, promURL, m); err != nil {
+			return err
+		}
+	}
+
+	m.LifecycleStatus = "running"
+	if apply {
+		activated, err = r.activateServices(ctx, dir, services, activeCount, true, m)
+	} else {
+		err = r.activateServicesDryRun(ctx, dir, services, activeCount, m)
+	}
+	if err != nil {
+		m.LifecycleStatus = "fail"
+		return err
+	}
+	if !apply {
+		if err := r.applyAction(ctx, dir, services, OperationDeactivate, "deactivate", 0, false, false, m); err != nil {
+			m.LifecycleStatus = "fail"
+			return err
+		}
+		m.LifecycleStatus = "pass"
+		return r.verifyServices(ctx, dir, services, "verify", false, activeCount, m)
+	}
+
+	start := r.Clock.Now().UTC()
+	m.WindowStart = &start
+	if err := WriteManifest(dir, *m); err != nil {
+		m.LifecycleStatus = "fail"
+		return fmt.Errorf("write activation manifest: %w", err)
+	}
+	if err := r.Sleeper.Sleep(ctx, duration); err != nil {
+		m.LifecycleStatus = "fail"
+		return fmt.Errorf("batch window interrupted: %w", err)
+	}
+	end := r.Clock.Now().UTC()
+	m.WindowEnd = &end
+
+	if err := r.verifyServices(ctx, dir, services, "window-end-verify", true, activeCount, m); err != nil {
+		m.LifecycleStatus = "fail"
+		return err
+	}
+	if err := r.applyAction(ctx, dir, services, OperationDeactivate, "deactivate", 0, true, false, m); err != nil {
+		m.CleanupStatus = "fail"
+		m.CleanupError = err.Error()
+		return err
+	}
+	activated = nil
+	deactivatedAt := r.Clock.Now().UTC()
+	m.DeactivatedAt = &deactivatedAt
+	m.CleanupStatus = "deactivated"
+
+	if err := r.collectPrometheus(ctx, dir, cfg, promURL, start, end, m); err != nil {
+		m.PrometheusStatus = "fail"
+		m.PrometheusError = err.Error()
+		m.Notes = append(m.Notes, "Prometheus capture failed: "+err.Error())
+	}
+	if err := r.verifyServices(ctx, dir, services, "post-deactivate-verify", true, 0, m); err != nil {
+		m.CleanupStatus = "fail"
+		m.CleanupError = err.Error()
+		return err
+	}
+	m.CleanupStatus = "pass"
+	m.Thresholds = append(m.Thresholds, EvaluateThresholds(m.Health, m.PrometheusURL, cfg.StopThreshold, m.loadPrometheusReport(dir))...)
+	setHealthStatus(m)
+	setStopRecommendation(m)
+	m.LifecycleStatus = "pass"
+	return nil
+}
+
+func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLifecycle, cfg RunConfig, duration, cooldown time.Duration, apply, forceReseed bool, promURL string, m *RunManifest) error {
+	if apply {
+		if err := r.preflightPrometheus(ctx, cfg, promURL, m); err != nil {
+			return err
+		}
+		if err := r.collectBaseline(ctx, dir, cfg, promURL, m); err != nil {
+			return err
+		}
+	}
+	for i, size := range cfg.Batches.Sizes {
+		batchDir := filepath.Join(dir, fmt.Sprintf("batch-%07d", size))
+		if err := os.MkdirAll(batchDir, 0o755); err != nil {
+			return fmt.Errorf("create batch dir %s: %w", batchDir, err)
+		}
+		child := RunManifest{
+			ID:            cfg.ID,
+			Mode:          "run-batch",
+			Apply:         apply,
+			ForceReseed:   forceReseed,
+			ConfigPath:    m.ConfigPath,
+			OutDir:        batchDir,
+			ActiveCount:   size,
+			BatchDuration: duration.String(),
+			Cooldown:      cooldown.String(),
+			PrometheusURL: promURL,
+			Instances:     cfg.Instances,
+			CreatedAt:     r.Clock.Now().UTC(),
+			Services:      m.Services,
+		}
+		if !apply {
+			child.Notes = append(child.Notes, "dry-run only: no live Jetmon databases were modified")
+		}
+		if err := r.runBatch(ctx, batchDir, services, cfg, size, duration, apply, promURL, &child); err != nil {
+			child.Error = err.Error()
+			if WriteSummary(batchDir, child) == nil {
+				child.Artifacts = append(child.Artifacts, Artifact{Action: "summary", Path: filepath.Join(batchDir, "summary.txt")})
+			}
+			_ = WriteManifest(batchDir, child)
+			return fmt.Errorf("batch %d: %w", size, err)
+		}
+		if err := WriteSummary(batchDir, child); err != nil {
+			return fmt.Errorf("write batch %d summary: %w", size, err)
+		}
+		child.Artifacts = append(child.Artifacts, Artifact{Action: "summary", Path: filepath.Join(batchDir, "summary.txt")})
+		if err := WriteManifest(batchDir, child); err != nil {
+			return fmt.Errorf("write batch %d manifest: %w", size, err)
+		}
+		m.Artifacts = append(m.Artifacts, Artifact{
+			Action: fmt.Sprintf("batch-%d", size),
+			Path:   filepath.Join(batchDir, "run.json"),
+		})
+		if child.StopRecommended {
+			m.StopRecommended = true
+			m.StopReason = fmt.Sprintf("stopped after batch %d: %s", size, child.StopReason)
+			m.Notes = append(m.Notes, m.StopReason)
+			break
+		}
+		if apply && i < len(cfg.Batches.Sizes)-1 {
+			if err := r.Sleeper.Sleep(ctx, cooldown); err != nil {
+				return fmt.Errorf("cooldown after batch %d interrupted: %w", size, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (r Runner) activateServicesDryRun(ctx context.Context, dir string, services []ServiceLifecycle, activeCount int, m *RunManifest) error {
+	return r.applyAction(ctx, dir, services, OperationActivate, "activate", activeCount, false, false, m)
+}
+
+func (r Runner) activateServices(ctx context.Context, dir string, services []ServiceLifecycle, activeCount int, apply bool, m *RunManifest) ([]ServiceLifecycle, error) {
+	var cleanupCandidates []ServiceLifecycle
+	for _, service := range services {
+		if apply {
+			cleanupCandidates = append(cleanupCandidates, service)
+		}
+		if err := r.applyAction(ctx, dir, []ServiceLifecycle{service}, OperationActivate, "activate", activeCount, apply, false, m); err != nil {
+			if apply {
+				cleanupCtx, cancel := cleanupContext()
+				_ = r.applyAction(cleanupCtx, dir, cleanupCandidates, OperationDeactivate, "partial-activation-cleanup", 0, true, false, m)
+				cancel()
+			}
+			return nil, err
+		}
+		if apply {
+			if err := r.verifyActiveCount(ctx, service, activeCount, m); err != nil {
+				cleanupCtx, cancel := cleanupContext()
+				_ = r.applyAction(cleanupCtx, dir, cleanupCandidates, OperationDeactivate, "partial-activation-cleanup", 0, true, false, m)
+				cancel()
+				return nil, err
+			}
+		}
+	}
+	return cleanupCandidates, nil
+}
+
+func (r Runner) applyAction(ctx context.Context, dir string, services []ServiceLifecycle, op Operation, label string, activeCount int, apply bool, forceReseed bool, m *RunManifest) error {
+	for _, service := range services {
+		if apply && op == OperationSeed {
+			if err := r.assertSeedSafe(ctx, service, forceReseed, m); err != nil {
+				return err
+			}
+		}
+		plan := Plan{Action: op, Config: service.Config}
+		if op == OperationActivate {
+			plan.ActiveCount = activeCount
+		}
+		sqlText, err := RenderSQL(plan)
+		if err != nil {
+			return fmt.Errorf("render %s %s: %w", service.ID, label, err)
+		}
+		path := filepath.Join(dir, sqlFilename(service.ID, label, activeCount))
+		if err := os.WriteFile(path, []byte(sqlText), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+		m.Artifacts = append(m.Artifacts, Artifact{Service: service.ID, Action: label, Path: path})
+		if apply {
+			result, err := r.execServiceSQL(ctx, service, sqlText)
+			if err != nil {
+				return fmt.Errorf("apply %s %s: %w", service.ID, label, err)
+			}
+			m.Executions = append(m.Executions, ExecutionManifest{Service: service.ID, Action: label, Result: result})
+		}
+	}
+	return nil
+}
+
+func (r Runner) verifyServices(ctx context.Context, dir string, services []ServiceLifecycle, label string, apply bool, expectedActive int, m *RunManifest) error {
+	for _, service := range services {
+		sqlText, err := RenderSQL(Plan{Action: OperationVerify, Config: service.Config})
+		if err != nil {
+			return fmt.Errorf("render %s %s: %w", service.ID, label, err)
+		}
+		path := filepath.Join(dir, sqlFilename(service.ID, Operation(label), 0))
+		if err := os.WriteFile(path, []byte(sqlText), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+		m.Artifacts = append(m.Artifacts, Artifact{Service: service.ID, Action: label, Path: path})
+		if !apply {
+			continue
+		}
+		result, err := r.execServiceSQL(ctx, service, sqlText)
+		if err != nil {
+			return fmt.Errorf("apply %s %s: %w", service.ID, label, err)
+		}
+		m.Executions = append(m.Executions, ExecutionManifest{Service: service.ID, Action: label, Result: result})
+		m.Health = append(m.Health, serviceHealthFromVerify(service, label, result, expectedActive))
+	}
+	return nil
+}
+
+func (r Runner) verifyActiveCount(ctx context.Context, service ServiceLifecycle, expected int, m *RunManifest) error {
+	sqlText, err := RenderActiveCountSQL(service.Config)
+	if err != nil {
+		return fmt.Errorf("render %s active-count verification: %w", service.ID, err)
+	}
+	result, err := r.execServiceSQL(ctx, service, sqlText)
+	if err != nil {
+		return fmt.Errorf("verify %s active count: %w", service.ID, err)
+	}
+	m.Executions = append(m.Executions, ExecutionManifest{Service: service.ID, Action: "active-count-verify", Result: result})
+	got, ok := firstInt64(result, "active_sites")
+	if !ok {
+		return fmt.Errorf("%s active-count verification returned no active_sites", service.ID)
+	}
+	want := int64(expected)
+	status := "pass"
+	reason := ""
+	if got != want {
+		status = "fail"
+		reason = fmt.Sprintf("active_sites=%d, want %d", got, want)
+	}
+	m.Health = append(m.Health, ServiceHealth{
+		Service:             service.ID,
+		Action:              "active-count-verify",
+		Status:              status,
+		Reason:              reason,
+		ActiveSites:         &got,
+		ExpectedActiveSites: &want,
+		FreshnessMeasured:   false,
+	})
+	if got != want {
+		return fmt.Errorf("%s active count = %d, want %d", service.ID, got, want)
+	}
+	return nil
+}
+
+func (r Runner) assertSeedSafe(ctx context.Context, service ServiceLifecycle, force bool, m *RunManifest) error {
+	sqlText, err := RenderSeedSafetySQL(service.Config)
+	if err != nil {
+		return fmt.Errorf("render %s seed preflight: %w", service.ID, err)
+	}
+	result, err := r.execServiceSQL(ctx, service, sqlText)
+	if err != nil {
+		return fmt.Errorf("seed preflight %s: %w", service.ID, err)
+	}
+	m.Executions = append(m.Executions, ExecutionManifest{Service: service.ID, Action: "seed-preflight", Result: result})
+	total, _ := firstInt64(result, "total_rows")
+	matching, _ := firstInt64(result, "matching_url_rows")
+	if total == 0 {
+		return nil
+	}
+	if matching != total {
+		return fmt.Errorf("%s seed preflight found %d rows in reserved range, but only %d match the generated URL namespace", service.ID, total, matching)
+	}
+	if !force {
+		return fmt.Errorf("%s seed preflight found %d existing benchmark-looking rows; rerun with -force-reseed to delete and recreate them", service.ID, total)
+	}
+	return nil
+}
+
+func (r Runner) execServiceSQL(ctx context.Context, service ServiceLifecycle, sqlText string) (SQLExecutionResult, error) {
+	if !service.HasDSN {
+		var hints []string
+		if service.DSNEnv != "" {
+			hints = append(hints, "set "+service.DSNEnv)
+		}
+		if service.DSNFile != "" {
+			hints = append(hints, "create dsn_file "+service.DSNFile)
+		}
+		if len(hints) == 0 {
+			hints = append(hints, "configure dsn_env or dsn_file")
+		}
+		return SQLExecutionResult{}, fmt.Errorf("%s requires a DSN; %s", service.ID, strings.Join(hints, " or "))
+	}
+	return r.Executor.ExecuteSQL(ctx, service.DSN, sqlText)
+}
+
+func (r Runner) collectBaseline(ctx context.Context, dir string, cfg RunConfig, promURL string, m *RunManifest) error {
+	duration, err := cfg.BaselineDuration()
+	if err != nil {
+		return err
+	}
+	end := r.Clock.Now().UTC()
+	start := end.Add(-duration)
+	return r.collectPrometheusTo(ctx, filepath.Join(dir, "prometheus-baseline.json"), cfg, promURL, start, end, m)
+}
+
+func (r Runner) collectPrometheus(ctx context.Context, dir string, cfg RunConfig, promURL string, start, end time.Time, m *RunManifest) error {
+	return r.collectPrometheusTo(ctx, filepath.Join(dir, "prometheus-window.json"), cfg, promURL, start, end, m)
+}
+
+func (r Runner) preflightPrometheus(ctx context.Context, cfg RunConfig, promURL string, m *RunManifest) error {
+	promURL = strings.TrimSpace(promURL)
+	if promURL == "" {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = "prometheus_url is required for live capacity windows"
+		return fmt.Errorf("prometheus preflight: prometheus_url is required for live capacity windows")
+	}
+	if len(cfg.Instances) == 0 {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = "instances are required for live capacity windows"
+		return fmt.Errorf("prometheus preflight: instances are required for live capacity windows")
+	}
+	if refs := placeholderPrometheusReferences(promURL, cfg.Instances); len(refs) > 0 {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = "example Prometheus configuration in live apply run: " + strings.Join(refs, ", ")
+		return fmt.Errorf("prometheus preflight: refusing live apply run with example Prometheus configuration: %s", strings.Join(refs, ", "))
+	}
+	step, err := cfg.StepDuration()
+	if err != nil {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = err.Error()
+		return fmt.Errorf("prometheus preflight step: %w", err)
+	}
+	rateWindow, err := cfg.RateWindowDuration()
+	if err != nil {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = err.Error()
+		return fmt.Errorf("prometheus preflight rate window: %w", err)
+	}
+	end := r.Clock.Now().UTC()
+	window := rateWindow + 2*step
+	if window < time.Minute {
+		window = time.Minute
+	}
+	report, err := r.Collector.Collect(ctx, promURL, cfg.Instances, end.Add(-window), end, step, rateWindow)
+	if err != nil {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = err.Error()
+		return fmt.Errorf("prometheus preflight: %w", err)
+	}
+	missing := missingScrapeUpInstances(report, cfg.Instances)
+	if len(missing) > 0 {
+		m.PrometheusStatus = "preflight_failed"
+		m.PrometheusError = "missing scrape_up series for instances: " + strings.Join(missing, ", ")
+		return fmt.Errorf("prometheus preflight: missing scrape_up series for instances: %s", strings.Join(missing, ", "))
+	}
+	m.PrometheusStatus = "preflight_pass"
+	return nil
+}
+
+func (r Runner) collectPrometheusTo(ctx context.Context, path string, cfg RunConfig, promURL string, start, end time.Time, m *RunManifest) error {
+	if strings.TrimSpace(promURL) == "" {
+		m.PrometheusStatus = "skipped"
+		m.Notes = append(m.Notes, "Prometheus capture skipped: prometheus_url is empty")
+		return nil
+	}
+	if len(cfg.Instances) == 0 {
+		m.PrometheusStatus = "skipped"
+		m.Notes = append(m.Notes, "Prometheus capture skipped: instances is empty")
+		return nil
+	}
+	step, err := cfg.StepDuration()
+	if err != nil {
+		return fmt.Errorf("prometheus step: %w", err)
+	}
+	rateWindow, err := cfg.RateWindowDuration()
+	if err != nil {
+		return fmt.Errorf("prometheus rate window: %w", err)
+	}
+	report, err := r.Collector.Collect(ctx, promURL, cfg.Instances, start, end, step, rateWindow)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal prometheus report: %w", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write prometheus report: %w", err)
+	}
+	m.Artifacts = append(m.Artifacts, Artifact{Action: strings.TrimSuffix(filepath.Base(path), ".json"), Path: path})
+	m.PrometheusStatus = "pass"
+	m.PrometheusError = ""
+	return nil
+}
+
+func (m RunManifest) loadPrometheusReport(dir string) *capacitybench.Report {
+	data, err := os.ReadFile(filepath.Join(dir, "prometheus-window.json"))
+	if err != nil {
+		return nil
+	}
+	var report capacitybench.Report
+	if err := json.Unmarshal(data, &report); err != nil {
+		return nil
+	}
+	return &report
+}
+
+// WriteManifest writes a run manifest.
+func WriteManifest(dir string, m RunManifest) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "run.json"), append(data, '\n'), 0o644)
+}
+
+// WriteSummary writes a human-readable operator summary.
+func WriteSummary(dir string, m RunManifest) error {
+	var b strings.Builder
+	fmt.Fprintln(&b, "Jetmon Capacity Run")
+	fmt.Fprintf(&b, "ID: %s\n", m.ID)
+	fmt.Fprintf(&b, "Mode: %s\n", m.Mode)
+	fmt.Fprintf(&b, "Apply: %t\n", m.Apply)
+	if m.ActiveCount > 0 {
+		fmt.Fprintf(&b, "Active Count: %d\n", m.ActiveCount)
+	}
+	if m.BatchCount > 0 {
+		fmt.Fprintf(&b, "Batch Count: %d\n", m.BatchCount)
+	}
+	if m.EstimatedRuntime != "" {
+		fmt.Fprintf(&b, "Estimated Runtime: %s\n", m.EstimatedRuntime)
+	}
+	if m.WindowStart != nil || m.WindowEnd != nil {
+		fmt.Fprintf(&b, "Window: %s to %s\n", formatMaybeTime(m.WindowStart), formatMaybeTime(m.WindowEnd))
+	}
+	if m.DeactivatedAt != nil {
+		fmt.Fprintf(&b, "Deactivated At: %s\n", m.DeactivatedAt.Format(time.RFC3339))
+	}
+	if m.LifecycleStatus != "" {
+		fmt.Fprintf(&b, "Lifecycle Status: %s\n", m.LifecycleStatus)
+	}
+	if m.HealthStatus != "" {
+		fmt.Fprintf(&b, "Health Status: %s\n", m.HealthStatus)
+	}
+	if m.PrometheusStatus != "" {
+		fmt.Fprintf(&b, "Prometheus Status: %s\n", m.PrometheusStatus)
+	}
+	if m.PrometheusError != "" {
+		fmt.Fprintf(&b, "Prometheus Error: %s\n", m.PrometheusError)
+	}
+	if m.CleanupStatus != "" {
+		fmt.Fprintf(&b, "Cleanup Status: %s\n", m.CleanupStatus)
+	}
+	if m.CleanupError != "" {
+		fmt.Fprintf(&b, "Cleanup Error: %s\n", m.CleanupError)
+	}
+	if m.Error != "" {
+		fmt.Fprintf(&b, "Error: %s\n", m.Error)
+	}
+	if m.StopRecommended {
+		fmt.Fprintln(&b, "Stop Recommended: true")
+		fmt.Fprintf(&b, "Stop Reason: %s\n", m.StopReason)
+	} else {
+		fmt.Fprintln(&b, "Stop Recommended: false")
+	}
+	if len(m.Notes) > 0 {
+		fmt.Fprintln(&b, "\nNotes:")
+		for _, note := range m.Notes {
+			fmt.Fprintf(&b, "- %s\n", note)
+		}
+	}
+	if len(m.Health) > 0 {
+		fmt.Fprintln(&b, "\nService Health:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SERVICE\tACTION\tSTATUS\tACTIVE\tEXPECTED\tSTALE\tMISSED_CHECK_%\tRECENT_ROWS\tRECENT/MIN\tP95_AGE_SEC\tOLDEST_AGE_SEC\tREASON")
+		for _, h := range m.Health {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				h.Service,
+				h.Action,
+				h.Status,
+				formatIntPtr(h.ActiveSites),
+				formatIntPtr(h.ExpectedActiveSites),
+				formatIntPtr(h.StaleActiveSites),
+				formatFloatPtr(h.MissedCheckPercent),
+				formatIntPtr(h.RecentCheckHistoryRows),
+				formatFloatPtr(h.RecentChecksPerMinute),
+				formatFloatPtr(h.P95CheckAgeSec),
+				formatFloatPtr(h.OldestCheckAgeSec),
+				h.Reason,
+			)
+		}
+		_ = tw.Flush()
+	}
+	if bucketRows := summaryBucketRows(m.Health, 20); len(bucketRows) > 0 {
+		fmt.Fprintln(&b, "\nBucket Staleness:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SERVICE\tACTION\tBUCKET\tACTIVE\tSTALE\tSTALE_%")
+		for _, row := range bucketRows {
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%.2f\n",
+				row.Service,
+				row.Action,
+				row.Bucket.BucketNo,
+				row.Bucket.ActiveSites,
+				row.Bucket.StaleActiveSites,
+				row.Bucket.StalePercent,
+			)
+		}
+		_ = tw.Flush()
+		if omitted := countBucketRows(m.Health) - len(bucketRows); omitted > 0 {
+			fmt.Fprintf(&b, "... %d additional bucket rows omitted from summary; see run.json for the full list.\n", omitted)
+		}
+	}
+	if len(m.Thresholds) > 0 {
+		fmt.Fprintln(&b, "\nThresholds:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "NAME\tSTATUS\tSERIES\tVALUE\tLIMIT\tREASON")
+		for _, finding := range m.Thresholds {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				finding.Name,
+				finding.Status,
+				finding.Series,
+				formatThresholdValue(finding.Value, finding.Status),
+				formatThresholdValue(finding.Limit, ""),
+				finding.Reason,
+			)
+		}
+		_ = tw.Flush()
+	}
+	if len(m.Artifacts) > 0 {
+		fmt.Fprintln(&b, "\nArtifacts:")
+		for _, artifact := range m.Artifacts {
+			label := artifact.Action
+			if artifact.Service != "" {
+				label = artifact.Service + " " + label
+			}
+			fmt.Fprintf(&b, "- %s: %s\n", strings.TrimSpace(label), artifact.Path)
+		}
+	}
+	return os.WriteFile(filepath.Join(dir, "summary.txt"), []byte(b.String()), 0o644)
+}
+
+// ServiceSummaries returns manifest summaries for services.
+func ServiceSummaries(services []ServiceLifecycle) []ServiceManifest {
+	out := make([]ServiceManifest, 0, len(services))
+	for _, svc := range services {
+		c := svc.Config
+		out = append(out, ServiceManifest{
+			ID:                   svc.ID,
+			Schema:               c.Schema,
+			BlogIDStart:          c.BlogIDStart,
+			BlogIDEnd:            c.BlogIDEnd(),
+			ReservedCount:        c.Count,
+			URLNumberStart:       c.URLNumberStart,
+			BucketMin:            c.BucketMin,
+			BucketMax:            c.BucketMax,
+			CheckIntervalMinutes: c.CheckIntervalMinutes,
+			DSNEnv:               svc.DSNEnv,
+			DSNFile:              svc.DSNFile,
+			HasDSN:               svc.HasDSN,
+		})
+	}
+	return out
+}
+
+// ValidRunMode reports whether mode is supported by Runner.
+func ValidRunMode(mode string) bool {
+	switch mode {
+	case "plan", "seed", "activate", "deactivate", "verify", "run-batch", "run-suite":
+		return true
+	default:
+		return false
+	}
+}
+
+func serviceHealthFromVerify(service ServiceLifecycle, action string, result SQLExecutionResult, expectedActive int) ServiceHealth {
+	health := ServiceHealth{
+		Service:           service.ID,
+		Action:            action,
+		Status:            "pass",
+		FreshnessMeasured: service.Config.Schema == SchemaV2,
+	}
+	if benchmarkSites, ok := firstInt64(result, "benchmark_sites"); ok {
+		health.BenchmarkSites = &benchmarkSites
+	}
+	if activeSites, ok := firstInt64(result, "active_sites"); ok {
+		health.ActiveSites = &activeSites
+	}
+	if expectedActive >= 0 {
+		expected := int64(expectedActive)
+		health.ExpectedActiveSites = &expected
+		if health.ActiveSites != nil && *health.ActiveSites != expected {
+			health.Status = "fail"
+			health.Reason = fmt.Sprintf("active_sites=%d, want %d", *health.ActiveSites, expected)
+		}
+	}
+	if service.Config.Schema != SchemaV2 {
+		health.FreshnessMeasured = false
+		health.Reason = appendReason(health.Reason, "freshness and missed checks are not measured for v1 by DB verify")
+		return health
+	}
+	if stale, ok := firstInt64(result, "stale_active_sites"); ok {
+		health.StaleActiveSites = &stale
+		if health.ActiveSites != nil && *health.ActiveSites > 0 {
+			missed := float64(stale) / float64(*health.ActiveSites) * 100
+			health.MissedCheckPercent = &missed
+		}
+	}
+	if openEvents, ok := firstInt64(result, "open_events"); ok {
+		health.OpenEvents = &openEvents
+	}
+	if history, ok := firstInt64(result, "recent_check_history_rows"); ok {
+		health.RecentCheckHistoryRows = &history
+		if defaultFreshSinceMinutes > 0 {
+			recentPerMinute := float64(history) / float64(defaultFreshSinceMinutes)
+			health.RecentChecksPerMinute = &recentPerMinute
+			health.FreshnessWindowMinutes = defaultFreshSinceMinutes
+		}
+	}
+	if samples, ok := firstInt64(result, "freshness_samples"); ok {
+		health.FreshnessSamples = &samples
+	}
+	if freshest, ok := firstFloat64(result, "freshest_check_age_sec"); ok {
+		health.FreshestCheckAgeSec = &freshest
+	}
+	if average, ok := firstFloat64(result, "average_check_age_sec"); ok {
+		health.AverageCheckAgeSec = &average
+	}
+	if p50, ok := firstFloat64(result, "p50_check_age_sec"); ok {
+		health.P50CheckAgeSec = &p50
+	}
+	if p95, ok := firstFloat64(result, "p95_check_age_sec"); ok {
+		health.P95CheckAgeSec = &p95
+	}
+	if p99, ok := firstFloat64(result, "p99_check_age_sec"); ok {
+		health.P99CheckAgeSec = &p99
+	}
+	if oldest, ok := firstFloat64(result, "oldest_check_age_sec"); ok {
+		health.OldestCheckAgeSec = &oldest
+	}
+	health.StaleBuckets = bucketFreshnessRows(result)
+	return health
+}
+
+// EvaluateThresholds evaluates configured stop thresholds.
+func EvaluateThresholds(health []ServiceHealth, promURL string, thresholds StopThresholds, report *capacitybench.Report) []ThresholdFinding {
+	var out []ThresholdFinding
+	if report != nil {
+		out = append(out, highThresholdFindings(report, "host_cpu_used", thresholds.HostCPUPercent)...)
+		out = append(out, highThresholdFindings(report, "host_memory_used", thresholds.HostMemoryPercent)...)
+		out = append(out, highThresholdFindings(report, "host_root_disk_used", thresholds.RootDiskPercent)...)
+		out = append(out, lowThresholdFindings(report, "scrape_up", thresholds.ScrapeUpMin)...)
+		out = append(out, lowThresholdFindings(report, "dockerstats_scrape_success", thresholds.DockerstatsScrapeSuccessMin)...)
+	} else if promURL != "" {
+		out = append(out, ThresholdFinding{Name: "prometheus", Status: "not_measured", Reason: "prometheus report was not available"})
+	}
+	if thresholds.MissedCheckPercent > 0 {
+		measured := false
+		for _, h := range health {
+			if h.Action != "window-end-verify" {
+				continue
+			}
+			if h.MissedCheckPercent == nil {
+				out = append(out, ThresholdFinding{
+					Name:   "missed_check_percent",
+					Status: "not_measured",
+					Series: h.Service,
+					Limit:  thresholds.MissedCheckPercent,
+					Reason: h.Reason,
+				})
+				continue
+			}
+			measured = true
+			status := "pass"
+			if *h.MissedCheckPercent > thresholds.MissedCheckPercent {
+				status = "fail"
+			}
+			out = append(out, ThresholdFinding{
+				Name:   "missed_check_percent",
+				Status: status,
+				Series: h.Service,
+				Value:  *h.MissedCheckPercent,
+				Limit:  thresholds.MissedCheckPercent,
+			})
+		}
+		if !measured && len(health) == 0 {
+			out = append(out, ThresholdFinding{Name: "missed_check_percent", Status: "not_measured", Limit: thresholds.MissedCheckPercent, Reason: "no service health was captured"})
+		}
+	}
+	return out
+}
+
+func highThresholdFindings(report *capacitybench.Report, query string, limit float64) []ThresholdFinding {
+	if limit <= 0 {
+		return nil
+	}
+	var out []ThresholdFinding
+	for _, s := range report.Summaries {
+		if s.Query != query {
+			continue
+		}
+		status := "pass"
+		if s.Max > limit {
+			status = "fail"
+		}
+		out = append(out, ThresholdFinding{
+			Name:   query,
+			Status: status,
+			Series: capacitybench.SeriesLabel(s.Labels),
+			Value:  s.Max,
+			Limit:  limit,
+		})
+	}
+	if len(out) == 0 {
+		out = append(out, ThresholdFinding{Name: query, Status: "not_measured", Limit: limit, Reason: "query returned no series"})
+	}
+	return out
+}
+
+func lowThresholdFindings(report *capacitybench.Report, query string, limit float64) []ThresholdFinding {
+	if limit <= 0 {
+		return nil
+	}
+	var out []ThresholdFinding
+	for _, s := range report.Summaries {
+		if s.Query != query {
+			continue
+		}
+		status := "pass"
+		if s.Min < limit {
+			status = "fail"
+		}
+		out = append(out, ThresholdFinding{
+			Name:   query,
+			Status: status,
+			Series: capacitybench.SeriesLabel(s.Labels),
+			Value:  s.Min,
+			Limit:  limit,
+		})
+	}
+	if len(out) == 0 {
+		out = append(out, ThresholdFinding{Name: query, Status: "not_measured", Limit: limit, Reason: "query returned no series"})
+	}
+	return out
+}
+
+func setStopRecommendation(m *RunManifest) {
+	for _, finding := range m.Thresholds {
+		if finding.Status == "fail" {
+			m.StopRecommended = true
+			m.StopReason = fmt.Sprintf("%s exceeded threshold for %s", finding.Name, finding.Series)
+			return
+		}
+	}
+}
+
+func setHealthStatus(m *RunManifest) {
+	if len(m.Health) == 0 {
+		m.HealthStatus = "not_measured"
+		return
+	}
+	m.HealthStatus = "pass"
+	for _, h := range m.Health {
+		if h.Status == "fail" {
+			m.HealthStatus = "fail"
+			return
+		}
+	}
+	for _, finding := range m.Thresholds {
+		if finding.Name == "missed_check_percent" && finding.Status == "fail" {
+			m.HealthStatus = "fail"
+			return
+		}
+	}
+}
+
+func placeholderPrometheusReferences(promURL string, instances []string) []string {
+	var refs []string
+	if parsed, err := url.Parse(promURL); err == nil {
+		if isPlaceholderHost(parsed.Hostname()) {
+			refs = append(refs, promURL)
+		}
+	} else if strings.Contains(strings.ToLower(promURL), "example.") {
+		refs = append(refs, promURL)
+	}
+	for _, instance := range instances {
+		if isPlaceholderHost(instance) {
+			refs = append(refs, instance)
+		}
+	}
+	return refs
+}
+
+func isPlaceholderHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), ".")
+	return host == "example.com" ||
+		host == "example.net" ||
+		host == "example.org" ||
+		strings.HasSuffix(host, ".example.com") ||
+		strings.HasSuffix(host, ".example.net") ||
+		strings.HasSuffix(host, ".example.org")
+}
+
+func missingScrapeUpInstances(report capacitybench.Report, instances []string) []string {
+	present := make(map[string]bool, len(instances))
+	for _, summary := range report.Summaries {
+		if summary.Query != "scrape_up" || summary.Samples == 0 || summary.Last < 1 {
+			continue
+		}
+		present[summary.Labels["instance"]] = true
+	}
+	var missing []string
+	for _, instance := range instances {
+		if !present[instance] {
+			missing = append(missing, instance)
+		}
+	}
+	return missing
+}
+
+func firstInt64(result SQLExecutionResult, column string) (int64, bool) {
+	for _, stmt := range result.Statements {
+		for i, col := range stmt.Columns {
+			if col != column {
+				continue
+			}
+			if len(stmt.Rows) == 0 || i >= len(stmt.Rows[0]) {
+				return 0, false
+			}
+			value := stmt.Rows[0][i]
+			if value == "NULL" || value == "" {
+				return 0, true
+			}
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return 0, false
+			}
+			return parsed, true
+		}
+	}
+	return 0, false
+}
+
+func firstFloat64(result SQLExecutionResult, column string) (float64, bool) {
+	for _, stmt := range result.Statements {
+		for i, col := range stmt.Columns {
+			if col != column {
+				continue
+			}
+			if len(stmt.Rows) == 0 || i >= len(stmt.Rows[0]) {
+				return 0, false
+			}
+			value := stmt.Rows[0][i]
+			if value == "NULL" || value == "" {
+				return 0, false
+			}
+			parsed, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return 0, false
+			}
+			return parsed, true
+		}
+	}
+	return 0, false
+}
+
+func bucketFreshnessRows(result SQLExecutionResult) []BucketFreshness {
+	stmt, ok := statementWithColumns(result, "bucket_no", "active_sites", "stale_active_sites")
+	if !ok {
+		return nil
+	}
+	bucketIdx := columnIndex(stmt.Columns, "bucket_no")
+	activeIdx := columnIndex(stmt.Columns, "active_sites")
+	staleIdx := columnIndex(stmt.Columns, "stale_active_sites")
+	var rows []BucketFreshness
+	for _, row := range stmt.Rows {
+		if bucketIdx >= len(row) || activeIdx >= len(row) || staleIdx >= len(row) {
+			continue
+		}
+		bucketNo, err := strconv.Atoi(row[bucketIdx])
+		if err != nil {
+			continue
+		}
+		active, err := strconv.ParseInt(row[activeIdx], 10, 64)
+		if err != nil {
+			continue
+		}
+		stale, err := strconv.ParseInt(row[staleIdx], 10, 64)
+		if err != nil {
+			continue
+		}
+		var stalePercent float64
+		if active > 0 {
+			stalePercent = float64(stale) / float64(active) * 100
+		}
+		rows = append(rows, BucketFreshness{
+			BucketNo:         bucketNo,
+			ActiveSites:      active,
+			StaleActiveSites: stale,
+			StalePercent:     stalePercent,
+		})
+	}
+	return rows
+}
+
+func statementWithColumns(result SQLExecutionResult, columns ...string) (SQLStatementResult, bool) {
+	for _, stmt := range result.Statements {
+		matches := true
+		for _, column := range columns {
+			if columnIndex(stmt.Columns, column) == -1 {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return stmt, true
+		}
+	}
+	return SQLStatementResult{}, false
+}
+
+func columnIndex(columns []string, want string) int {
+	for i, column := range columns {
+		if column == want {
+			return i
+		}
+	}
+	return -1
+}
+
+type summaryBucketRow struct {
+	Service string
+	Action  string
+	Bucket  BucketFreshness
+}
+
+func summaryBucketRows(health []ServiceHealth, limit int) []summaryBucketRow {
+	var rows []summaryBucketRow
+	for _, h := range health {
+		for _, bucket := range h.StaleBuckets {
+			rows = append(rows, summaryBucketRow{
+				Service: h.Service,
+				Action:  h.Action,
+				Bucket:  bucket,
+			})
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Bucket.StalePercent == rows[j].Bucket.StalePercent {
+			return rows[i].Bucket.StaleActiveSites > rows[j].Bucket.StaleActiveSites
+		}
+		return rows[i].Bucket.StalePercent > rows[j].Bucket.StalePercent
+	})
+	if limit > 0 && len(rows) > limit {
+		return rows[:limit]
+	}
+	return rows
+}
+
+func countBucketRows(health []ServiceHealth) int {
+	var count int
+	for _, h := range health {
+		count += len(h.StaleBuckets)
+	}
+	return count
+}
+
+func appendReason(existing, extra string) string {
+	if existing == "" {
+		return extra
+	}
+	if extra == "" {
+		return existing
+	}
+	return existing + "; " + extra
+}
+
+func formatMaybeTime(t *time.Time) string {
+	if t == nil {
+		return "not recorded"
+	}
+	return t.Format(time.RFC3339)
+}
+
+func formatIntPtr(value *int64) string {
+	if value == nil {
+		return "-"
+	}
+	return strconv.FormatInt(*value, 10)
+}
+
+func formatFloatPtr(value *float64) string {
+	if value == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f", *value)
+}
+
+func formatThresholdValue(value float64, status string) string {
+	if status == "not_measured" && value == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f", value)
+}
+
+func estimateSuiteRuntime(batchCount int, duration, cooldown time.Duration) time.Duration {
+	if batchCount <= 0 {
+		return 0
+	}
+	total := time.Duration(batchCount) * duration
+	if batchCount > 1 {
+		total += time.Duration(batchCount-1) * cooldown
+	}
+	return total
+}
+
+func cleanupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 2*time.Minute)
+}
+
+func sqlFilename(service string, action any, activeCount int) string {
+	actionText := fmt.Sprint(action)
+	if actionText == string(OperationActivate) && activeCount > 0 {
+		return fmt.Sprintf("%s-%s-%d.sql", service, actionText, activeCount)
+	}
+	return fmt.Sprintf("%s-%s.sql", service, actionText)
+}
+
+func safeName(raw string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(raw) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	name := strings.Trim(b.String(), "-_")
+	if name == "" {
+		return "capacity"
+	}
+	return name
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}

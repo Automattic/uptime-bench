@@ -2,7 +2,7 @@
 set -euo pipefail
 
 host="${1:-monitoring.example.com}"
-dest="${DEST:-/home/jetmon/jetmon-monitoring}"
+dest="${DEST:-/opt/jetmon-monitoring}"
 ssh_config="${SSH_CONFIG:-$HOME/.ssh/config}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 

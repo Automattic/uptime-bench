@@ -1,9 +1,8 @@
-# Example capacity-benchmark plan for Jetmon v1 vs Jetmon v2.
-# This file documents the input shape. It intentionally uses example hosts and
-# is refused by live -apply runs. Copy jetmon.fleet.example.toml to a private
-# jetmon.fleet.toml and replace placeholders for a deployed fleet.
+# Example deployed-fleet capacity benchmark plan for Jetmon v1 vs Jetmon v2.
+# Copy this file to an untracked jetmon.fleet.toml and replace placeholders.
+# Live -apply runs expect 0600 dsn_file secrets on the orchestrator host.
 
-id = "jetmon-v1-vs-v2-capacity"
+id = "jetmon-v1-vs-v2-capacity-fleet"
 prometheus_url = "http://prometheus.example.com:9090"
 instances = ["jetmon-v1.example.com", "jetmon-v2.example.com"]
 
@@ -36,7 +35,7 @@ dockerstats_scrape_success_min = 1
 
 [jetmon_v1]
 bridge_url = "http://jetmon-v1.example.com:7400"
-bulk_lifecycle = "bridge_or_db_seeded_range"
+bulk_lifecycle = "db_seeded_range"
 
   [jetmon_v1.lifecycle]
   schema = "v1"
@@ -46,12 +45,11 @@ bulk_lifecycle = "bridge_or_db_seeded_range"
   bucket_max = 99
   check_interval = "1m"
   batch_size = 1000
-  dsn_env = "JETMON_V1_DB_DSN"
-  # dsn_file = "/run/secrets/jetmon-v1-capacity-dsn"
+  dsn_file = "/run/secrets/jetmon-v1-capacity.dsn"
 
 [jetmon_v2]
 api_url = "http://jetmon-v2.example.com:8090/api/v1"
-bulk_lifecycle = "api_or_db_seeded_range"
+bulk_lifecycle = "db_seeded_range"
 
   [jetmon_v2.lifecycle]
   schema = "v2"
@@ -61,5 +59,4 @@ bulk_lifecycle = "api_or_db_seeded_range"
   bucket_max = 99
   check_interval = "1m"
   batch_size = 1000
-  dsn_env = "JETMON_V2_DB_DSN"
-  # dsn_file = "/run/secrets/jetmon-v2-capacity-dsn"
+  dsn_file = "/run/secrets/jetmon-v2-capacity.dsn"

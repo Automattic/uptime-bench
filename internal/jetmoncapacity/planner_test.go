@@ -116,6 +116,32 @@ func TestValidateRejectsBadURLPattern(t *testing.T) {
 	}
 }
 
+func TestRenderSeedSafetySQLEscapesGeneratedNamespace(t *testing.T) {
+	sql, err := RenderSeedSafetySQL(Config{
+		Schema:      SchemaV2,
+		BlogIDStart: 100,
+		Count:       10,
+		URLPattern:  "http://site-%07d.load.example.test/path_value/",
+	})
+	if err != nil {
+		t.Fatalf("RenderSeedSafetySQL: %v", err)
+	}
+	assertContains(t, sql, "monitor_url LIKE 'http://site-%.load.example.test/path\\_value/' ESCAPE '\\\\'")
+	assertContains(t, sql, "WHERE blog_id BETWEEN 100 AND 109")
+}
+
+func TestRenderSeedSafetySQLRejectsMultiplePlaceholders(t *testing.T) {
+	_, err := RenderSeedSafetySQL(Config{
+		Schema:      SchemaV2,
+		BlogIDStart: 100,
+		Count:       10,
+		URLPattern:  "http://site-%07d-%02d.load.example.test/",
+	})
+	if err == nil {
+		t.Fatal("RenderSeedSafetySQL succeeded, want placeholder error")
+	}
+}
+
 func assertContains(t *testing.T, value, needle string) {
 	t.Helper()
 	if !strings.Contains(value, needle) {

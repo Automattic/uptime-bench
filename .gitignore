@@ -35,6 +35,7 @@ mem.prof
 # Fleet and services configuration — contain addresses and credentials
 fleet.toml
 services.toml
+configs/capacity/jetmon.fleet.toml
 
 # Private keys — TLS certs, SSH keys, ACME account keys
 *.key

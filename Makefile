@@ -8,6 +8,7 @@ BINARY_CAPACITY = $(BIN_DIR)/uptime-bench-capacity
 BINARY_DOCKERSTATS_EXPORTER = $(BIN_DIR)/uptime-bench-dockerstats-exporter
 BINARY_TARGETLOAD = $(BIN_DIR)/uptime-bench-targetload
 BINARY_JETMON_CAPACITY = $(BIN_DIR)/uptime-bench-jetmon-capacity
+BINARY_JETMON_CAPACITY_RUN = $(BIN_DIR)/uptime-bench-jetmon-capacity-run
 BINARY_PREFLIGHT = $(BIN_DIR)/uptime-bench-preflight
 BINARY_FINALIZE = $(BIN_DIR)/uptime-bench-finalize
 BINARY_CLEANUP = $(BIN_DIR)/uptime-bench-cleanup
@@ -20,7 +21,7 @@ BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_JETMON_CAPACITY) $(BINARY_PREFLIGHT) $(BINARY_FINALIZE) $(BINARY_CLEANUP) $(BINARY_PROBE_IPS_REFRESH)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_JETMON_CAPACITY) $(BINARY_JETMON_CAPACITY_RUN) $(BINARY_PREFLIGHT) $(BINARY_FINALIZE) $(BINARY_CLEANUP) $(BINARY_PROBE_IPS_REFRESH)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -57,6 +58,10 @@ $(BINARY_TARGETLOAD): $(shell find cmd/uptime-bench-targetload -name '*.go' 2>/d
 $(BINARY_JETMON_CAPACITY): $(shell find cmd/uptime-bench-jetmon-capacity internal/jetmoncapacity -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/uptime-bench-jetmon-capacity
+
+$(BINARY_JETMON_CAPACITY_RUN): $(shell find cmd/uptime-bench-jetmon-capacity-run internal/jetmoncapacity internal/capacitybench -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-jetmon-capacity-run
 
 $(BINARY_PREFLIGHT): $(shell find cmd/uptime-bench-preflight internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -164,7 +169,7 @@ REPORT_OUT_DIR ?=
 report-campaign: $(BINARY_REPORT)
 	$(BINARY_REPORT) -campaign=$(CAMPAIGN) -format=$(REPORT_FORMAT)
 
-PROMETHEUS_URL ?= http://localhost:9090
+PROMETHEUS_URL ?= http://prometheus.example.com:9090
 CAPACITY_INSTANCES ?= jetmon-v1.example.com,jetmon-v2.example.com
 CAPACITY_DURATION ?= 15m
 CAPACITY_FORMAT ?= table
@@ -193,6 +198,11 @@ JETMON_CAPACITY_ARGS ?=
 .PHONY: capacity-jetmon-plan
 capacity-jetmon-plan: $(BINARY_JETMON_CAPACITY)
 	$(BINARY_JETMON_CAPACITY) $(JETMON_CAPACITY_ARGS)
+
+JETMON_CAPACITY_RUN_ARGS ?= -config=configs/capacity/jetmon.example.toml -mode=run-batch -active-count=10 -duration=5m
+.PHONY: capacity-jetmon-run
+capacity-jetmon-run: $(BINARY_JETMON_CAPACITY_RUN)
+	$(BINARY_JETMON_CAPACITY_RUN) $(JETMON_CAPACITY_RUN_ARGS)
 
 .PHONY: preflight-campaign
 preflight-campaign: $(BINARY_PREFLIGHT)
@@ -317,9 +327,13 @@ help:
 	@echo "  make provider-cleanup Dry-run stale provider resource cleanup"
 	@echo "    [CLEANUP_FLEET=fleet.toml] [CLEANUP_SERVICES=services.toml] [CLEANUP_DRY_RUN=true]"
 	@echo "  make capacity-metrics Summarize Jetmon v1/v2 Prometheus capacity metrics"
-	@echo "    [PROMETHEUS_URL=http://localhost:9090] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
+	@echo "    [PROMETHEUS_URL=http://prometheus.example.com:9090] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
 	@echo "  make capacity-capture-run CAPACITY_RUN_DIR=reports/<run-tag>"
 	@echo "    Capture the exact run.meta.tsv window into reports/<run-tag>/capacity/"
+	@echo "  make capacity-jetmon-run"
+	@echo "    Generate or apply guarded Jetmon v1/v2 capacity lifecycle artifacts"
+	@echo "    [JETMON_CAPACITY_RUN_ARGS='-mode=run-batch -active-count=10 -duration=5m [-apply]']"
+	@echo "  deploy/capacity-db-access.sh  Provision stable DSN files and SSH tunnels for live capacity runs"
 	@echo "  deploy/dockerstats-exporter.sh HOST [USER]  Deploy per-container Prometheus exporter"
 	@echo "  bin/uptime-bench-targetload -url-pattern=...  Probe generated target/DNS capacity"
 	@echo ""

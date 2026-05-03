@@ -5,10 +5,10 @@ This stack is the repo-managed source for the Grafana and Prometheus setup on
 
 ## Access
 
-- Grafana: `http://grafana.example.com:3000`
-- Prometheus: `http://prometheus.example.com:9090`
+- Grafana: `http://monitoring.example.com:3001`
+- Prometheus: `http://monitoring.example.com:9091`
 - Grafana admin user: `admin`
-- Grafana admin password: stored on the host in `/home/jetmon/jetmon-monitoring/.env`
+- Grafana admin password: stored on the host in `/opt/jetmon-monitoring/.env`
 
 ## Deploy
 
@@ -18,7 +18,7 @@ From this repository:
 deploy/monitoring/jetmon/sync-to-host.sh
 ```
 
-The sync keeps `/home/jetmon/jetmon-monitoring/.env`, `dbs/`, and `backups/`
+The sync keeps `/opt/jetmon-monitoring/.env`, `dbs/`, and `backups/`
 on the host. It only updates compose/config/provisioning files and then runs:
 
 ```sh
@@ -35,7 +35,7 @@ single file; replacing it during sync changes the host-side inode.
 On `monitoring.example.com`:
 
 ```sh
-cd /home/jetmon/jetmon-monitoring
+cd /opt/jetmon-monitoring
 sudo docker compose -p jetmon-monitoring ps
 sudo docker compose -p jetmon-monitoring logs -f
 sudo docker compose -p jetmon-monitoring up -d
@@ -83,20 +83,20 @@ container detail while preserving the selected time range and variables.
 Grafana stores mutable state in SQLite at:
 
 ```sh
-/home/jetmon/jetmon-monitoring/dbs/grafana/grafana.db
+/opt/jetmon-monitoring/dbs/grafana/grafana.db
 ```
 
 Install the daily backup timer on `monitoring.example.com`:
 
 ```sh
-cd /home/jetmon/jetmon-monitoring
+cd /opt/jetmon-monitoring
 ./install-grafana-backup-timer.sh
 ```
 
 Backups are written to:
 
 ```sh
-/home/jetmon/jetmon-monitoring/backups/grafana/
+/opt/jetmon-monitoring/backups/grafana/
 ```
 
 The timer retains 30 days by default.
