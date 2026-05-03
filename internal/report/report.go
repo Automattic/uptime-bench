@@ -33,6 +33,7 @@ type Report struct {
 	Meta          Meta           `json:"meta"`
 	BiasChecks    []BiasCheck    `json:"bias_checks,omitempty"`
 	ServiceScores []ServiceScore `json:"service_scores,omitempty"`
+	ReasonDetails []ReasonDetail `json:"reason_details,omitempty"`
 	Summaries     []Summary      `json:"summaries"`
 }
 
@@ -160,6 +161,16 @@ type reasonCodeRow struct {
 	serviceID   string
 	reasonCode  string
 	count       int
+}
+
+// ReasonDetail explains a structured reason-code bucket by preserving the
+// provider or adapter detail text associated with it.
+type ReasonDetail struct {
+	FailureType string `json:"failure_type"`
+	ServiceID   string `json:"service_id"`
+	ReasonCode  string `json:"reason_code"`
+	Detail      string `json:"detail"`
+	Runs        int    `json:"runs"`
 }
 
 type summaryKey struct {
@@ -297,6 +308,42 @@ func Summarize(rows []db.CampaignMetricRow, reasonRows ...[]db.CampaignReasonRow
 			return out[i].FailureType < out[j].FailureType
 		}
 		return out[i].ServiceID < out[j].ServiceID
+	})
+	return out
+}
+
+// SummarizeReasonDetails prepares provider/adapter reason text for human
+// reports. Empty details are omitted because the reason-code table already
+// covers count-only buckets.
+func SummarizeReasonDetails(rows []db.CampaignReasonDetailRow) []ReasonDetail {
+	out := make([]ReasonDetail, 0, len(rows))
+	for _, row := range rows {
+		detail := normalizeReasonDetail(row.Detail)
+		if row.ReasonCode == "" || detail == "" || row.Runs <= 0 {
+			continue
+		}
+		out = append(out, ReasonDetail{
+			FailureType: row.FailureType,
+			ServiceID:   row.ServiceID,
+			ReasonCode:  row.ReasonCode,
+			Detail:      detail,
+			Runs:        row.Runs,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FailureType != out[j].FailureType {
+			return out[i].FailureType < out[j].FailureType
+		}
+		if out[i].ServiceID != out[j].ServiceID {
+			return out[i].ServiceID < out[j].ServiceID
+		}
+		if out[i].ReasonCode != out[j].ReasonCode {
+			return out[i].ReasonCode < out[j].ReasonCode
+		}
+		if out[i].Runs != out[j].Runs {
+			return out[i].Runs > out[j].Runs
+		}
+		return out[i].Detail < out[j].Detail
 	})
 	return out
 }
@@ -867,6 +914,17 @@ func writeTable(w io.Writer, r Report) error {
 			return err
 		}
 	}
+	if len(r.ReasonDetails) > 0 {
+		if _, err := fmt.Fprintln(w, "# reason_details"); err != nil {
+			return err
+		}
+		if err := writeReasonDetails(w, r.ReasonDetails, "\t", true); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+	}
 	return writeDelimited(w, r.Summaries, "\t", true)
 }
 
@@ -914,6 +972,28 @@ func writeMarkdown(w io.Writer, r Report) error {
 		}
 		if _, err := fmt.Fprintln(w, "\n`Comparable` excludes unknown, capability mismatch, maintenance suppression, cooldown outcomes, and other intentionally ambiguous categories."); err != nil {
 			return err
+		}
+	}
+	if len(r.ReasonDetails) > 0 {
+		if _, err := fmt.Fprint(w, "\n## Reason Details\n\n"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| Failure Type | Service | Reason Code | Detail | Runs |"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "| --- | --- | --- | --- | ---: |"); err != nil {
+			return err
+		}
+		for _, detail := range r.ReasonDetails {
+			if _, err := fmt.Fprintf(w, "| %s | %s | %s | %s | %d |\n",
+				escapePipes(detail.FailureType),
+				escapePipes(detail.ServiceID),
+				escapePipes(detail.ReasonCode),
+				escapePipes(detail.Detail),
+				detail.Runs,
+			); err != nil {
+				return err
+			}
 		}
 	}
 	reasonRows := collectReasonCodeRows(r.Summaries)
@@ -1111,6 +1191,35 @@ func writeServiceScores(w io.Writer, scores []ServiceScore, sep string, align bo
 	return nil
 }
 
+func writeReasonDetails(w io.Writer, details []ReasonDetail, sep string, align bool) error {
+	out := w
+	var tw *tabwriter.Writer
+	if align {
+		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		out = tw
+	}
+	header := []string{"failure_type", "service", "reason_code", "detail", "runs"}
+	if _, err := fmt.Fprintln(out, strings.Join(header, sep)); err != nil {
+		return err
+	}
+	for _, d := range details {
+		fields := []string{
+			d.FailureType,
+			d.ServiceID,
+			d.ReasonCode,
+			d.Detail,
+			strconv.Itoa(d.Runs),
+		}
+		if _, err := fmt.Fprintln(out, strings.Join(fields, sep)); err != nil {
+			return err
+		}
+	}
+	if tw != nil {
+		return tw.Flush()
+	}
+	return nil
+}
+
 // formatRatio / formatSeconds use strconv rather than fmt.Sprintf for
 // the same reason as the integer fields above: hot path, allocation
 // sensitive. See BenchmarkWriteTSV.
@@ -1151,4 +1260,8 @@ func formatPercent(v *float64) string {
 
 func escapePipes(s string) string {
 	return strings.ReplaceAll(s, "|", "\\|")
+}
+
+func normalizeReasonDetail(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

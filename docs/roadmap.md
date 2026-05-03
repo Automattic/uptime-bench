@@ -327,6 +327,10 @@ Implemented hardening from that report:
   `reason_code = "adapter_error"`, and markdown campaign reports include a
   reason-code table so these failures are visible without reconstructing them
   from logs.
+- Human-readable and JSON campaign reports now also include reason-detail buckets
+  split by provider/adapter error text, so errors such as duplicate monitor
+  collisions, maintenance timestamp validation failures, API timeouts, and
+  provider schema errors can be compared without mining raw logs.
 
 Acceptance for the next run:
 
@@ -338,10 +342,11 @@ Acceptance for the next run:
   `already_exists` errors. If they persist, enhance stale cleanup to search by
   benchmark URL in addition to exact friendly name and add a plan-level
   duplicate URL preflight.
-- Report generation should next bucket adapter-error reasons by provider error
-  text, not only by the structured `adapter_error` code, so maintenance
-  timestamp errors, duplicate monitor collisions, and API timeouts are separated
-  automatically.
+- Report generation buckets adapter-error reasons by provider error text, not
+  only by the structured `adapter_error` code. The next report review should
+  confirm those buckets are specific enough in real output; if they are still
+  too noisy, adapter-specific error normalization can add stable subcodes
+  without changing the raw-detail table.
 - Geo-scoped `http-geo-503` remains a benchmark validation gap, not a
   service-specific finding, because every service failed it in the latest run.
   Before publishing geo results, audit probe CIDRs against actual source IPs

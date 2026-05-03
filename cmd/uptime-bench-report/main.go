@@ -63,11 +63,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("report: load campaign reason codes: %v", err)
 	}
+	reasonDetailRows, err := database.CampaignReasonDetailRows(ctx, runIDs)
+	if err != nil {
+		log.Fatalf("report: load campaign reason details: %v", err)
+	}
 	summaries := report.Summarize(rows, reasonRows)
 	out := report.Report{
 		Meta:          report.MetaFromLookup(lookup),
 		BiasChecks:    report.AnalyzeBias(summaries),
 		ServiceScores: report.ScoreMetrics(rows, reasonRows),
+		ReasonDetails: report.SummarizeReasonDetails(reasonDetailRows),
 		Summaries:     summaries,
 	}
 	if err := report.Write(os.Stdout, *format, out); err != nil {

@@ -28,6 +28,16 @@ func reason(runID, failureType, serviceID, code string) db.CampaignReasonRow {
 	}
 }
 
+func reasonDetail(failureType, serviceID, code, detail string, runs int) db.CampaignReasonDetailRow {
+	return db.CampaignReasonDetailRow{
+		FailureType: failureType,
+		ServiceID:   serviceID,
+		ReasonCode:  code,
+		Detail:      detail,
+		Runs:        runs,
+	}
+}
+
 func TestSummarize_GroupsMetricsByFailureAndService(t *testing.T) {
 	rows := []db.CampaignMetricRow{
 		metric("run-1", "http_status", "svc-a", "true_positive", 1),
@@ -129,6 +139,26 @@ func TestSummarize_IncludesReasonCodeCounts(t *testing.T) {
 	}
 	if svcA.ReasonCodes["auth_failed"] != 1 {
 		t.Fatalf("auth_failed count = %d, want 1", svcA.ReasonCodes["auth_failed"])
+	}
+}
+
+func TestSummarizeReasonDetails_NormalizesAndSorts(t *testing.T) {
+	rows := []db.CampaignReasonDetailRow{
+		reasonDetail("http_status", "svc-b", "adapter_error", "api timed\nout", 1),
+		reasonDetail("http_status", "svc-a", "adapter_error", "maintenance invalid_parameter", 2),
+		reasonDetail("http_status", "svc-a", "adapter_error", "", 2),
+		reasonDetail("http_status", "svc-a", "", "ignored", 2),
+	}
+
+	got := SummarizeReasonDetails(rows)
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].ServiceID != "svc-a" || got[0].Runs != 2 {
+		t.Fatalf("first detail = %+v, want svc-a with most runs", got[0])
+	}
+	if got[1].Detail != "api timed out" {
+		t.Fatalf("normalized detail = %q, want newline collapsed", got[1].Detail)
 	}
 }
 
@@ -321,6 +351,9 @@ func TestWriteMarkdownIncludesServiceScores(t *testing.T) {
 		ServiceScores: []ServiceScore{
 			{ServiceID: "svc", TotalSamples: 4, Passed: 1, Failed: 1, Comparable: 2, Excluded: 2, Unknown: 1, CapabilityMismatch: 1, SampleWeightedPassRate: &rate},
 		},
+		ReasonDetails: []ReasonDetail{
+			{FailureType: "http_status", ServiceID: "svc", ReasonCode: "adapter_error", Detail: "newMonitor already_exists", Runs: 3},
+		},
 		Summaries: []Summary{{
 			FailureType: "http_status",
 			ServiceID:   "svc",
@@ -342,6 +375,9 @@ func TestWriteMarkdownIncludesServiceScores(t *testing.T) {
 	}
 	if !strings.Contains(out, "## Reason Codes") || !strings.Contains(out, "| http_status | svc | adapter_error | 1 |") {
 		t.Fatalf("markdown missing reason-code table: %q", out)
+	}
+	if !strings.Contains(out, "## Reason Details") || !strings.Contains(out, "| http_status | svc | adapter_error | newMonitor already_exists | 3 |") {
+		t.Fatalf("markdown missing reason-detail table: %q", out)
 	}
 }
 

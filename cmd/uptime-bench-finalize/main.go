@@ -117,11 +117,16 @@ func loadReport(ctx context.Context, database *db.DB, lookup *db.CampaignLookup)
 	if err != nil {
 		return report.Report{}, fmt.Errorf("load campaign reason codes: %w", err)
 	}
+	reasonDetailRows, err := database.CampaignReasonDetailRows(ctx, runIDs)
+	if err != nil {
+		return report.Report{}, fmt.Errorf("load campaign reason details: %w", err)
+	}
 	summaries := report.Summarize(rows, reasonRows)
 	return report.Report{
 		Meta:          report.MetaFromLookup(lookup),
 		BiasChecks:    report.AnalyzeBias(summaries),
 		ServiceScores: report.ScoreMetrics(rows, reasonRows),
+		ReasonDetails: report.SummarizeReasonDetails(reasonDetailRows),
 		Summaries:     summaries,
 	}, nil
 }

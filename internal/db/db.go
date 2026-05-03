@@ -282,6 +282,17 @@ type CampaignReasonRow struct {
 	ReasonCode  string
 }
 
+// CampaignReasonDetailRow is one bucket of structured monitor_reports reason
+// details joined to campaign replay context. ReasonCode is the machine bucket;
+// Detail is the provider/adapter text that explains what happened.
+type CampaignReasonDetailRow struct {
+	FailureType string
+	ServiceID   string
+	ReasonCode  string
+	Detail      string
+	Runs        int
+}
+
 // CampaignRunSummary describes one campaign_runs row resolved by
 // ResolveCampaign — the audit-trail metadata the report tool needs to
 // disclose how an aggregated report was scoped.
@@ -496,6 +507,66 @@ func (d *DB) CampaignReasonRows(ctx context.Context, campaignRunIDs []string) ([
 		var r CampaignReasonRow
 		if err := rows.Scan(&r.RunID, &r.FailureType, &r.ServiceID, &r.ReasonCode); err != nil {
 			return nil, fmt.Errorf("db: CampaignReasonRows: scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CampaignReasonDetailRows returns structured reason-code buckets split by
+// retrieve_unknown_reason detail. It is intentionally grouped in SQL so
+// report.md can show provider failure causes without replaying raw logs.
+func (d *DB) CampaignReasonDetailRows(ctx context.Context, campaignRunIDs []string) ([]CampaignReasonDetailRow, error) {
+	if len(campaignRunIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.Repeat("?,", len(campaignRunIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(campaignRunIDs))
+	for i, id := range campaignRunIDs {
+		args[i] = id
+	}
+	query := `SELECT
+	        COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, ''),
+	        mr.service_id,
+	        COALESCE(mr.reason_code, ''),
+	        COALESCE(mr.retrieve_unknown_reason, ''),
+	        COUNT(DISTINCT sr.id) AS runs
+	   FROM scenario_runs sr
+	   JOIN monitor_reports mr ON mr.run_id = sr.id
+	   LEFT JOIN (
+	     SELECT run_id,
+	            GROUP_CONCAT(DISTINCT failure_type ORDER BY failure_type SEPARATOR '+') AS failure_types
+	       FROM ground_truth_events
+	      WHERE event_type = 'failure_start'
+	        AND failure_type IS NOT NULL
+	      GROUP BY run_id
+	   ) ft ON ft.run_id = sr.id
+	  WHERE sr.campaign_id IN (` + placeholders + `)
+	    AND mr.reason_code IS NOT NULL
+	    AND mr.reason_code <> ''
+	  GROUP BY
+	        COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, ''),
+	        mr.service_id,
+	        COALESCE(mr.reason_code, ''),
+	        COALESCE(mr.retrieve_unknown_reason, '')
+	  ORDER BY
+	        COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, ''),
+	        mr.service_id,
+	        mr.reason_code,
+	        runs DESC,
+	        mr.retrieve_unknown_reason`
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: CampaignReasonDetailRows: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CampaignReasonDetailRow
+	for rows.Next() {
+		var r CampaignReasonDetailRow
+		if err := rows.Scan(&r.FailureType, &r.ServiceID, &r.ReasonCode, &r.Detail, &r.Runs); err != nil {
+			return nil, fmt.Errorf("db: CampaignReasonDetailRows: scan: %w", err)
 		}
 		out = append(out, r)
 	}

@@ -135,7 +135,8 @@ Never count Unknown, capability_mismatch, maintenance_suppressed, cooldown_suppr
 `cmd/uptime-bench-report` loads `monitor_reports.reason_code` alongside
 `derived_metrics`, surfaces `capability_mismatch` counts as a separate report
 column, prints a reason-code table for structured rows such as
-`adapter_error`, and emits bias self-checks so sample imbalance or
+`adapter_error`, prints a reason-detail table that buckets those codes by the
+provider/adapter error text, and emits bias self-checks so sample imbalance or
 uncategorized Unknown rows are visible before latency numbers.
 
 ---
