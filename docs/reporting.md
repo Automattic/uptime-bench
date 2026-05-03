@@ -49,6 +49,7 @@ controller-owned artifacts when invoked with
 | `monitor_reports.tsv` | Raw adapter/provider report export from MySQL, including `reason_code` and metadata. |
 | `derived_metrics.tsv` | Raw derived scoring export from MySQL. |
 | `target-status-after.json` | Post-run target and DNS cleanup verification. |
+| `controller-summary.md` | Human-readable cleanup summary derived from `target-status-after.json`, including per-member active failure and control-plane error counts. |
 | `logs/` | Harness, controller, adapter, and target-control logs needed to debug failures. |
 | `scenarios/` | Exact generated or selected scenario TOML files used by the run. |
 | `campaigns/` | Exact campaign TOML configs for campaign-generated runs. |
@@ -71,6 +72,8 @@ directory, and controller output before considering the run finished.
 - `scenario-plan.tsv`
 - `schedule.tsv`
 - `campaigns/*.toml`
+- `controller-summary.md` when `target-status-after.json` exists in the report
+  directory before finalization
 - `capacity.md`, `capacity.json`, and `capacity.txt` when `-capacity` is used.
 
 The finalizer intentionally does not contact target controls or provider APIs
@@ -90,6 +93,8 @@ The post-run status snapshot queries every distinct target and DNS control
 endpoint in `fleet.toml`. Per-member control errors are preserved inside
 `target-status-after.json` instead of being collapsed into one log line, so the
 report can distinguish clean target state from an unreachable control plane.
+When that snapshot is present, `uptime-bench-finalize` also writes
+`controller-summary.md` and appends the cleanup status to `report.md`.
 Use the same `-out-dir` value when later running `uptime-bench-finalize` so the
 controller artifacts and durable database/report artifacts land in one bundle.
 The finalizer scans the report directory before writing `manifest.json`, so

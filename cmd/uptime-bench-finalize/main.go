@@ -224,10 +224,6 @@ func loadArtifacts(ctx context.Context, database *db.DB, lookup *db.CampaignLook
 
 func writeReportFiles(dir string, r report.Report, capacityReport *capacitybench.Report, artifacts *finalizeArtifacts) error {
 	var files []string
-	if err := writeReport(dir, "report.md", "markdown", r); err != nil {
-		return err
-	}
-	files = append(files, "report.md")
 	if err := writeReport(dir, "report.json", "json", r); err != nil {
 		return err
 	}
@@ -245,6 +241,15 @@ func writeReportFiles(dir string, r report.Report, capacityReport *capacitybench
 		}
 		files = append(files, artifactFiles...)
 	}
+	controllerSummary, controllerFiles, err := writeControllerSummaryFiles(dir)
+	if err != nil {
+		return err
+	}
+	files = append(files, controllerFiles...)
+	if err := writeReportMarkdown(dir, "report.md", r, controllerSummary); err != nil {
+		return err
+	}
+	files = append([]string{"report.md"}, files...)
 	existingFiles, err := discoverReportFiles(dir)
 	if err != nil {
 		return err
@@ -347,6 +352,171 @@ func writeFinalizeArtifacts(dir string, r report.Report, artifacts finalizeArtif
 	files = append(files, configFiles...)
 
 	return files, nil
+}
+
+type controllerCleanupSummary struct {
+	CapturedAt         string
+	CleanupStatus      string
+	ActiveFailureCount int
+	MemberErrorCount   int
+	Members            []controllerMemberSummary
+	ParseError         string
+}
+
+type controllerMemberSummary struct {
+	Role               string
+	ConfigIDs          []string
+	Address            string
+	ControlURL         string
+	MemberID           string
+	ActiveFailureCount int
+	Error              string
+}
+
+type controllerStatusSnapshot struct {
+	CapturedAt         time.Time                `json:"captured_at"`
+	CleanupStatus      string                   `json:"cleanup_status"`
+	ActiveFailureCount int                      `json:"active_failure_count"`
+	MemberErrorCount   int                      `json:"member_error_count"`
+	Members            []controllerMemberStatus `json:"members"`
+}
+
+type controllerMemberStatus struct {
+	Role       string                  `json:"role"`
+	ConfigIDs  []string                `json:"config_ids"`
+	Address    string                  `json:"address"`
+	ControlURL string                  `json:"control_url"`
+	Status     *controllerStatusDetail `json:"status,omitempty"`
+	Error      string                  `json:"error,omitempty"`
+}
+
+type controllerStatusDetail struct {
+	MemberID       string            `json:"member_id"`
+	ActiveFailures []json.RawMessage `json:"active_failures"`
+}
+
+func writeControllerSummaryFiles(dir string) (*controllerCleanupSummary, []string, error) {
+	summary, err := loadControllerCleanupSummary(filepath.Join(dir, "target-status-after.json"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if summary == nil {
+		return nil, nil, nil
+	}
+	var b strings.Builder
+	writeControllerSummaryMarkdown(&b, *summary, 1)
+	if err := writeFileAtomic(filepath.Join(dir, "controller-summary.md"), []byte(b.String())); err != nil {
+		return nil, nil, err
+	}
+	return summary, []string{"controller-summary.md"}, nil
+}
+
+func loadControllerCleanupSummary(path string) (*controllerCleanupSummary, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var snapshot controllerStatusSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return &controllerCleanupSummary{
+			CleanupStatus: "unknown",
+			ParseError:    err.Error(),
+		}, nil
+	}
+	summary := &controllerCleanupSummary{
+		CleanupStatus:      strings.TrimSpace(snapshot.CleanupStatus),
+		ActiveFailureCount: snapshot.ActiveFailureCount,
+		MemberErrorCount:   snapshot.MemberErrorCount,
+		Members:            make([]controllerMemberSummary, 0, len(snapshot.Members)),
+	}
+	if !snapshot.CapturedAt.IsZero() {
+		summary.CapturedAt = snapshot.CapturedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if summary.CleanupStatus == "" {
+		summary.CleanupStatus = "unknown"
+	}
+	for _, member := range snapshot.Members {
+		row := controllerMemberSummary{
+			Role:       member.Role,
+			ConfigIDs:  append([]string(nil), member.ConfigIDs...),
+			Address:    member.Address,
+			ControlURL: member.ControlURL,
+			Error:      member.Error,
+		}
+		if member.Status != nil {
+			row.MemberID = member.Status.MemberID
+			row.ActiveFailureCount = len(member.Status.ActiveFailures)
+		}
+		summary.Members = append(summary.Members, row)
+	}
+	return summary, nil
+}
+
+func writeReportMarkdown(dir, name string, r report.Report, controllerSummary *controllerCleanupSummary) error {
+	var b strings.Builder
+	if err := report.Write(&b, "markdown", r); err != nil {
+		return err
+	}
+	if controllerSummary != nil {
+		b.WriteString("\n")
+		writeControllerSummaryMarkdown(&b, *controllerSummary, 2)
+	}
+	return writeFileAtomic(filepath.Join(dir, name), []byte(b.String()))
+}
+
+func writeControllerSummaryMarkdown(b *strings.Builder, summary controllerCleanupSummary, headingLevel int) {
+	if headingLevel < 1 {
+		headingLevel = 1
+	}
+	heading := strings.Repeat("#", headingLevel)
+	fmt.Fprintf(b, "%s Controller Cleanup Summary\n\n", heading)
+	if summary.ParseError != "" {
+		fmt.Fprintf(b, "Cleanup Status: %s\n", summary.CleanupStatus)
+		fmt.Fprintf(b, "Parse Error: %s\n", summary.ParseError)
+		return
+	}
+	fmt.Fprintf(b, "Cleanup Status: %s\n", summary.CleanupStatus)
+	if summary.CapturedAt != "" {
+		fmt.Fprintf(b, "Captured At: %s\n", summary.CapturedAt)
+	}
+	fmt.Fprintf(b, "Member Count: %d\n", len(summary.Members))
+	fmt.Fprintf(b, "Active Failures: %d\n", summary.ActiveFailureCount)
+	fmt.Fprintf(b, "Member Errors: %d\n", summary.MemberErrorCount)
+	if len(summary.Members) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	fmt.Fprintf(b, "%s# Members\n\n", heading)
+	b.WriteString("| Role | Config IDs | Address | Control URL | Member ID | Active Failures | Error |\n")
+	b.WriteString("|---|---|---|---|---|---:|---|\n")
+	for _, member := range summary.Members {
+		fmt.Fprintf(
+			b,
+			"| %s | %s | %s | %s | %s | %d | %s |\n",
+			markdownCell(member.Role),
+			markdownCell(strings.Join(member.ConfigIDs, ",")),
+			markdownCell(member.Address),
+			markdownCell(member.ControlURL),
+			markdownCell(member.MemberID),
+			member.ActiveFailureCount,
+			markdownCell(member.Error),
+		)
+	}
+}
+
+func markdownCell(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
 }
 
 func writeReport(dir, name, format string, r report.Report) error {
