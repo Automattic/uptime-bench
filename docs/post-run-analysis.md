@@ -4,6 +4,9 @@ Use this checklist after a campaign or capacity run completes. It is intentional
 read-only: finalize and report commands should write artifacts, but analysis
 should not mutate provider monitors, fleet services, or target state.
 
+Use [Reporting Standard](reporting.md) as the artifact contract for what must
+exist in the report directory before starting this analysis.
+
 ## Preserve The Run
 
 Before interpreting results, make sure the run directory has the artifacts that

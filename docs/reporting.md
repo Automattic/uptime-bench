@@ -3,6 +3,8 @@
 This document defines the report bundle that should be generated after every
 uptime-bench run. A run is not complete until its raw evidence, operator
 summary, analysis, and cleanup status are preserved in the report directory.
+For the follow-on interpretation checklist, see
+[Post-Run Analysis](post-run-analysis.md).
 
 ## Canonical Location
 
