@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Automattic/uptime-bench/internal/campaign"
 	"github.com/Automattic/uptime-bench/internal/capacitybench"
 	"github.com/Automattic/uptime-bench/internal/db"
 	"github.com/Automattic/uptime-bench/internal/measurement"
@@ -73,6 +75,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("finalize: report: %v", err)
 	}
+	artifacts, err := loadArtifacts(ctx, database, lookup)
+	if err != nil {
+		log.Fatalf("finalize: artifacts: %v", err)
+	}
 
 	var capacityReport *capacitybench.Report
 	if *capacity {
@@ -91,7 +97,7 @@ func main() {
 	if err := os.MkdirAll(*outDir, 0o755); err != nil {
 		log.Fatalf("finalize: mkdir %s: %v", *outDir, err)
 	}
-	if err := writeReportFiles(*outDir, out, capacityReport); err != nil {
+	if err := writeReportFiles(*outDir, out, capacityReport, artifacts); err != nil {
 		log.Fatalf("finalize: write: %v", err)
 	}
 	log.Printf("finalize: wrote %s", *outDir)
@@ -190,19 +196,52 @@ func collectCapacityReport(ctx context.Context, meta report.Meta, opts capacityO
 	}, nil
 }
 
-func writeReportFiles(dir string, r report.Report, capacityReport *capacitybench.Report) error {
+type finalizeArtifacts struct {
+	CampaignRuns []db.CampaignRunDetail
+	Tables       []db.ExportTable
+}
+
+func loadArtifacts(ctx context.Context, database *db.DB, lookup *db.CampaignLookup) (*finalizeArtifacts, error) {
+	runIDs := make([]string, len(lookup.Runs))
+	for i, r := range lookup.Runs {
+		runIDs[i] = r.ID
+	}
+	campaignRuns, err := database.CampaignRunDetails(ctx, runIDs)
+	if err != nil {
+		return nil, fmt.Errorf("campaign run details: %w", err)
+	}
+	tables, err := database.CampaignExportTables(ctx, runIDs)
+	if err != nil {
+		return nil, fmt.Errorf("raw tables: %w", err)
+	}
+	return &finalizeArtifacts{
+		CampaignRuns: campaignRuns,
+		Tables:       tables,
+	}, nil
+}
+
+func writeReportFiles(dir string, r report.Report, capacityReport *capacitybench.Report, artifacts *finalizeArtifacts) error {
+	var files []string
 	if err := writeReport(dir, "report.md", "markdown", r); err != nil {
 		return err
 	}
+	files = append(files, "report.md")
 	if err := writeReport(dir, "report.json", "json", r); err != nil {
 		return err
 	}
-	files := []string{"report.md", "report.json"}
+	files = append(files, "report.json")
 	if capacityReport != nil {
 		if err := writeCapacityFiles(dir, *capacityReport); err != nil {
 			return err
 		}
-		files = append(files, "capacity.md", "capacity.json")
+		files = append(files, "capacity.md", "capacity.json", "capacity.txt")
+	}
+	if artifacts != nil {
+		artifactFiles, err := writeFinalizeArtifacts(dir, r, *artifacts)
+		if err != nil {
+			return err
+		}
+		files = append(files, artifactFiles...)
 	}
 	manifest := map[string]any{
 		"generated_at":  time.Now().UTC().Format(time.RFC3339),
@@ -215,6 +254,44 @@ func writeReportFiles(dir string, r report.Report, capacityReport *capacitybench
 		return err
 	}
 	return writeFileAtomic(filepath.Join(dir, "manifest.json"), append(data, '\n'))
+}
+
+func writeFinalizeArtifacts(dir string, r report.Report, artifacts finalizeArtifacts) ([]string, error) {
+	var files []string
+
+	if err := writeRunMeta(filepath.Join(dir, "run.meta.tsv"), filepath.Base(dir), r, artifacts.CampaignRuns); err != nil {
+		return nil, err
+	}
+	files = append(files, "run.meta.tsv")
+
+	for _, table := range artifacts.Tables {
+		name := table.Name + ".tsv"
+		if err := writeTSVFile(filepath.Join(dir, name), table.Header, table.Rows); err != nil {
+			return nil, err
+		}
+		files = append(files, name)
+	}
+
+	planRows, scheduleRows, err := campaignPlanRows(artifacts.CampaignRuns, artifacts.Tables)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeTSVFile(filepath.Join(dir, "scenario-plan.tsv"), scenarioPlanHeader, planRows); err != nil {
+		return nil, err
+	}
+	files = append(files, "scenario-plan.tsv")
+	if err := writeTSVFile(filepath.Join(dir, "schedule.tsv"), scheduleHeader, scheduleRows); err != nil {
+		return nil, err
+	}
+	files = append(files, "schedule.tsv")
+
+	configFiles, err := writeCampaignConfigs(filepath.Join(dir, "campaigns"), artifacts.CampaignRuns)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, configFiles...)
+
+	return files, nil
 }
 
 func writeReport(dir, name, format string, r report.Report) error {
@@ -237,7 +314,271 @@ func writeCapacityFiles(dir string, r capacitybench.Report) error {
 	if err := capacitybench.WriteJSON(&js, r); err != nil {
 		return err
 	}
-	return writeFileAtomic(filepath.Join(dir, "capacity.json"), []byte(js.String()))
+	if err := writeFileAtomic(filepath.Join(dir, "capacity.json"), []byte(js.String())); err != nil {
+		return err
+	}
+	var txt strings.Builder
+	if err := capacitybench.WriteTable(&txt, r); err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(dir, "capacity.txt"), []byte(txt.String()))
+}
+
+func writeRunMeta(path, runTag string, r report.Report, campaignRuns []db.CampaignRunDetail) error {
+	rows := [][]string{
+		{"run_tag", runTag},
+		{"input", r.Meta.Input},
+		{"matched_as_run_id", strconv.FormatBool(r.Meta.MatchedAsRunID)},
+		{"matched_as_config_id", strconv.FormatBool(r.Meta.MatchedAsConfigID)},
+		{"campaign_runs", strconv.Itoa(r.Meta.CampaignRuns)},
+	}
+	if r.Meta.EarliestStartedAt != nil {
+		rows = append(rows, []string{"started_at_utc", r.Meta.EarliestStartedAt.UTC().Format(time.RFC3339Nano)})
+	}
+	if r.Meta.LatestEndedAt != nil {
+		rows = append(rows, []string{"finished_at_utc", r.Meta.LatestEndedAt.UTC().Format(time.RFC3339Nano)})
+	} else if r.Meta.CampaignRuns > 0 {
+		rows = append(rows, []string{"finished_at_utc", "in_progress"})
+	}
+	rows = append(rows,
+		[]string{"campaign_run_ids", strings.Join(campaignRunIDs(campaignRuns), ",")},
+		[]string{"campaign_ids", strings.Join(campaignIDs(campaignRuns), ",")},
+		[]string{"resolution_reasons", strings.Join(campaignResolutionReasons(campaignRuns), ",")},
+	)
+	return writeTSVFile(path, []string{"key", "value"}, rows)
+}
+
+func campaignRunIDs(rows []db.CampaignRunDetail) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.ID)
+	}
+	return out
+}
+
+func campaignIDs(rows []db.CampaignRunDetail) []string {
+	seen := make(map[string]bool, len(rows))
+	var out []string
+	for _, r := range rows {
+		if r.CampaignID == "" || seen[r.CampaignID] {
+			continue
+		}
+		seen[r.CampaignID] = true
+		out = append(out, r.CampaignID)
+	}
+	return out
+}
+
+func campaignResolutionReasons(rows []db.CampaignRunDetail) []string {
+	seen := make(map[string]bool, len(rows))
+	var out []string
+	for _, r := range rows {
+		reason := r.ResolutionReason
+		if reason == "" {
+			reason = "in_progress"
+		}
+		if seen[reason] {
+			continue
+		}
+		seen[reason] = true
+		out = append(out, reason)
+	}
+	return out
+}
+
+var scenarioPlanHeader = []string{
+	"campaign_run_id",
+	"design_id",
+	"failure_label",
+	"failure_type",
+	"duration_bucket",
+	"host_pattern",
+	"replays",
+	"targets",
+	"scenario_duration",
+	"seed",
+	"params_json",
+	"escalation_pattern",
+	"escalation_stages_json",
+	"mixed_content_escalation",
+}
+
+var scheduleHeader = []string{
+	"campaign_run_id",
+	"scenario_id",
+	"design_id",
+	"replay_index",
+	"offset",
+	"planned_start_utc",
+	"actual_run_id",
+	"actual_started_at_utc",
+	"actual_ended_at_utc",
+	"resolution_reason",
+}
+
+func campaignPlanRows(campaignRuns []db.CampaignRunDetail, tables []db.ExportTable) ([][]string, [][]string, error) {
+	actualRuns := scenarioRunsByCampaignAndScenario(tables)
+	var planRows [][]string
+	var scheduleRows [][]string
+	for _, run := range campaignRuns {
+		c, err := campaign.Parse([]byte(run.ConfigTOML))
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse campaign config for %s: %w", run.ID, err)
+		}
+		plan, err := campaign.Generate(c, run.MasterSeed)
+		if err != nil {
+			return nil, nil, fmt.Errorf("generate campaign plan for %s: %w", run.ID, err)
+		}
+		for _, design := range plan.Designs {
+			params, err := json.Marshal(design.Params)
+			if err != nil {
+				return nil, nil, fmt.Errorf("marshal design params for %s/%s: %w", run.ID, design.ID, err)
+			}
+			escalationPattern := ""
+			var stages []byte
+			if design.Escalation != nil {
+				escalationPattern = design.Escalation.Pattern
+				stages, err = json.Marshal(design.Escalation.Stages)
+				if err != nil {
+					return nil, nil, fmt.Errorf("marshal escalation stages for %s/%s: %w", run.ID, design.ID, err)
+				}
+			}
+			planRows = append(planRows, []string{
+				run.ID,
+				design.ID,
+				design.ReportLabel(),
+				design.FailureType,
+				design.Cell.DurationBucket,
+				design.Cell.HostPattern,
+				strconv.Itoa(design.Replays),
+				strings.Join(design.Targets, ","),
+				design.Duration.String(),
+				strconv.FormatInt(design.Seed, 10),
+				string(params),
+				escalationPattern,
+				string(stages),
+				strconv.FormatBool(design.HasMixedContentEscalation()),
+			})
+		}
+		for _, slot := range plan.Schedule {
+			scenarioID := fmt.Sprintf("%s-%s-r%d", c.ID, slot.DesignID, slot.Index)
+			actual := actualRuns[run.ID+"\x00"+scenarioID]
+			plannedStart := run.StartedAt.Add(slot.Offset).UTC().Format(time.RFC3339Nano)
+			scheduleRows = append(scheduleRows, []string{
+				run.ID,
+				scenarioID,
+				slot.DesignID,
+				strconv.Itoa(slot.Index),
+				slot.Offset.String(),
+				plannedStart,
+				actual.ID,
+				actual.StartedAt,
+				actual.EndedAt,
+				actual.ResolutionReason,
+			})
+		}
+	}
+	return planRows, scheduleRows, nil
+}
+
+type scenarioRunExport struct {
+	ID               string
+	StartedAt        string
+	EndedAt          string
+	ResolutionReason string
+}
+
+func scenarioRunsByCampaignAndScenario(tables []db.ExportTable) map[string]scenarioRunExport {
+	out := make(map[string]scenarioRunExport)
+	for _, table := range tables {
+		if table.Name != "scenario_runs" {
+			continue
+		}
+		idx := indexHeader(table.Header)
+		for _, row := range table.Rows {
+			campaignID := tableValue(row, idx, "campaign_id")
+			scenarioID := tableValue(row, idx, "scenario_id")
+			if campaignID == "" || scenarioID == "" {
+				continue
+			}
+			out[campaignID+"\x00"+scenarioID] = scenarioRunExport{
+				ID:               tableValue(row, idx, "id"),
+				StartedAt:        tableValue(row, idx, "started_at"),
+				EndedAt:          tableValue(row, idx, "ended_at"),
+				ResolutionReason: tableValue(row, idx, "resolution_reason"),
+			}
+		}
+	}
+	return out
+}
+
+func indexHeader(header []string) map[string]int {
+	out := make(map[string]int, len(header))
+	for i, name := range header {
+		out[name] = i
+	}
+	return out
+}
+
+func tableValue(row []string, idx map[string]int, name string) string {
+	i, ok := idx[name]
+	if !ok || i < 0 || i >= len(row) {
+		return ""
+	}
+	return row[i]
+}
+
+func writeCampaignConfigs(dir string, campaignRuns []db.CampaignRunDetail) ([]string, error) {
+	if len(campaignRuns) == 0 {
+		return nil, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, run := range campaignRuns {
+		name := sanitizePathComponent(run.ID) + ".toml"
+		path := filepath.Join(dir, name)
+		if err := writeFileAtomic(path, []byte(ensureTrailingNewline(run.ConfigTOML))); err != nil {
+			return nil, err
+		}
+		files = append(files, filepath.ToSlash(filepath.Join(filepath.Base(dir), name)))
+	}
+	return files, nil
+}
+
+func ensureTrailingNewline(s string) string {
+	if strings.HasSuffix(s, "\n") {
+		return s
+	}
+	return s + "\n"
+}
+
+func writeTSVFile(path string, header []string, rows [][]string) error {
+	var b strings.Builder
+	writeTSVRow(&b, header)
+	for _, row := range rows {
+		writeTSVRow(&b, row)
+	}
+	return writeFileAtomic(path, []byte(b.String()))
+}
+
+func writeTSVRow(b *strings.Builder, fields []string) {
+	for i, field := range fields {
+		if i > 0 {
+			b.WriteByte('\t')
+		}
+		b.WriteString(escapeTSVField(field))
+	}
+	b.WriteByte('\n')
+}
+
+func escapeTSVField(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	return s
 }
 
 func writeFileAtomic(path string, data []byte) error {

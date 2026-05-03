@@ -29,7 +29,11 @@ temporary worktree-local `reports/` directories.
 
 ## Required Bundle
 
-Every scenario or campaign run should include these files:
+Every scenario or campaign run should include these files. For campaign runs,
+`uptime-bench-finalize` now writes the durable database/report artifacts
+directly. Run launchers/controllers are still responsible for copying
+process-local artifacts such as logs, generated ad-hoc scenario files, and
+post-run target cleanup snapshots.
 
 | Path | Purpose |
 |---|---|
@@ -45,10 +49,31 @@ Every scenario or campaign run should include these files:
 | `target-status-after.json` | Post-run target and DNS cleanup verification. |
 | `logs/` | Harness, controller, adapter, and target-control logs needed to debug failures. |
 | `scenarios/` | Exact generated or selected scenario TOML files used by the run. |
+| `campaigns/` | Exact campaign TOML configs for campaign-generated runs. |
 
 If the normal runner or finalizer does not produce the full bundle, backfill
 the missing files from the harness database, run logs, generated scenario
 directory, and controller output before considering the run finished.
+
+`uptime-bench-finalize` writes:
+
+- `report.md`
+- `report.json`
+- `manifest.json`
+- `run.meta.tsv`
+- `campaign_runs.tsv`
+- `scenario_runs.tsv`
+- `ground_truth_events.tsv`
+- `monitor_reports.tsv`
+- `derived_metrics.tsv`
+- `scenario-plan.tsv`
+- `schedule.tsv`
+- `campaigns/*.toml`
+- `capacity.md`, `capacity.json`, and `capacity.txt` when `-capacity` is used.
+
+The finalizer intentionally does not contact target controls or provider APIs
+after the run. `target-status-after.json`, `logs/`, `scenarios/`, and optional
+driver/controller files must come from the run controller.
 
 ## Capacity Artifacts
 
@@ -60,7 +85,7 @@ monitoring Prometheus window that matches the actual scenario run:
 |---|---|
 | `capacity.md` | Human-readable resource and service-capacity analysis. |
 | `capacity.json` | Machine-readable Prometheus summaries and metadata. |
-| `capacity.txt` | Plain-text summary when useful for quick terminal review. |
+| `capacity.txt` | Plain-text summary for quick terminal review. |
 
 Capacity capture must use the run's actual UTC start and end timestamps, not a
 post-run approximation. Include the Prometheus URL, scrape step, queried

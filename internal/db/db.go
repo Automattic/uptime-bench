@@ -303,6 +303,20 @@ type CampaignRunSummary struct {
 	EndedAt    *time.Time // nil for an in-progress campaign
 }
 
+// CampaignRunDetail carries the campaign_runs audit columns needed to
+// reproduce the generated plan and preserve report metadata.
+type CampaignRunDetail struct {
+	ID                 string
+	CampaignID         string
+	ConfigTOML         string
+	MasterSeed         int64
+	StartedAt          time.Time
+	EndedAt            *time.Time
+	ResolutionReason   string
+	AdapterVersions    string
+	TargetFleetVersion string
+}
+
 // CampaignLookup is the result of resolving a user-supplied campaign
 // identifier to one or more campaign_runs rows. Either a concrete
 // campaign_runs.id or the stable campaign_id from the campaign TOML
@@ -357,6 +371,224 @@ func (d *DB) ResolveCampaign(ctx context.Context, input string) (*CampaignLookup
 		return nil, fmt.Errorf("db: ResolveCampaign: %w", err)
 	}
 	return out, nil
+}
+
+// CampaignRunDetails returns campaign_runs audit rows for finalized report
+// bundles. Rows are ordered by started_at, id for deterministic output.
+func (d *DB) CampaignRunDetails(ctx context.Context, campaignRunIDs []string) ([]CampaignRunDetail, error) {
+	if len(campaignRunIDs) == 0 {
+		return nil, nil
+	}
+	placeholders, args := placeholdersAndArgs(campaignRunIDs)
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, campaign_id, config_toml, master_seed, started_at, ended_at,
+		        COALESCE(resolution_reason, ''),
+		        COALESCE(CAST(adapter_versions AS CHAR), ''),
+		        COALESCE(target_fleet_version, '')
+		   FROM campaign_runs
+		  WHERE id IN (`+placeholders+`)
+		  ORDER BY started_at, id`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("db: CampaignRunDetails: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CampaignRunDetail
+	for rows.Next() {
+		var r CampaignRunDetail
+		var endedAt sql.NullTime
+		if err := rows.Scan(
+			&r.ID,
+			&r.CampaignID,
+			&r.ConfigTOML,
+			&r.MasterSeed,
+			&r.StartedAt,
+			&endedAt,
+			&r.ResolutionReason,
+			&r.AdapterVersions,
+			&r.TargetFleetVersion,
+		); err != nil {
+			return nil, fmt.Errorf("db: CampaignRunDetails: scan: %w", err)
+		}
+		if endedAt.Valid {
+			t := endedAt.Time
+			r.EndedAt = &t
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ExportTable is one raw TSV-ready table exported for a finalized campaign.
+type ExportTable struct {
+	Name   string
+	Header []string
+	Rows   [][]string
+}
+
+// CampaignExportTables returns the raw database evidence for a finalized
+// report bundle. Table names and queries are intentionally allowlisted so
+// callers cannot turn this into an arbitrary SQL interface.
+func (d *DB) CampaignExportTables(ctx context.Context, campaignRunIDs []string) ([]ExportTable, error) {
+	tables := []string{
+		"campaign_runs",
+		"scenario_runs",
+		"ground_truth_events",
+		"monitor_reports",
+		"derived_metrics",
+	}
+	out := make([]ExportTable, 0, len(tables))
+	for _, name := range tables {
+		table, err := d.CampaignExportTable(ctx, campaignRunIDs, name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, table)
+	}
+	return out, nil
+}
+
+// CampaignExportTable returns one allowlisted raw database table filtered to
+// the selected campaign run IDs.
+func (d *DB) CampaignExportTable(ctx context.Context, campaignRunIDs []string, name string) (ExportTable, error) {
+	spec, ok := campaignExportSpecs[name]
+	if !ok {
+		return ExportTable{}, fmt.Errorf("db: CampaignExportTable: unsupported table %q", name)
+	}
+	if len(campaignRunIDs) == 0 {
+		return ExportTable{Name: name, Header: spec.header}, nil
+	}
+	placeholders, args := placeholdersAndArgs(campaignRunIDs)
+	query := strings.Replace(spec.query, "{{campaign_ids}}", placeholders, 1)
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return ExportTable{}, fmt.Errorf("db: CampaignExportTable %s: %w", name, err)
+	}
+	defer rows.Close()
+
+	data, err := scanRowsAsStrings(rows)
+	if err != nil {
+		return ExportTable{}, fmt.Errorf("db: CampaignExportTable %s: %w", name, err)
+	}
+	return ExportTable{Name: name, Header: spec.header, Rows: data}, nil
+}
+
+type campaignExportSpec struct {
+	header []string
+	query  string
+}
+
+var campaignExportSpecs = map[string]campaignExportSpec{
+	"campaign_runs": {
+		header: []string{"id", "campaign_id", "config_toml", "master_seed", "started_at", "ended_at", "resolution_reason", "adapter_versions", "target_fleet_version"},
+		query: `SELECT id, campaign_id, config_toml, master_seed, started_at, ended_at,
+		        COALESCE(resolution_reason, ''),
+		        COALESCE(CAST(adapter_versions AS CHAR), ''),
+		        COALESCE(target_fleet_version, '')
+		   FROM campaign_runs
+		  WHERE id IN ({{campaign_ids}})
+		  ORDER BY started_at, id`,
+	},
+	"scenario_runs": {
+		header: []string{"id", "scenario_id", "scenario_version", "seed", "target_id", "campaign_id", "parameters", "started_at", "ended_at", "resolution_reason"},
+		query: `SELECT id, scenario_id, scenario_version, seed, target_id,
+		        COALESCE(campaign_id, ''),
+		        CAST(parameters AS CHAR),
+		        started_at, ended_at,
+		        COALESCE(resolution_reason, '')
+		   FROM scenario_runs
+		  WHERE campaign_id IN ({{campaign_ids}})
+		  ORDER BY started_at, id`,
+	},
+	"ground_truth_events": {
+		header: []string{"id", "run_id", "event_type", "target_id", "failure_type", "occurred_at", "details"},
+		query: `SELECT gte.id, gte.run_id, gte.event_type, gte.target_id,
+		        COALESCE(gte.failure_type, ''),
+		        gte.occurred_at,
+		        COALESCE(CAST(gte.details AS CHAR), '')
+		   FROM ground_truth_events gte
+		   JOIN scenario_runs sr ON sr.id = gte.run_id
+		  WHERE sr.campaign_id IN ({{campaign_ids}})
+		  ORDER BY gte.occurred_at, gte.id`,
+	},
+	"monitor_reports": {
+		header: []string{"id", "run_id", "service_id", "retrieve_status", "retrieve_unknown_reason", "reason_code", "event_type", "raw_classification", "normalized_classification", "reported_at", "retrieved_at", "metadata"},
+		query: `SELECT mr.id, mr.run_id, mr.service_id, mr.retrieve_status,
+		        COALESCE(mr.retrieve_unknown_reason, ''),
+		        COALESCE(mr.reason_code, ''),
+		        COALESCE(mr.event_type, ''),
+		        COALESCE(mr.raw_classification, ''),
+		        COALESCE(mr.normalized_classification, ''),
+		        mr.reported_at, mr.retrieved_at,
+		        COALESCE(CAST(mr.metadata AS CHAR), '')
+		   FROM monitor_reports mr
+		   JOIN scenario_runs sr ON sr.id = mr.run_id
+		  WHERE sr.campaign_id IN ({{campaign_ids}})
+		  ORDER BY mr.retrieved_at, mr.id`,
+	},
+	"derived_metrics": {
+		header: []string{"id", "run_id", "service_id", "metric_name", "metric_value", "metric_text", "computed_at"},
+		query: `SELECT dm.id, dm.run_id, dm.service_id, dm.metric_name,
+		        dm.metric_value,
+		        COALESCE(dm.metric_text, ''),
+		        dm.computed_at
+		   FROM derived_metrics dm
+		   JOIN scenario_runs sr ON sr.id = dm.run_id
+		  WHERE sr.campaign_id IN ({{campaign_ids}})
+		  ORDER BY sr.started_at, sr.id, dm.service_id, dm.metric_name`,
+	},
+}
+
+func placeholdersAndArgs(ids []string) (string, []any) {
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	return placeholders, args
+}
+
+func scanRowsAsStrings(rows *sql.Rows) ([][]string, error) {
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	values := make([]any, len(cols))
+	dest := make([]any, len(cols))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+
+	var out [][]string
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		row := make([]string, len(cols))
+		for i, v := range values {
+			row[i] = formatExportValue(v)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func formatExportValue(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case time.Time:
+		return t.UTC().Format(time.RFC3339Nano)
+	case []byte:
+		return string(t)
+	case string:
+		return t
+	default:
+		return fmt.Sprint(t)
+	}
 }
 
 // UpsertDerivedMetric inserts or replaces one derived_metrics row.

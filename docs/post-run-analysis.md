@@ -14,8 +14,9 @@ make the conclusions reproducible:
 
 - `run.meta.tsv` with the exact campaign window.
 - `report.md` and `report.json` for scenario accuracy.
-- `capacity.md` and `capacity.json` when `uptime-bench-finalize -capacity` was
-  used or a Jetmon capacity suite was run.
+- `capacity.md`, `capacity.json`, and `capacity.txt` when
+  `uptime-bench-finalize -capacity` was used or a Jetmon capacity suite was
+  run.
 - Raw exports for `scenario_runs`, `ground_truth_events`, `monitor_reports`,
   and `derived_metrics` when the run was produced from a live database.
 - A redacted service snapshot showing enabled services, monitor IDs or kinds,
