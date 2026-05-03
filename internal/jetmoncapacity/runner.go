@@ -38,10 +38,11 @@ type RunOptions struct {
 
 // Runner executes guarded Jetmon capacity lifecycle runs.
 type Runner struct {
-	Executor  SQLExecutor
-	Collector PrometheusCollector
-	Clock     Clock
-	Sleeper   Sleeper
+	Executor   SQLExecutor
+	Collector  PrometheusCollector
+	URLChecker TargetURLChecker
+	Clock      Clock
+	Sleeper    Sleeper
 }
 
 // SQLExecutor executes rendered SQL against a service DB.
@@ -136,6 +137,7 @@ type RunManifest struct {
 	EstimatedRuntime string              `json:"estimated_runtime,omitempty"`
 	PrometheusURL    string              `json:"prometheus_url,omitempty"`
 	Instances        []string            `json:"instances,omitempty"`
+	Target           TargetManifest      `json:"target,omitempty"`
 	CreatedAt        time.Time           `json:"created_at"`
 	WindowStart      *time.Time          `json:"window_start,omitempty"`
 	WindowEnd        *time.Time          `json:"window_end,omitempty"`
@@ -151,6 +153,7 @@ type RunManifest struct {
 	Executions       []ExecutionManifest `json:"executions,omitempty"`
 	Health           []ServiceHealth     `json:"health,omitempty"`
 	Thresholds       []ThresholdFinding  `json:"thresholds,omitempty"`
+	TargetPreflights []TargetPreflight   `json:"target_preflights,omitempty"`
 	StopRecommended  bool                `json:"stop_recommended,omitempty"`
 	StopReason       string              `json:"stop_reason,omitempty"`
 	Error            string              `json:"error,omitempty"`
@@ -344,6 +347,7 @@ func (r Runner) Run(ctx context.Context, opts RunOptions) (RunManifest, error) {
 		Cooldown:      cooldown.String(),
 		PrometheusURL: firstNonEmpty(opts.PrometheusURL, cfg.PrometheusURL),
 		Instances:     cfg.Instances,
+		Target:        targetManifest(cfg),
 		CreatedAt:     r.Clock.Now().UTC(),
 		Services:      ServiceSummaries(services),
 	}
@@ -400,6 +404,9 @@ func (r Runner) withDefaults() Runner {
 	}
 	if r.Collector == nil {
 		r.Collector = DefaultPrometheusCollector{}
+	}
+	if r.URLChecker == nil {
+		r.URLChecker = defaultTargetURLChecker{}
 	}
 	if r.Clock == nil {
 		r.Clock = realClock{}
@@ -593,6 +600,10 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 		m.LifecycleStatus = "pass"
 		return r.verifyServices(ctx, dir, services, "verify", false, activeCount, m)
 	}
+	if err := r.preflightActivatedTargets(ctx, services, cfg, activeCount, m); err != nil {
+		m.LifecycleStatus = "fail"
+		return err
+	}
 
 	start := r.Clock.Now().UTC()
 	m.WindowStart = &start
@@ -678,6 +689,7 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 			Cooldown:      cooldown.String(),
 			PrometheusURL: promURL,
 			Instances:     cfg.Instances,
+			Target:        targetManifest(cfg),
 			CreatedAt:     r.Clock.Now().UTC(),
 			Services:      m.Services,
 		}
@@ -1073,6 +1085,10 @@ func WriteSummary(dir string, m RunManifest) error {
 	if m.PrometheusError != "" {
 		fmt.Fprintf(&b, "Prometheus Error: %s\n", m.PrometheusError)
 	}
+	if m.Target.HostPattern != "" || m.Target.URLPattern != "" {
+		fmt.Fprintf(&b, "Target Host Pattern: %s\n", m.Target.HostPattern)
+		fmt.Fprintf(&b, "Target URL Pattern: %s\n", m.Target.URLPattern)
+	}
 	if m.CleanupStatus != "" {
 		fmt.Fprintf(&b, "Cleanup Status: %s\n", m.CleanupStatus)
 	}
@@ -1115,6 +1131,32 @@ func WriteSummary(dir string, m RunManifest) error {
 			)
 		}
 		_ = tw.Flush()
+	}
+	if len(m.TargetPreflights) > 0 {
+		fmt.Fprintln(&b, "\nTarget Preflight:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SERVICE\tSTATUS\tSAMPLES\tSKIP_HTTP\tEXPECTED_STATUS\tERROR")
+		for _, p := range m.TargetPreflights {
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%t\t%s\t%s\n",
+				p.Service,
+				p.Status,
+				p.SampleCount,
+				p.SkippedHTTP,
+				expectedStatusText(p.ExpectedStatus),
+				p.Error,
+			)
+		}
+		_ = tw.Flush()
+		for _, p := range m.TargetPreflights {
+			for _, sample := range p.Samples {
+				fmt.Fprintf(&b, "- %s blog_id=%d bucket=%d url=%s pattern_match=%t\n",
+					p.Service, sample.BlogID, sample.BucketNo, sample.URL, sample.PatternMatch)
+				for _, check := range sample.Checks {
+					fmt.Fprintf(&b, "  check source=%s dns_ok=%t http_ok=%t http_status=%d error=%s\n",
+						check.Source, check.DNSOK, check.HTTPOK, check.HTTPStatus, check.Error)
+				}
+			}
+		}
 	}
 	if bucketRows := summaryBucketRows(m.Health, 20); len(bucketRows) > 0 {
 		fmt.Fprintln(&b, "\nBucket Staleness:")
@@ -1545,7 +1587,7 @@ func statementWithColumns(result SQLExecutionResult, columns ...string) (SQLStat
 
 func columnIndex(columns []string, want string) int {
 	for i, column := range columns {
-		if column == want {
+		if strings.EqualFold(column, want) {
 			return i
 		}
 	}

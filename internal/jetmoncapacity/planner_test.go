@@ -142,6 +142,26 @@ func TestRenderSeedSafetySQLRejectsMultiplePlaceholders(t *testing.T) {
 	}
 }
 
+func TestRenderActiveURLSamplesSQLUsesBucketAndEdgeSamples(t *testing.T) {
+	sql, err := RenderActiveURLSamplesSQL(Config{
+		Schema:      SchemaV2,
+		BlogIDStart: 8000001000000000,
+		Count:       1000,
+		URLPattern:  "http://site-%07d.load.example.test/",
+		BucketMin:   0,
+		BucketMax:   9,
+	}, 1000)
+	if err != nil {
+		t.Fatalf("RenderActiveURLSamplesSQL: %v", err)
+	}
+	assertContains(t, sql, "blog_id,\n  bucket_no,\n  monitor_url")
+	assertContains(t, sql, "8000001000000000")
+	assertContains(t, sql, "8000001000000009")
+	assertContains(t, sql, "8000001000000500")
+	assertContains(t, sql, "8000001000000999")
+	assertContains(t, sql, "monitor_active = 1")
+}
+
 func assertContains(t *testing.T, value, needle string) {
 	t.Helper()
 	if !strings.Contains(value, needle) {

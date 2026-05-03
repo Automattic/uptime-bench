@@ -2,6 +2,7 @@ package jetmoncapacity
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -11,16 +12,17 @@ import (
 
 // RunConfig describes an end-to-end Jetmon v1/v2 capacity run.
 type RunConfig struct {
-	ID            string         `toml:"id"`
-	PrometheusURL string         `toml:"prometheus_url"`
-	Instances     []string       `toml:"instances"`
-	Window        WindowConfig   `toml:"window"`
-	Targets       TargetConfig   `toml:"targets"`
-	Checks        ChecksConfig   `toml:"checks"`
-	Batches       BatchesConfig  `toml:"batches"`
-	JetmonV1      ServiceConfig  `toml:"jetmon_v1"`
-	JetmonV2      ServiceConfig  `toml:"jetmon_v2"`
-	StopThreshold StopThresholds `toml:"stop_thresholds"`
+	ID              string                `toml:"id"`
+	PrometheusURL   string                `toml:"prometheus_url"`
+	Instances       []string              `toml:"instances"`
+	Window          WindowConfig          `toml:"window"`
+	Targets         TargetConfig          `toml:"targets"`
+	TargetPreflight TargetPreflightConfig `toml:"target_preflight"`
+	Checks          ChecksConfig          `toml:"checks"`
+	Batches         BatchesConfig         `toml:"batches"`
+	JetmonV1        ServiceConfig         `toml:"jetmon_v1"`
+	JetmonV2        ServiceConfig         `toml:"jetmon_v2"`
+	StopThreshold   StopThresholds        `toml:"stop_thresholds"`
 }
 
 // WindowConfig controls baseline and Prometheus capture windows.
@@ -32,10 +34,19 @@ type WindowConfig struct {
 
 // TargetConfig describes the generated synthetic target namespace.
 type TargetConfig struct {
-	Domain     string `toml:"domain"`
-	URLPattern string `toml:"url_pattern"`
-	Count      int    `toml:"count"`
-	URLStart   int64  `toml:"url_start"`
+	Domain      string `toml:"domain"`
+	HostPattern string `toml:"host_pattern"`
+	URLPattern  string `toml:"url_pattern"`
+	Count       int    `toml:"count"`
+	URLStart    int64  `toml:"url_start"`
+}
+
+// TargetPreflightConfig controls exact activated-target validation before a
+// live capacity window starts.
+type TargetPreflightConfig struct {
+	SkipHTTP       bool   `toml:"skip_http"`
+	Timeout        string `toml:"timeout"`
+	ExpectedStatus int    `toml:"expected_status"`
 }
 
 // ChecksConfig describes the monitor check cadence.
@@ -111,14 +122,34 @@ func (c RunConfig) Normalize() RunConfig {
 	if c.ID == "" {
 		c.ID = "jetmon-v1-vs-v2-capacity"
 	}
+	c.Targets.Domain = strings.Trim(strings.TrimSpace(c.Targets.Domain), ".")
+	c.Targets.HostPattern = strings.TrimSpace(c.Targets.HostPattern)
+	c.Targets.URLPattern = strings.TrimSpace(c.Targets.URLPattern)
+	if c.Targets.HostPattern == "" {
+		if c.Targets.Domain != "" {
+			c.Targets.HostPattern = "site-%07d." + c.Targets.Domain
+		} else if c.Targets.URLPattern == "" {
+			c.Targets.HostPattern = defaultHostPattern
+		}
+	}
+	if c.Targets.URLPattern == "" {
+		if c.Targets.HostPattern != "" {
+			c.Targets.URLPattern = "http://" + c.Targets.HostPattern + "/"
+		} else {
+			c.Targets.URLPattern = defaultURLPattern
+		}
+	}
 	if c.Targets.Count == 0 {
 		c.Targets.Count = defaultCount
 	}
-	if c.Targets.URLPattern == "" {
-		c.Targets.URLPattern = defaultURLPattern
-	}
 	if c.Targets.URLStart == 0 {
 		c.Targets.URLStart = defaultURLNumberStart
+	}
+	if c.TargetPreflight.Timeout == "" {
+		c.TargetPreflight.Timeout = "5s"
+	}
+	if c.TargetPreflight.ExpectedStatus == 0 {
+		c.TargetPreflight.ExpectedStatus = http.StatusOK
 	}
 	if c.Checks.Interval == "" {
 		c.Checks.Interval = "1m"
@@ -158,6 +189,12 @@ func (c RunConfig) Validate() error {
 	}
 	if c.Targets.Count <= 0 {
 		return fmt.Errorf("targets.count must be positive")
+	}
+	if err := validateTargetPattern(c.Targets); err != nil {
+		return err
+	}
+	if _, err := c.TargetPreflightTimeout(); err != nil {
+		return err
 	}
 	if _, err := c.BatchDuration(); err != nil {
 		return err
@@ -211,6 +248,11 @@ func (c RunConfig) RateWindowDuration() (time.Duration, error) {
 // BaselineDuration returns the pre-run baseline capture duration.
 func (c RunConfig) BaselineDuration() (time.Duration, error) {
 	return parseDuration("window.baseline_duration", c.Normalize().Window.BaselineDuration)
+}
+
+// TargetPreflightTimeout returns the per-URL timeout for activated-target checks.
+func (c RunConfig) TargetPreflightTimeout() (time.Duration, error) {
+	return parseDuration("target_preflight.timeout", c.Normalize().TargetPreflight.Timeout)
 }
 
 // ServiceLifecycles returns normalized lifecycle plans for selected services.

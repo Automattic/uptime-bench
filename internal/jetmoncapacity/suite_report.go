@@ -24,6 +24,7 @@ type SuiteReport struct {
 	Cooldown          string             `json:"cooldown,omitempty"`
 	PrometheusURL     string             `json:"prometheus_url,omitempty"`
 	Instances         []string           `json:"instances,omitempty"`
+	Target            TargetManifest     `json:"target,omitempty"`
 	BatchCount        int                `json:"batch_count"`
 	TotalBatchCount   int                `json:"total_batch_count,omitempty"`
 	BatchSizes        []int              `json:"batch_sizes,omitempty"`
@@ -59,6 +60,7 @@ type SuiteBatchReport struct {
 	Health            []ServiceHealth               `json:"health,omitempty"`
 	Thresholds        []ThresholdFinding            `json:"thresholds,omitempty"`
 	PrometheusSummary []capacitybench.SeriesSummary `json:"prometheus_summary,omitempty"`
+	TargetPreflights  []TargetPreflight             `json:"target_preflights,omitempty"`
 }
 
 func buildSuiteReport(parent RunManifest, children []RunManifest) SuiteReport {
@@ -72,6 +74,7 @@ func buildSuiteReport(parent RunManifest, children []RunManifest) SuiteReport {
 		Cooldown:         parent.Cooldown,
 		PrometheusURL:    parent.PrometheusURL,
 		Instances:        append([]string(nil), parent.Instances...),
+		Target:           parent.Target,
 		BatchCount:       parent.BatchCount,
 		TotalBatchCount:  parent.TotalBatchCount,
 		BatchSizes:       append([]int(nil), parent.BatchSizes...),
@@ -100,6 +103,7 @@ func buildSuiteReport(parent RunManifest, children []RunManifest) SuiteReport {
 			Error:            child.Error,
 			Health:           append([]ServiceHealth(nil), child.Health...),
 			Thresholds:       append([]ThresholdFinding(nil), child.Thresholds...),
+			TargetPreflights: append([]TargetPreflight(nil), child.TargetPreflights...),
 		}
 		if prom := child.loadPrometheusReport(child.OutDir); prom != nil {
 			batch.PrometheusSummary = append([]capacitybench.SeriesSummary(nil), prom.Summaries...)
@@ -151,6 +155,10 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 	if report.PrometheusURL != "" {
 		fmt.Fprintf(&b, "Prometheus: `%s`\n", report.PrometheusURL)
 	}
+	if report.Target.HostPattern != "" || report.Target.URLPattern != "" {
+		fmt.Fprintf(&b, "Target Host Pattern: `%s`\n", report.Target.HostPattern)
+		fmt.Fprintf(&b, "Target URL Pattern: `%s`\n", report.Target.URLPattern)
+	}
 	if len(report.Instances) > 0 {
 		fmt.Fprintf(&b, "Instances: `%s`\n", strings.Join(report.Instances, "`, `"))
 	}
@@ -178,13 +186,14 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 	}
 
 	fmt.Fprint(&b, "\n## Batch Results\n\n")
-	fmt.Fprintln(&b, "| Active | Status | Window | Health | Prometheus | Cleanup | Stop | Reason |")
-	fmt.Fprintln(&b, "| ---: | --- | --- | --- | --- | --- | --- | --- |")
+	fmt.Fprintln(&b, "| Active | Status | Window | Target | Health | Prometheus | Cleanup | Stop | Reason |")
+	fmt.Fprintln(&b, "| ---: | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, batch := range report.Batches {
-		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %t | %s |\n",
+		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %t | %s |\n",
 			batch.ActiveCount,
 			batch.Status,
 			escapeSuiteCell(formatWindow(batch.WindowStart, batch.WindowEnd)),
+			escapeSuiteCell(suiteTargetStatus(batch.TargetPreflights)),
 			escapeSuiteCell(batch.HealthStatus),
 			escapeSuiteCell(batch.PrometheusStatus),
 			escapeSuiteCell(batch.CleanupStatus),
@@ -193,10 +202,11 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 		)
 	}
 	if len(report.Batches) == 0 {
-		fmt.Fprintln(&b, "| 0 | none | not recorded | - | - | - | false | no completed batches |")
+		fmt.Fprintln(&b, "| 0 | none | not recorded | - | - | - | - | false | no completed batches |")
 	}
 
 	writeSuiteServiceHealthMarkdown(&b, report)
+	writeSuiteTargetPreflightMarkdown(&b, report)
 	writeSuiteThresholdMarkdown(&b, report)
 	writeSuitePrometheusMarkdown(&b, report)
 	return b.String()
@@ -237,6 +247,42 @@ func writeSuiteServiceHealthMarkdown(b *strings.Builder, report SuiteReport) {
 			formatFloatPtr(h.P95CheckAgeSec),
 			formatFloatPtr(h.OldestCheckAgeSec),
 			escapeSuiteCell(h.Reason),
+		)
+	}
+}
+
+func writeSuiteTargetPreflightMarkdown(b *strings.Builder, report SuiteReport) {
+	var rows []struct {
+		Batch     int
+		Preflight TargetPreflight
+	}
+	for _, batch := range report.Batches {
+		for _, preflight := range batch.TargetPreflights {
+			rows = append(rows, struct {
+				Batch     int
+				Preflight TargetPreflight
+			}{Batch: batch.ActiveCount, Preflight: preflight})
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprint(b, "\n## Target Preflight\n\n")
+	fmt.Fprintln(b, "| Active | Service | Status | Samples | HTTP | Error |")
+	fmt.Fprintln(b, "| ---: | --- | --- | ---: | --- | --- |")
+	for _, row := range rows {
+		p := row.Preflight
+		httpStatus := "checked"
+		if p.SkippedHTTP {
+			httpStatus = "skipped"
+		}
+		fmt.Fprintf(b, "| %d | %s | %s | %d | %s | %s |\n",
+			row.Batch,
+			escapeSuiteCell(p.Service),
+			escapeSuiteCell(p.Status),
+			p.SampleCount,
+			escapeSuiteCell(httpStatus),
+			escapeSuiteCell(p.Error),
 		)
 	}
 }
@@ -351,6 +397,23 @@ func suiteBatchStatus(m RunManifest) string {
 		return "pass"
 	}
 	return firstNonEmpty(m.LifecycleStatus, "unknown")
+}
+
+func suiteTargetStatus(preflights []TargetPreflight) string {
+	if len(preflights) == 0 {
+		return "-"
+	}
+	status := "pass"
+	for _, preflight := range preflights {
+		if preflight.Status != "pass" {
+			status = preflight.Status
+			if status == "" {
+				status = "unknown"
+			}
+			break
+		}
+	}
+	return status
 }
 
 func formatWindow(start, end *time.Time) string {

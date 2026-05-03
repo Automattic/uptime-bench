@@ -13,9 +13,17 @@ rate_window = "2m"
 
 [targets]
 domain = "load.example.com"
+host_pattern = "site-%07d.load.example.com"
 url_pattern = "http://site-%07d.load.example.com/"
 count = 1000000
 url_start = 1
+
+[target_preflight]
+timeout = "5s"
+expected_status = 200
+# Set skip_http=true only when planning or when the runner cannot reach the
+# generated target namespace. Live apply runs should leave HTTP checks enabled.
+skip_http = false
 
 [checks]
 interval = "1m"

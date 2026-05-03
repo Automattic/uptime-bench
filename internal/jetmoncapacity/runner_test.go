@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -203,6 +204,37 @@ func TestRunBatchPreflightRequiresPrometheusForApply(t *testing.T) {
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("SQL ran despite Prometheus preflight failure: %#v", exec.calls)
+	}
+}
+
+func TestRunBatchTargetPreflightRejectsActivatedURLMismatch(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	exec := &fakeSQLExecutor{
+		activeByDSN:     map[string]int64{},
+		badSampleURLDSN: "v2-dsn",
+	}
+	manifest, err := (Runner{
+		Executor: exec,
+		Clock:    fixedClock{},
+		Sleeper:  noSleep{},
+		Collector: fakeCollector{
+			report: scrapeUpReport("jetmon-v1", "jetmon-v2"),
+		},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:  cfgPath,
+		Mode:        "run-batch",
+		ActiveCount: 10,
+		OutDir:      filepath.Join(t.TempDir(), "out"),
+		Apply:       true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "target preflight") {
+		t.Fatalf("Run error = %v, want target preflight mismatch", err)
+	}
+	if !exec.sawDeactivation("v1-dsn") || !exec.sawDeactivation("v2-dsn") {
+		t.Fatalf("expected cleanup after target preflight failure; calls: %#v", exec.calls)
+	}
+	if len(manifest.TargetPreflights) != 2 || manifest.TargetPreflights[1].Status != "fail" {
+		t.Fatalf("TargetPreflights = %+v, want v2 failure recorded", manifest.TargetPreflights)
 	}
 }
 
@@ -631,6 +663,9 @@ id = "capacity-test"
 url_pattern = "http://site-%07d.load.example.test/"
 count = 100
 
+[target_preflight]
+skip_http = true
+
 [checks]
 interval = "1m"
 
@@ -676,6 +711,7 @@ type fakeSQLExecutor struct {
 	staleByDSN      map[string]int64
 	historyByDSN    map[string]int64
 	failActivateDSN string
+	badSampleURLDSN string
 	seedTotal       int64
 	seedMatching    int64
 }
@@ -688,6 +724,8 @@ type fakeSQLCall struct {
 func (e *fakeSQLExecutor) ExecuteSQL(ctx context.Context, dsn string, sqlText string) (SQLExecutionResult, error) {
 	e.calls = append(e.calls, fakeSQLCall{dsn: dsn, sql: sqlText})
 	switch {
+	case strings.Contains(sqlText, "monitor_url") && strings.Contains(sqlText, "monitor_active = 1"):
+		return e.activeURLSamples(dsn), nil
 	case strings.Contains(sqlText, "COUNT(*) AS total_rows"):
 		return singleRowResult([]string{"total_rows", "matching_url_rows"}, []string{intString(e.seedTotal), intString(e.seedMatching)}), nil
 	case strings.Contains(sqlText, "Activate the requested batch prefix."):
@@ -730,6 +768,41 @@ func (e *fakeSQLExecutor) ExecuteSQL(ctx context.Context, dsn string, sqlText st
 	default:
 		return SQLExecutionResult{StatementCount: 1}, nil
 	}
+}
+
+func (e *fakeSQLExecutor) activeURLSamples(dsn string) SQLExecutionResult {
+	start := int64(8000000000000000)
+	bucketMin := 0
+	if dsn == "v2-dsn" {
+		start = 8000001000000000
+		bucketMin = 10
+	}
+	var rows [][]string
+	for i := 0; i < 10; i++ {
+		blogID := start + int64(i)
+		rows = append(rows, []string{
+			intString(blogID),
+			strconv.Itoa(bucketMin + i),
+			e.sampleURL(dsn, i+1),
+		})
+	}
+	return SQLExecutionResult{
+		StatementCount: 1,
+		Statements: []SQLStatementResult{{
+			Index:   1,
+			Keyword: "SELECT",
+			Columns: []string{"blog_id", "bucket_no", "monitor_url"},
+			Rows:    rows,
+		}},
+	}
+}
+
+func (e *fakeSQLExecutor) sampleURL(dsn string, number int) string {
+	host := "load.example.test"
+	if dsn == e.badSampleURLDSN {
+		host = "wrong.example.test"
+	}
+	return "http://site-" + fmt.Sprintf("%07d", number) + "." + host + "/"
 }
 
 func (e *fakeSQLExecutor) sawDeactivation(dsn string) bool {

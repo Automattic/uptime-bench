@@ -16,6 +16,7 @@ The root [README](../README.md) explains what uptime-bench is and why it exists.
 - [Events and metrics](events.md) - ground truth, monitor reports, derived metrics, and scoring rules.
 - [Reporting standard](reporting.md) - required post-run report bundle, raw artifacts, capacity artifacts, and report contents.
 - [Jetmon capacity benchmark](capacity-benchmark.md) - Prometheus collection and capacity-test design for Jetmon v1/v2.
+- [Jetmon v2 capacity target-pattern handoff](jetmon-v2-capacity-target-pattern-handoff.md) - notes from a failed capacity run caused by DNS/URL pattern drift.
 - [Post-run analysis](post-run-analysis.md) - checklist for turning completed run artifacts into comparable findings.
 - [Roadmap](roadmap.md) - completed milestones, active priorities, and deferred ideas.
 

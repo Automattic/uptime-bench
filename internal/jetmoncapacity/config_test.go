@@ -3,6 +3,7 @@ package jetmoncapacity
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -111,6 +112,45 @@ func TestRunConfigRejectsUnsortedBatches(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate succeeded, want error")
+	}
+}
+
+func TestRunConfigRejectsTargetPatternMismatch(t *testing.T) {
+	cfg := RunConfig{
+		Targets: TargetConfig{
+			Domain:     "steadycadence.example",
+			URLPattern: "http://site-%07d.load.steadycadence.example/",
+			Count:      100,
+		},
+		Checks:  ChecksConfig{Interval: "1m"},
+		Batches: BatchesConfig{Sizes: []int{10}, Duration: "5m", Cooldown: "1m"},
+		JetmonV1: ServiceConfig{Lifecycle: LifecycleConfig{
+			Schema:      SchemaV1,
+			BlogIDStart: 100,
+			Count:       100,
+		}},
+		JetmonV2: ServiceConfig{Lifecycle: LifecycleConfig{
+			Schema:      SchemaV2,
+			BlogIDStart: 200,
+			Count:       100,
+		}},
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "does not match targets.host_pattern") {
+		t.Fatalf("Validate error = %v, want target pattern mismatch", err)
+	}
+}
+
+func TestRunConfigDefaultsURLPatternFromHostPattern(t *testing.T) {
+	cfg := RunConfig{
+		Targets: TargetConfig{
+			HostPattern: "site-%07d.capacity.example",
+			Count:       100,
+		},
+	}
+	got := cfg.Normalize()
+	if got.Targets.URLPattern != "http://site-%07d.capacity.example/" {
+		t.Fatalf("URLPattern = %q, want derived URL pattern", got.Targets.URLPattern)
 	}
 }
 

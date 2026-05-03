@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -19,6 +20,7 @@ const (
 	OperationVerify     Operation = "verify"
 
 	defaultURLPattern           = "http://site-%07d.load.example.com/"
+	defaultHostPattern          = "site-%07d.load.example.com"
 	defaultBlogIDStart          = int64(8_000_000_000_000_000)
 	defaultCount                = 1_000_000
 	defaultURLNumberStart       = int64(1)
@@ -222,6 +224,36 @@ FROM jetpack_monitor_sites
 WHERE blog_id BETWEEN %d AND %d
   AND monitor_active = 1;
 `, c.BlogIDStart, c.BlogIDEnd()), nil
+}
+
+// RenderActiveURLSamplesSQL renders a query that returns exact activated
+// monitor_url samples before a timed capacity window starts.
+func RenderActiveURLSamplesSQL(c Config, activeCount int) (string, error) {
+	c = c.Normalize()
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	if activeCount <= 0 {
+		return "", fmt.Errorf("active count must be positive")
+	}
+	if activeCount > c.Count {
+		return "", fmt.Errorf("active count cannot exceed reserved count")
+	}
+	bucketCount := c.BucketMax - c.BucketMin + 1
+	offsets := sampleOffsets(activeCount, bucketCount)
+	ids := make([]string, 0, len(offsets))
+	for _, offset := range offsets {
+		ids = append(ids, strconv.FormatInt(c.BlogIDStart+int64(offset), 10))
+	}
+	return fmt.Sprintf(`SELECT
+  blog_id,
+  bucket_no,
+  monitor_url
+FROM jetpack_monitor_sites
+WHERE blog_id IN (%s)
+  AND monitor_active = 1
+ORDER BY blog_id ASC;
+`, strings.Join(ids, ", ")), nil
 }
 
 // RenderSeedSafetySQL renders a preflight query for destructive seed resets.

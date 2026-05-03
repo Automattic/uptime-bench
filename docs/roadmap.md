@@ -775,6 +775,9 @@ Implemented:
 - Capacity `run-suite` directories include `capacity.md` and `capacity.json`
   rollups for batch pass/fail status, DB health, thresholds, Prometheus
   highlights, last clean batch, and first problem batch.
+- Capacity live batches validate exact activated target URL samples before the
+  timed window starts, so a generated DNS/URL pattern mismatch fails as target
+  setup rather than being misread as Jetmon missed checks.
 - `uptime-bench-finalize -capacity` writes `capacity.md` and `capacity.json`
   alongside `report.md`/`report.json`, using the finalized campaign window as
   the Prometheus query range.
@@ -783,6 +786,8 @@ Implemented:
 Remaining follow-up:
 
 - Stress test target-side DNS and HTTP capacity before monitor-side million-site runs.
+- Extend target preflight to run exact activated URL checks from each Jetmon
+  service host and Veriflier host, not only from the capacity runner host.
 - Use the guarded Jetmon lifecycle runner for staged active-monitor growth
   suites and compare suite `capacity.md` findings against detection behavior.
 

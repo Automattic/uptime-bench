@@ -250,6 +250,25 @@ The DNS server resolves generated hosts directly from the pattern and range.
 The HTTP target already generates healthy content from arbitrary Host and path
 values, so it does not need a matching million-entry site list.
 
+The Jetmon capacity config must use the same generated namespace. The
+`[targets] host_pattern` is the DNS-side hostname pattern, and `url_pattern`
+must render to that same host for the first, middle, and last generated IDs:
+
+```toml
+[targets]
+domain = "load.example.com"
+host_pattern = "site-%07d.load.example.com"
+url_pattern = "http://site-%07d.load.example.com/"
+count = 1000000
+url_start = 1
+```
+
+Live capacity runs refuse a mismatch such as
+`host_pattern = "site-%07d.example.com"` with
+`url_pattern = "http://site-%07d.load.example.com/"`. This catches the class of
+failure where Jetmon is seeded with URLs that the generated DNS fleet is not
+serving.
+
 Before adding generated hosts to Jetmon, stress the target path directly:
 
 ```sh
@@ -600,12 +619,12 @@ that is at least `N`. Use `-suite-state-path=PATH` when multiple labs share the
 same reports parent and need separate resume state.
 
 The runner writes a `summary.txt` operator summary, a `run.json` machine-readable
-manifest, generated SQL files, execution results, exact UTC window timestamps,
-and `prometheus-window.json` when Prometheus capture is enabled. For
+manifest, generated SQL files, execution results, target preflight samples,
+exact UTC window timestamps, and `prometheus-window.json` when Prometheus capture is enabled. For
 `run-suite`, the suite directory also gets `capacity.md` and `capacity.json`.
 Those files roll up each batch's pass/fail state, DB health, thresholds,
-Prometheus highlights, last clean batch, and first problem batch while preserving
-the per-batch Prometheus summaries in JSON. The manifest also includes
+target preflight status, Prometheus highlights, last clean batch, and first
+problem batch while preserving the per-batch Prometheus summaries in JSON. The manifest also includes
 lifecycle, Prometheus, health, and cleanup statuses; per-service DB health
 snapshots; freshness lag details; threshold pass/fail/not-measured entries;
 suite batch count/runtime estimates; and a `stop_recommended` flag when a growth
@@ -613,10 +632,15 @@ suite should stop before the next batch. Applying any mutating lifecycle action
 requires the explicit `-apply` flag so planning can continue safely while
 another benchmark is active.
 
-During a live batch, the runner preflights Prometheus, verifies active counts
-before starting the window, captures a DB health snapshot at the recorded end
-time, deactivates the benchmark rows, then captures Prometheus for the exact
-`[window_start, window_end]` range. A Prometheus capture failure is recorded as
+During a live batch, the runner preflights Prometheus, activates the benchmark
+rows, verifies active counts, samples the exact activated `monitor_url` values
+from each Jetmon database, checks those URLs against the configured target
+pattern, and performs DNS/HTTP GET checks from the runner host before starting
+the timed window. If this target preflight fails, the runner deactivates the
+benchmark rows and refuses to start the clock. After a passing preflight, it
+captures a DB health snapshot at the recorded end time, deactivates the
+benchmark rows, then captures Prometheus for the exact `[window_start,
+window_end]` range. A Prometheus capture failure is recorded as
 `prometheus_status=fail`, but DB health and cleanup still run so missed-check
 thresholds are not hidden by monitoring failures. If the process receives
 SIGINT or SIGTERM during a batch, it uses a short fresh cleanup context to
