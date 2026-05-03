@@ -3,6 +3,7 @@ package jetmoncapacity
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -151,6 +152,24 @@ func TestRunConfigDefaultsURLPatternFromHostPattern(t *testing.T) {
 	got := cfg.Normalize()
 	if got.Targets.URLPattern != "http://site-%07d.capacity.example/" {
 		t.Fatalf("URLPattern = %q, want derived URL pattern", got.Targets.URLPattern)
+	}
+}
+
+func TestRunConfigDefaultsAndDedupesTargetPreflightSources(t *testing.T) {
+	defaulted := RunConfig{}.Normalize()
+	if !reflect.DeepEqual(defaulted.TargetPreflight.CheckSources, []string{"runner"}) {
+		t.Fatalf("default check sources = %#v, want runner", defaulted.TargetPreflight.CheckSources)
+	}
+
+	cfg := RunConfig{
+		TargetPreflight: TargetPreflightConfig{
+			CheckSources: []string{" runner ", "", "jetmon-service-host-1", "runner"},
+		},
+	}
+	got := cfg.Normalize()
+	want := []string{"runner", "jetmon-service-host-1"}
+	if !reflect.DeepEqual(got.TargetPreflight.CheckSources, want) {
+		t.Fatalf("check sources = %#v, want %#v", got.TargetPreflight.CheckSources, want)
 	}
 }
 

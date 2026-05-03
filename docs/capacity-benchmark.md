@@ -658,9 +658,12 @@ another benchmark is active.
 During a live batch, the runner preflights Prometheus, activates the benchmark
 rows, verifies active counts, samples the exact activated `monitor_url` values
 from each Jetmon database, checks those URLs against the configured target
-pattern, and performs DNS/HTTP GET checks from the runner host before starting
-the timed window. If this target preflight fails, the runner deactivates the
-benchmark rows and refuses to start the clock. After a passing preflight, it
+pattern, and performs DNS/HTTP GET checks from each configured
+`target_preflight.check_sources` entry before starting the timed window. The
+default source is `runner`; additional source names require a source-aware
+checker implementation so the checks can run from service or Veriflier hosts.
+If this target preflight fails, the runner deactivates the benchmark rows and
+refuses to start the clock. After a passing preflight, it
 captures a DB health snapshot at the recorded end time, deactivates the
 benchmark rows, then captures Prometheus for the exact `[window_start,
 window_end]` range. A Prometheus capture failure is recorded as

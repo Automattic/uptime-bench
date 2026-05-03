@@ -15,14 +15,15 @@ import (
 
 // TargetManifest records the generated capacity target namespace.
 type TargetManifest struct {
-	Domain                  string `json:"domain,omitempty"`
-	HostPattern             string `json:"host_pattern,omitempty"`
-	URLPattern              string `json:"url_pattern,omitempty"`
-	Count                   int    `json:"count,omitempty"`
-	URLStart                int64  `json:"url_start,omitempty"`
-	PreflightSkipHTTP       bool   `json:"preflight_skip_http,omitempty"`
-	PreflightTimeout        string `json:"preflight_timeout,omitempty"`
-	PreflightExpectedStatus int    `json:"preflight_expected_status,omitempty"`
+	Domain                  string   `json:"domain,omitempty"`
+	HostPattern             string   `json:"host_pattern,omitempty"`
+	URLPattern              string   `json:"url_pattern,omitempty"`
+	Count                   int      `json:"count,omitempty"`
+	URLStart                int64    `json:"url_start,omitempty"`
+	PreflightSkipHTTP       bool     `json:"preflight_skip_http,omitempty"`
+	PreflightTimeout        string   `json:"preflight_timeout,omitempty"`
+	PreflightExpectedStatus int      `json:"preflight_expected_status,omitempty"`
+	PreflightCheckSources   []string `json:"preflight_check_sources,omitempty"`
 }
 
 // TargetPreflight records exact activated-URL validation for one service.
@@ -33,6 +34,7 @@ type TargetPreflight struct {
 	SkippedHTTP    bool              `json:"skipped_http,omitempty"`
 	SampleCount    int               `json:"sample_count"`
 	ExpectedStatus int               `json:"expected_status,omitempty"`
+	CheckSources   []string          `json:"check_sources,omitempty"`
 	Samples        []TargetURLSample `json:"samples,omitempty"`
 }
 
@@ -48,7 +50,7 @@ type TargetURLSample struct {
 	Checks       []TargetURLCheck `json:"checks,omitempty"`
 }
 
-// TargetURLCheck records one DNS/HTTP validation from the runner host.
+// TargetURLCheck records one DNS/HTTP validation from a configured source.
 type TargetURLCheck struct {
 	Source     string   `json:"source"`
 	DNSOK      bool     `json:"dns_ok"`
@@ -60,13 +62,21 @@ type TargetURLCheck struct {
 
 // TargetURLChecker checks exact target URLs before the capacity clock starts.
 type TargetURLChecker interface {
-	CheckURL(ctx context.Context, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck
+	CheckURL(ctx context.Context, source string, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck
 }
 
 type defaultTargetURLChecker struct{}
 
-func (defaultTargetURLChecker) CheckURL(ctx context.Context, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck {
-	check := TargetURLCheck{Source: "runner"}
+func (defaultTargetURLChecker) CheckURL(ctx context.Context, source string, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "runner"
+	}
+	check := TargetURLCheck{Source: source}
+	if source != "runner" {
+		check.Error = fmt.Sprintf("source %q requires a source-aware TargetURLChecker", source)
+		return check
+	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		check.Error = "parse URL: " + err.Error()
@@ -146,6 +156,7 @@ func targetManifest(cfg RunConfig) TargetManifest {
 		PreflightSkipHTTP:       cfg.TargetPreflight.SkipHTTP,
 		PreflightTimeout:        cfg.TargetPreflight.Timeout,
 		PreflightExpectedStatus: cfg.TargetPreflight.ExpectedStatus,
+		PreflightCheckSources:   append([]string(nil), cfg.TargetPreflight.CheckSources...),
 	}
 }
 
@@ -260,6 +271,7 @@ func (r Runner) preflightServiceTargets(ctx context.Context, service ServiceLife
 		Status:         "running",
 		SkippedHTTP:    cfg.TargetPreflight.SkipHTTP,
 		ExpectedStatus: cfg.TargetPreflight.ExpectedStatus,
+		CheckSources:   append([]string(nil), cfg.TargetPreflight.CheckSources...),
 	}
 	sqlText, err := RenderActiveURLSamplesSQL(service.Config, activeCount)
 	if err != nil {
@@ -291,15 +303,17 @@ func (r Runner) preflightServiceTargets(ctx context.Context, service ServiceLife
 			return preflight, err
 		}
 		if !cfg.TargetPreflight.SkipHTTP {
-			check := r.URLChecker.CheckURL(ctx, samples[i].URL, timeout, cfg.TargetPreflight.ExpectedStatus)
-			samples[i].Checks = append(samples[i].Checks, check)
-			if !check.DNSOK || !check.HTTPOK {
-				err = fmt.Errorf("activated URL %s failed runner DNS/HTTP check: %s", samples[i].URL, check.Error)
-				preflight.Status = "fail"
-				preflight.Error = err.Error()
-				preflight.Samples = samples
-				preflight.SampleCount = len(samples)
-				return preflight, err
+			for _, source := range cfg.TargetPreflight.CheckSources {
+				check := r.URLChecker.CheckURL(ctx, source, samples[i].URL, timeout, cfg.TargetPreflight.ExpectedStatus)
+				samples[i].Checks = append(samples[i].Checks, check)
+				if !check.DNSOK || !check.HTTPOK {
+					err = fmt.Errorf("activated URL %s failed %s DNS/HTTP check: %s", samples[i].URL, check.Source, check.Error)
+					preflight.Status = "fail"
+					preflight.Error = err.Error()
+					preflight.Samples = samples
+					preflight.SampleCount = len(samples)
+					return preflight, err
+				}
 			}
 		}
 	}

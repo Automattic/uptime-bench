@@ -238,6 +238,67 @@ func TestRunBatchTargetPreflightRejectsActivatedURLMismatch(t *testing.T) {
 	}
 }
 
+func TestPreflightServiceTargetsChecksEveryConfiguredSource(t *testing.T) {
+	exec := &fakeSQLExecutor{}
+	checker := &recordingURLChecker{}
+	cfg := RunConfig{
+		TargetPreflight: TargetPreflightConfig{
+			CheckSources:   []string{"runner", "jetmon-service-host-1"},
+			ExpectedStatus: 200,
+		},
+	}
+	service := ServiceLifecycle{
+		ID:     "jetmon-v1",
+		DSN:    "v1-dsn",
+		HasDSN: true,
+		Config: Config{
+			Schema:               SchemaV1,
+			BlogIDStart:          8000000000000000,
+			Count:                100,
+			BucketMin:            0,
+			BucketMax:            9,
+			URLPattern:           "http://site-%07d.load.example.test/",
+			URLNumberStart:       1,
+			CheckIntervalMinutes: 1,
+		},
+	}
+
+	preflight, err := (Runner{
+		Executor:   exec,
+		URLChecker: checker,
+	}).preflightServiceTargets(context.Background(), service, cfg, 3, time.Second)
+	if err != nil {
+		t.Fatalf("preflightServiceTargets: %v", err)
+	}
+	if preflight.Status != "pass" {
+		t.Fatalf("preflight status = %q, want pass", preflight.Status)
+	}
+	if len(preflight.Samples) != 10 {
+		t.Fatalf("samples = %d, want 10", len(preflight.Samples))
+	}
+	for _, sample := range preflight.Samples {
+		if len(sample.Checks) != 2 {
+			t.Fatalf("sample checks = %#v, want two sources", sample.Checks)
+		}
+		if sample.Checks[0].Source != "runner" || sample.Checks[1].Source != "jetmon-service-host-1" {
+			t.Fatalf("sample checks = %#v, want runner and service host", sample.Checks)
+		}
+	}
+	if len(checker.calls) != 20 {
+		t.Fatalf("checker calls = %#v, want 20 calls", checker.calls)
+	}
+}
+
+func TestDefaultTargetURLCheckerRejectsUnsupportedSourceWithoutNetwork(t *testing.T) {
+	check := defaultTargetURLChecker{}.CheckURL(context.Background(), "jetmon-service-host-1", "http://example.test/", time.Second, 200)
+	if check.Source != "jetmon-service-host-1" {
+		t.Fatalf("Source = %q, want configured source", check.Source)
+	}
+	if check.DNSOK || check.HTTPOK || !strings.Contains(check.Error, "source-aware TargetURLChecker") {
+		t.Fatalf("check = %#v, want local unsupported-source error", check)
+	}
+}
+
 func TestServiceHealthIncludesFreshnessDetails(t *testing.T) {
 	service := ServiceLifecycle{ID: "jetmon-v2", Config: Config{Schema: SchemaV2}}
 	result := SQLExecutionResult{
@@ -719,6 +780,25 @@ type fakeSQLExecutor struct {
 type fakeSQLCall struct {
 	dsn string
 	sql string
+}
+
+type recordingURLChecker struct {
+	calls []recordingURLCheckCall
+}
+
+type recordingURLCheckCall struct {
+	source string
+	url    string
+}
+
+func (c *recordingURLChecker) CheckURL(ctx context.Context, source string, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck {
+	c.calls = append(c.calls, recordingURLCheckCall{source: source, url: rawURL})
+	return TargetURLCheck{
+		Source:     source,
+		DNSOK:      true,
+		HTTPOK:     true,
+		HTTPStatus: expectedStatus,
+	}
 }
 
 func (e *fakeSQLExecutor) ExecuteSQL(ctx context.Context, dsn string, sqlText string) (SQLExecutionResult, error) {
