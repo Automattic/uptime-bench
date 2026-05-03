@@ -172,10 +172,96 @@ func TestWriteReportFilesIncludesStandardArtifacts(t *testing.T) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
-	for _, name := range []string{"run.meta.tsv", "scenario-plan.tsv", "schedule.tsv", "campaigns/tiny-run.toml", "logs/harness.log", "target-status-after.json"} {
+	for _, name := range []string{"run.meta.tsv", "scenario-plan.tsv", "schedule.tsv", "campaigns/tiny-run.toml", "logs/harness.log", "target-status-after.json", "controller-summary.md"} {
 		if !contains(manifest.Files, name) {
 			t.Fatalf("manifest files = %#v, want %s", manifest.Files, name)
 		}
+	}
+}
+
+func TestWriteReportFilesSummarizesTargetStatusAfter(t *testing.T) {
+	dir := t.TempDir()
+	targetStatus := `{
+  "captured_at": "2026-05-01T11:01:02Z",
+  "cleanup_status": "fail",
+  "active_failure_count": 2,
+  "member_error_count": 1,
+  "members": [
+    {
+      "role": "target",
+      "config_ids": ["target-a"],
+      "address": "10.0.0.10",
+      "control_url": "http://10.0.0.10:18080",
+      "status": {
+        "member_id": "target-01",
+        "active_failures": [{ "type": "http_status" }, { "type": "dns_nxdomain" }]
+      }
+    },
+    {
+      "role": "nameserver",
+      "config_ids": ["ns-a"],
+      "address": "10.0.0.53",
+      "control_url": "http://10.0.0.53:18080",
+      "error": "connection refused"
+    }
+  ]
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "target-status-after.json"), []byte(targetStatus), 0o644); err != nil {
+		t.Fatalf("write target status: %v", err)
+	}
+	report := benchreport.Report{Meta: benchreport.Meta{Input: "cleanup-run", CampaignRuns: 1}}
+
+	if err := writeReportFiles(dir, report, nil, nil); err != nil {
+		t.Fatalf("writeReportFiles: %v", err)
+	}
+	controllerSummary, err := os.ReadFile(filepath.Join(dir, "controller-summary.md"))
+	if err != nil {
+		t.Fatalf("read controller-summary.md: %v", err)
+	}
+	for _, want := range []string{"Cleanup Status: fail", "Active Failures: 2", "Member Errors: 1", "target-01", "connection refused"} {
+		if !strings.Contains(string(controllerSummary), want) {
+			t.Fatalf("controller-summary.md missing %q:\n%s", want, string(controllerSummary))
+		}
+	}
+	reportMD, err := os.ReadFile(filepath.Join(dir, "report.md"))
+	if err != nil {
+		t.Fatalf("read report.md: %v", err)
+	}
+	if !strings.Contains(string(reportMD), "## Controller Cleanup Summary") || !strings.Contains(string(reportMD), "Cleanup Status: fail") {
+		t.Fatalf("report.md missing controller cleanup summary:\n%s", string(reportMD))
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest struct {
+		Files []string `json:"files"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if !contains(manifest.Files, "controller-summary.md") {
+		t.Fatalf("manifest files = %#v, want controller-summary.md", manifest.Files)
+	}
+}
+
+func TestWriteReportFilesDoesNotRequireTargetStatusAfter(t *testing.T) {
+	dir := t.TempDir()
+	report := benchreport.Report{Meta: benchreport.Meta{Input: "no-cleanup-run", CampaignRuns: 1}}
+
+	if err := writeReportFiles(dir, report, nil, nil); err != nil {
+		t.Fatalf("writeReportFiles: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "controller-summary.md")); !os.IsNotExist(err) {
+		t.Fatalf("controller-summary.md stat err = %v, want not exist", err)
+	}
+	reportMD, err := os.ReadFile(filepath.Join(dir, "report.md"))
+	if err != nil {
+		t.Fatalf("read report.md: %v", err)
+	}
+	if strings.Contains(string(reportMD), "Controller Cleanup Summary") {
+		t.Fatalf("report.md unexpectedly includes controller summary:\n%s", string(reportMD))
 	}
 }
 
