@@ -614,6 +614,29 @@ batch list must be strictly increasing so resume behavior remains predictable:
   -apply
 ```
 
+The common Jetmon v2 scalability scout is the 1k/5k/10k ladder. It is short
+enough to run before a longer overnight suite but large enough to catch the
+usual scheduler, MySQL, DNS, and target-capacity regressions:
+
+```sh
+make capacity-jetmon-scout \
+  JETMON_CAPACITY_SCOUT_ARGS="-config=configs/jetmon.fleet.toml -apply"
+```
+
+By default this preset runs:
+
+```sh
+./bin/uptime-bench-jetmon-capacity-run \
+  -config=configs/capacity/jetmon.fleet.example.toml \
+  -mode=run-suite \
+  -batch-sizes=1000,5000,10000 \
+  -duration=10m \
+  -cooldown=2m
+```
+
+Override `JETMON_CAPACITY_SCOUT_ARGS` when the live config path, batch sizes,
+window length, or `-apply` posture differs from the default.
+
 Use `-suite-start-count=N` to start at the first configured or overridden batch
 that is at least `N`. Use `-suite-state-path=PATH` when multiple labs share the
 same reports parent and need separate resume state.

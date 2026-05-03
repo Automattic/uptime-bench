@@ -209,6 +209,11 @@ JETMON_CAPACITY_RUN_ARGS ?= -config=configs/capacity/jetmon.example.toml -mode=r
 capacity-jetmon-run: $(BINARY_JETMON_CAPACITY_RUN)
 	$(BINARY_JETMON_CAPACITY_RUN) $(JETMON_CAPACITY_RUN_ARGS)
 
+JETMON_CAPACITY_SCOUT_ARGS ?= -config=configs/capacity/jetmon.fleet.example.toml -mode=run-suite -batch-sizes=1000,5000,10000 -duration=10m -cooldown=2m
+.PHONY: capacity-jetmon-scout
+capacity-jetmon-scout: $(BINARY_JETMON_CAPACITY_RUN)
+	$(BINARY_JETMON_CAPACITY_RUN) $(JETMON_CAPACITY_SCOUT_ARGS)
+
 .PHONY: preflight-campaign
 preflight-campaign: $(BINARY_PREFLIGHT)
 	$(BINARY_PREFLIGHT) -campaign=$(CAMPAIGN_CONFIG) -format=$(PREFLIGHT_FORMAT)
@@ -341,6 +346,9 @@ help:
 	@echo "    Generate or apply guarded Jetmon v1/v2 capacity lifecycle artifacts"
 	@echo "    [JETMON_CAPACITY_RUN_ARGS='-mode=run-batch -active-count=10 -duration=5m [-apply]']"
 	@echo "    [JETMON_CAPACITY_RUN_ARGS='-mode=run-suite [-full-suite] [-batch-sizes=1000,10000] [-duration=10m] [-cooldown=2m] [-apply]']"
+	@echo "  make capacity-jetmon-scout"
+	@echo "    Run the 1k/5k/10k Jetmon capacity scout ladder"
+	@echo "    [JETMON_CAPACITY_SCOUT_ARGS='-mode=run-suite -batch-sizes=1000,5000,10000 -duration=10m -cooldown=2m [-apply]']"
 	@echo "  deploy/capacity-db-access.sh  Provision stable DSN files and SSH tunnels for live capacity runs"
 	@echo "  deploy/dockerstats-exporter.sh HOST [USER]  Deploy per-container Prometheus exporter"
 	@echo "  bin/uptime-bench-targetload -url-pattern=... [-format=markdown]  Probe generated target/DNS capacity"

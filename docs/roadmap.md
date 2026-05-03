@@ -772,6 +772,9 @@ Implemented:
   batch and resume from that batch by default; `-full-suite` restores a complete
   first-batch-to-last-batch pass, while `-batch-sizes`, `-duration`, and
   `-cooldown` support quick scout passes.
+- `make capacity-jetmon-scout` provides the standard 1k/5k/10k Jetmon capacity
+  ladder so operators can run the next scalability gate without reconstructing
+  the command by hand.
 - Capacity `run-suite` directories include `capacity.md` and `capacity.json`
   rollups for batch pass/fail status, DB health, thresholds, Prometheus
   highlights, last clean batch, and first problem batch.
