@@ -1,0 +1,27 @@
+services:
+  gatus:
+    image: ghcr.io/twin/gatus:v5.35.0
+    container_name: uptime-bench-gatus
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      GATUS_CONFIG_PATH: /config
+    volumes:
+      - ./config:/config
+      - ./data:/data
+
+  bridge:
+    build: ./bridge
+    container_name: uptime-bench-gatus-bridge
+    restart: unless-stopped
+    depends_on:
+      - gatus
+    ports:
+      - "8081:8081"
+    environment:
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN:?set BRIDGE_TOKEN in .env}
+      GATUS_URL: http://gatus:8080
+      GATUS_CONFIG_FILE: /config/uptime-bench.yaml
+    volumes:
+      - ./config:/config
