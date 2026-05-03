@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,8 +36,11 @@ type controllerRunResult struct {
 }
 
 type fleetStatusSnapshot struct {
-	CapturedAt time.Time           `json:"captured_at"`
-	Members    []fleetMemberStatus `json:"members"`
+	CapturedAt         time.Time           `json:"captured_at"`
+	CleanupStatus      string              `json:"cleanup_status"`
+	ActiveFailureCount int                 `json:"active_failure_count"`
+	MemberErrorCount   int                 `json:"member_error_count"`
+	Members            []fleetMemberStatus `json:"members"`
 }
 
 type fleetMemberStatus struct {
@@ -192,17 +197,13 @@ func (a *harnessArtifacts) WriteTargetStatusAfter(fl *fleet.Config) error {
 	if err := writeFileAtomic(filepath.Join(a.dir, "target-status-after.json"), append(data, '\n')); err != nil {
 		return err
 	}
-	memberErrors := 0
-	for _, member := range snapshot.Members {
-		if member.Error != "" {
-			memberErrors++
-		}
+	if snapshot.CleanupStatus != "pass" {
+		log.Printf("harness: target status snapshot captured with cleanup_status=%s active_failures=%d member_errors=%d",
+			snapshot.CleanupStatus, snapshot.ActiveFailureCount, snapshot.MemberErrorCount)
+		return fmt.Errorf("target status cleanup failed: active_failures=%d member_errors=%d",
+			snapshot.ActiveFailureCount, snapshot.MemberErrorCount)
 	}
-	if memberErrors > 0 {
-		log.Printf("harness: target status snapshot captured with %d member error(s)", memberErrors)
-	} else {
-		log.Printf("harness: target status snapshot captured for %d member(s)", len(snapshot.Members))
-	}
+	log.Printf("harness: target status snapshot captured for %d member(s)", len(snapshot.Members))
 	return nil
 }
 
@@ -237,7 +238,7 @@ func collectFleetStatus(ctx context.Context, fl *fleet.Config, token string, cap
 	ordered := make([]string, 0, len(members))
 	aggregates := make(map[string]*aggregate, len(members))
 	for _, m := range members {
-		controlURL := fmt.Sprintf("http://%s:%d", m.address, m.controlPort)
+		controlURL := "http://" + net.JoinHostPort(m.address, strconv.Itoa(m.controlPort))
 		key := m.role + "\x00" + controlURL
 		agg, ok := aggregates[key]
 		if !ok {
@@ -259,8 +260,9 @@ func collectFleetStatus(ctx context.Context, fl *fleet.Config, token string, cap
 	}
 	httpClient := &http.Client{Timeout: timeout}
 	out := fleetStatusSnapshot{
-		CapturedAt: capturedAt.UTC(),
-		Members:    make([]fleetMemberStatus, 0, len(ordered)),
+		CapturedAt:    capturedAt.UTC(),
+		CleanupStatus: "pass",
+		Members:       make([]fleetMemberStatus, 0, len(ordered)),
 	}
 	for _, key := range ordered {
 		status := aggregates[key].status
@@ -269,10 +271,15 @@ func collectFleetStatus(ctx context.Context, fl *fleet.Config, token string, cap
 		cancel()
 		if err != nil {
 			status.Error = err.Error()
+			out.MemberErrorCount++
 		} else {
 			status.Status = resp
+			out.ActiveFailureCount += len(resp.ActiveFailures)
 		}
 		out.Members = append(out.Members, status)
+	}
+	if out.MemberErrorCount > 0 || out.ActiveFailureCount > 0 {
+		out.CleanupStatus = "fail"
 	}
 	return out
 }

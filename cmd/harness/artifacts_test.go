@@ -118,6 +118,15 @@ func TestCollectFleetStatusDedupesMembersAndRecordsErrors(t *testing.T) {
 	if len(snapshot.Members) != 2 {
 		t.Fatalf("members = %#v, want target aggregate plus nameserver", snapshot.Members)
 	}
+	if snapshot.CleanupStatus != "fail" {
+		t.Fatalf("cleanup status = %q, want fail", snapshot.CleanupStatus)
+	}
+	if snapshot.ActiveFailureCount != 1 {
+		t.Fatalf("active failure count = %d, want 1", snapshot.ActiveFailureCount)
+	}
+	if snapshot.MemberErrorCount != 1 {
+		t.Fatalf("member error count = %d, want 1", snapshot.MemberErrorCount)
+	}
 	targetStatus := snapshot.Members[0]
 	if targetStatus.Role != "target" {
 		t.Fatalf("first role = %q, want target", targetStatus.Role)
@@ -169,6 +178,52 @@ func TestWriteTargetStatusAfterWritesSnapshot(t *testing.T) {
 	}
 	if len(snapshot.Members) != 1 || snapshot.Members[0].Status.MemberID != "target-01" {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if snapshot.CleanupStatus != "pass" {
+		t.Fatalf("cleanup status = %q, want pass", snapshot.CleanupStatus)
+	}
+}
+
+func TestWriteTargetStatusAfterFailsWhenFailuresRemain(t *testing.T) {
+	const token = "secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(control.StatusResponse{
+			MemberID: "target-01",
+			ActiveFailures: []control.FailureSpec{{
+				Type: "http_status",
+				Host: "bench.example.test",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	host, port := serverHostPort(t, server.URL)
+	root := t.TempDir()
+	tokenPath := filepath.Join(root, "control-token")
+	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	artifacts := &harnessArtifacts{dir: filepath.Join(root, "reports")}
+	err := artifacts.WriteTargetStatusAfter(&fleet.Config{
+		Control: fleet.ControlConfig{Timeout: time.Second, AuthTokenFile: tokenPath},
+		Targets: []fleet.Target{
+			{ID: "bench-a", Address: host, ControlPort: port},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "active_failures=1") {
+		t.Fatalf("WriteTargetStatusAfter error = %v, want active failure error", err)
+	}
+
+	data, readErr := os.ReadFile(filepath.Join(root, "reports", "target-status-after.json"))
+	if readErr != nil {
+		t.Fatalf("read target-status-after: %v", readErr)
+	}
+	var snapshot fleetStatusSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.CleanupStatus != "fail" || snapshot.ActiveFailureCount != 1 {
+		t.Fatalf("snapshot = %#v, want failed cleanup with one active failure", snapshot)
 	}
 }
 
