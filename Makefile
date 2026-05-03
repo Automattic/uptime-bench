@@ -340,6 +340,7 @@ help:
 	@echo "  make capacity-jetmon-run"
 	@echo "    Generate or apply guarded Jetmon v1/v2 capacity lifecycle artifacts"
 	@echo "    [JETMON_CAPACITY_RUN_ARGS='-mode=run-batch -active-count=10 -duration=5m [-apply]']"
+	@echo "    [JETMON_CAPACITY_RUN_ARGS='-mode=run-suite [-full-suite] [-batch-sizes=1000,10000] [-duration=10m] [-cooldown=2m] [-apply]']"
 	@echo "  deploy/capacity-db-access.sh  Provision stable DSN files and SSH tunnels for live capacity runs"
 	@echo "  deploy/dockerstats-exporter.sh HOST [USER]  Deploy per-container Prometheus exporter"
 	@echo "  bin/uptime-bench-targetload -url-pattern=...  Probe generated target/DNS capacity"

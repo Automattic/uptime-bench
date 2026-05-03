@@ -25,6 +25,11 @@ type RunOptions struct {
 	Services         []string
 	ActiveCount      int
 	DurationOverride time.Duration
+	CooldownOverride time.Duration
+	BatchSizes       []int
+	SuiteStartCount  int
+	FullSuite        bool
+	SuiteStatePath   string
 	OutDir           string
 	Apply            bool
 	ForceReseed      bool
@@ -121,6 +126,11 @@ type RunManifest struct {
 	OutDir           string              `json:"out_dir"`
 	ActiveCount      int                 `json:"active_count,omitempty"`
 	BatchCount       int                 `json:"batch_count,omitempty"`
+	TotalBatchCount  int                 `json:"total_batch_count,omitempty"`
+	BatchSizes       []int               `json:"batch_sizes,omitempty"`
+	SuiteStartCount  int                 `json:"suite_start_count,omitempty"`
+	SuiteStartSource string              `json:"suite_start_source,omitempty"`
+	SuiteStatePath   string              `json:"suite_state_path,omitempty"`
 	BatchDuration    string              `json:"batch_duration,omitempty"`
 	Cooldown         string              `json:"cooldown,omitempty"`
 	EstimatedRuntime string              `json:"estimated_runtime,omitempty"`
@@ -145,6 +155,20 @@ type RunManifest struct {
 	StopReason       string              `json:"stop_reason,omitempty"`
 	Error            string              `json:"error,omitempty"`
 	Notes            []string            `json:"notes,omitempty"`
+}
+
+// SuiteState is the persisted resume hint for subsequent run-suite invocations.
+type SuiteState struct {
+	ID                     string    `json:"id"`
+	ConfigPath             string    `json:"config_path,omitempty"`
+	LastCompletedBatch     int       `json:"last_completed_batch"`
+	LastCompletedAt        time.Time `json:"last_completed_at"`
+	LastRunDir             string    `json:"last_run_dir"`
+	LastBatchDir           string    `json:"last_batch_dir"`
+	BatchDuration          string    `json:"batch_duration,omitempty"`
+	StopRecommended        bool      `json:"stop_recommended,omitempty"`
+	StopReason             string    `json:"stop_reason,omitempty"`
+	CompletedBatchSequence []int     `json:"completed_batch_sequence,omitempty"`
 }
 
 // ServiceManifest describes one service namespace in a manifest.
@@ -259,9 +283,19 @@ func (r Runner) Run(ctx context.Context, opts RunOptions) (RunManifest, error) {
 	if err != nil {
 		return RunManifest{}, err
 	}
+	if opts.CooldownOverride > 0 {
+		cooldown = opts.CooldownOverride
+	}
+	batchSizes := append([]int(nil), cfg.Batches.Sizes...)
+	if len(opts.BatchSizes) > 0 {
+		batchSizes = append([]int(nil), opts.BatchSizes...)
+	}
+	if err := validateBatchSizes(batchSizes, cfg.Targets.Count); err != nil {
+		return RunManifest{}, err
+	}
 	activeCount := opts.ActiveCount
-	if activeCount == 0 && len(cfg.Batches.Sizes) > 0 {
-		activeCount = cfg.Batches.Sizes[0]
+	if activeCount == 0 && len(batchSizes) > 0 {
+		activeCount = batchSizes[0]
 	}
 	if mode == "activate" || mode == "run-batch" {
 		if activeCount <= 0 {
@@ -278,6 +312,25 @@ func (r Runner) Run(ctx context.Context, opts RunOptions) (RunManifest, error) {
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return RunManifest{}, fmt.Errorf("create out dir: %w", err)
+	}
+
+	suiteStatePath := opts.SuiteStatePath
+	if suiteStatePath == "" {
+		suiteStatePath = defaultSuiteStatePath(outDir, cfg.ID)
+	}
+	suiteBatches := append([]int(nil), batchSizes...)
+	suiteStartCount := 0
+	suiteStartSource := ""
+	var suiteSelectionNotes []string
+	if mode == "run-suite" {
+		selection, err := selectSuiteBatches(batchSizes, cfg.ID, suiteStatePath, opts.FullSuite, opts.SuiteStartCount)
+		if err != nil {
+			return RunManifest{}, err
+		}
+		suiteBatches = selection.Sizes
+		suiteStartCount = selection.StartCount
+		suiteStartSource = selection.Source
+		suiteSelectionNotes = selection.Notes
 	}
 
 	manifest := RunManifest{
@@ -298,8 +351,14 @@ func (r Runner) Run(ctx context.Context, opts RunOptions) (RunManifest, error) {
 		manifest.ActiveCount = activeCount
 	}
 	if mode == "run-suite" {
-		manifest.BatchCount = len(cfg.Batches.Sizes)
-		manifest.EstimatedRuntime = estimateSuiteRuntime(len(cfg.Batches.Sizes), duration, cooldown).String()
+		manifest.BatchCount = len(suiteBatches)
+		manifest.TotalBatchCount = len(batchSizes)
+		manifest.BatchSizes = suiteBatches
+		manifest.SuiteStartCount = suiteStartCount
+		manifest.SuiteStartSource = suiteStartSource
+		manifest.SuiteStatePath = suiteStatePath
+		manifest.EstimatedRuntime = estimateSuiteRuntime(len(suiteBatches), duration, cooldown).String()
+		manifest.Notes = append(manifest.Notes, suiteSelectionNotes...)
 	}
 	if !opts.Apply {
 		manifest.Notes = append(manifest.Notes, "dry-run only: no live Jetmon databases were modified")
@@ -307,7 +366,7 @@ func (r Runner) Run(ctx context.Context, opts RunOptions) (RunManifest, error) {
 
 	switch mode {
 	case "plan":
-		err = r.writeAllPlans(ctx, outDir, services, cfg.Batches.Sizes, &manifest)
+		err = r.writeAllPlans(ctx, outDir, services, batchSizes, &manifest)
 	case "seed":
 		err = r.applyAction(ctx, outDir, services, OperationSeed, "seed", 0, opts.Apply, opts.ForceReseed, &manifest)
 	case "activate":
@@ -319,7 +378,7 @@ func (r Runner) Run(ctx context.Context, opts RunOptions) (RunManifest, error) {
 	case "run-batch":
 		err = r.runBatch(ctx, outDir, services, cfg, activeCount, duration, opts.Apply, manifest.PrometheusURL, &manifest)
 	case "run-suite":
-		err = r.runSuite(ctx, outDir, services, cfg, duration, cooldown, opts.Apply, opts.ForceReseed, manifest.PrometheusURL, &manifest)
+		err = r.runSuite(ctx, outDir, services, cfg, suiteBatches, duration, cooldown, opts.Apply, opts.ForceReseed, manifest.PrometheusURL, suiteStatePath, &manifest)
 	}
 	if err != nil {
 		manifest.Error = err.Error()
@@ -349,6 +408,132 @@ func (r Runner) withDefaults() Runner {
 		r.Sleeper = realSleeper{}
 	}
 	return r
+}
+
+type suiteSelection struct {
+	Sizes      []int
+	StartCount int
+	Source     string
+	Notes      []string
+}
+
+func selectSuiteBatches(sizes []int, id, statePath string, fullSuite bool, explicitStart int) (suiteSelection, error) {
+	if len(sizes) == 0 {
+		return suiteSelection{}, fmt.Errorf("run-suite requires at least one batch size")
+	}
+	if fullSuite {
+		if explicitStart > 0 {
+			return suiteSelection{}, fmt.Errorf("-full-suite and -suite-start-count cannot be used together")
+		}
+		return suiteSelection{
+			Sizes:      append([]int(nil), sizes...),
+			StartCount: sizes[0],
+			Source:     "full_suite",
+			Notes:      []string{"full suite requested: prior suite state ignored"},
+		}, nil
+	}
+
+	start := explicitStart
+	source := "first_configured"
+	var notes []string
+	if start > 0 {
+		source = "explicit"
+	} else {
+		state, err := readSuiteState(statePath)
+		if err != nil {
+			return suiteSelection{}, err
+		}
+		if state != nil {
+			if state.ID == id && state.LastCompletedBatch > 0 {
+				start = state.LastCompletedBatch
+				source = "state"
+				notes = append(notes, fmt.Sprintf("resuming run-suite from last completed batch %d recorded in %s", start, statePath))
+			} else if state.ID != "" && state.ID != id {
+				notes = append(notes, fmt.Sprintf("suite state %s belongs to %q; starting from first configured batch for %q", statePath, state.ID, id))
+			}
+		}
+	}
+	if start <= 0 {
+		start = sizes[0]
+	}
+
+	selected, actualStart := batchSizesFrom(sizes, start)
+	if len(selected) == 0 {
+		return suiteSelection{}, fmt.Errorf("no batch sizes selected")
+	}
+	if actualStart != start {
+		notes = append(notes, fmt.Sprintf("requested suite start %d is not configured; starting at next available batch %d", start, actualStart))
+	}
+	return suiteSelection{
+		Sizes:      selected,
+		StartCount: actualStart,
+		Source:     source,
+		Notes:      notes,
+	}, nil
+}
+
+func batchSizesFrom(sizes []int, start int) ([]int, int) {
+	if len(sizes) == 0 {
+		return nil, 0
+	}
+	for i, size := range sizes {
+		if size >= start {
+			return append([]int(nil), sizes[i:]...), size
+		}
+	}
+	last := sizes[len(sizes)-1]
+	return []int{last}, last
+}
+
+func readSuiteState(path string) (*SuiteState, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read suite state %s: %w", path, err)
+	}
+	var state SuiteState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("parse suite state %s: %w", path, err)
+	}
+	return &state, nil
+}
+
+func writeSuiteState(path string, state SuiteState) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+func defaultSuiteStatePath(outDir, id string) string {
+	return filepath.Join(filepath.Dir(outDir), safeName(id)+"-suite-state.json")
+}
+
+func validateBatchSizes(sizes []int, targetCount int) error {
+	for i, size := range sizes {
+		if size <= 0 {
+			return fmt.Errorf("batch sizes must be positive")
+		}
+		if i > 0 && size <= sizes[i-1] {
+			return fmt.Errorf("batch sizes must be strictly increasing")
+		}
+		if targetCount > 0 && size > targetCount {
+			return fmt.Errorf("batch size %d exceeds target count %d", size, targetCount)
+		}
+	}
+	return nil
 }
 
 func (r Runner) writeAllPlans(ctx context.Context, dir string, services []ServiceLifecycle, sizes []int, m *RunManifest) error {
@@ -454,7 +639,7 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 	return nil
 }
 
-func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLifecycle, cfg RunConfig, duration, cooldown time.Duration, apply, forceReseed bool, promURL string, m *RunManifest) error {
+func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLifecycle, cfg RunConfig, sizes []int, duration, cooldown time.Duration, apply, forceReseed bool, promURL string, suiteStatePath string, m *RunManifest) error {
 	if apply {
 		if err := r.preflightPrometheus(ctx, cfg, promURL, m); err != nil {
 			return err
@@ -463,7 +648,8 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 			return err
 		}
 	}
-	for i, size := range cfg.Batches.Sizes {
+	var completed []int
+	for i, size := range sizes {
 		batchDir := filepath.Join(dir, fmt.Sprintf("batch-%07d", size))
 		if err := os.MkdirAll(batchDir, 0o755); err != nil {
 			return fmt.Errorf("create batch dir %s: %w", batchDir, err)
@@ -505,13 +691,31 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 			Action: fmt.Sprintf("batch-%d", size),
 			Path:   filepath.Join(batchDir, "run.json"),
 		})
+		completed = append(completed, size)
+		if apply {
+			if err := writeSuiteState(suiteStatePath, SuiteState{
+				ID:                     cfg.ID,
+				ConfigPath:             m.ConfigPath,
+				LastCompletedBatch:     size,
+				LastCompletedAt:        r.Clock.Now().UTC(),
+				LastRunDir:             dir,
+				LastBatchDir:           batchDir,
+				BatchDuration:          duration.String(),
+				StopRecommended:        child.StopRecommended,
+				StopReason:             child.StopReason,
+				CompletedBatchSequence: append([]int(nil), completed...),
+			}); err != nil {
+				return fmt.Errorf("write suite state after batch %d: %w", size, err)
+			}
+			m.Artifacts = append(m.Artifacts, Artifact{Action: "suite-state", Path: suiteStatePath})
+		}
 		if child.StopRecommended {
 			m.StopRecommended = true
 			m.StopReason = fmt.Sprintf("stopped after batch %d: %s", size, child.StopReason)
 			m.Notes = append(m.Notes, m.StopReason)
 			break
 		}
-		if apply && i < len(cfg.Batches.Sizes)-1 {
+		if apply && i < len(sizes)-1 {
 			if err := r.Sleeper.Sleep(ctx, cooldown); err != nil {
 				return fmt.Errorf("cooldown after batch %d interrupted: %w", size, err)
 			}
@@ -815,6 +1019,21 @@ func WriteSummary(dir string, m RunManifest) error {
 	}
 	if m.BatchCount > 0 {
 		fmt.Fprintf(&b, "Batch Count: %d\n", m.BatchCount)
+	}
+	if m.TotalBatchCount > 0 && m.TotalBatchCount != m.BatchCount {
+		fmt.Fprintf(&b, "Total Configured Batches: %d\n", m.TotalBatchCount)
+	}
+	if len(m.BatchSizes) > 0 {
+		fmt.Fprintf(&b, "Batch Sizes: %s\n", joinInts(m.BatchSizes))
+	}
+	if m.SuiteStartCount > 0 {
+		fmt.Fprintf(&b, "Suite Start Count: %d\n", m.SuiteStartCount)
+	}
+	if m.SuiteStartSource != "" {
+		fmt.Fprintf(&b, "Suite Start Source: %s\n", m.SuiteStartSource)
+	}
+	if m.SuiteStatePath != "" {
+		fmt.Fprintf(&b, "Suite State Path: %s\n", m.SuiteStatePath)
 	}
 	if m.EstimatedRuntime != "" {
 		fmt.Fprintf(&b, "Estimated Runtime: %s\n", m.EstimatedRuntime)
@@ -1368,6 +1587,14 @@ func formatMaybeTime(t *time.Time) string {
 		return "not recorded"
 	}
 	return t.Format(time.RFC3339)
+}
+
+func joinInts(values []int) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.Itoa(value))
+	}
+	return strings.Join(parts, ",")
 }
 
 func formatIntPtr(value *int64) string {

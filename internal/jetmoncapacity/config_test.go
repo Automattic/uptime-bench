@@ -93,6 +93,27 @@ func TestRunConfigRejectsOversizedBatch(t *testing.T) {
 	}
 }
 
+func TestRunConfigRejectsUnsortedBatches(t *testing.T) {
+	cfg := RunConfig{
+		Targets: TargetConfig{URLPattern: "http://site-%d.example.test/", Count: 100},
+		Checks:  ChecksConfig{Interval: "1m"},
+		Batches: BatchesConfig{Sizes: []int{10, 50, 20}, Duration: "5m", Cooldown: "1m"},
+		JetmonV1: ServiceConfig{Lifecycle: LifecycleConfig{
+			Schema:      SchemaV1,
+			BlogIDStart: 100,
+			Count:       100,
+		}},
+		JetmonV2: ServiceConfig{Lifecycle: LifecycleConfig{
+			Schema:      SchemaV2,
+			BlogIDStart: 200,
+			Count:       100,
+		}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate succeeded, want error")
+	}
+}
+
 func TestServiceLifecyclesRejectsUnknownService(t *testing.T) {
 	cfg := RunConfig{
 		Targets: TargetConfig{URLPattern: "http://site-%d.example.test/", Count: 10},

@@ -736,7 +736,9 @@ Deferred for different scenario lanes:
 
 ## Jetmon capacity benchmark
 
-**Status:** Initial observability path and generated target DNS support are implemented on `trunk`.
+**Status:** Initial observability path, generated target DNS support, guarded
+Jetmon lifecycle automation, and scenario-run capacity report artifacts are
+implemented on `trunk`.
 
 The first capacity track compares Jetmon v1 and Jetmon v2 as active monitor count grows. It is intentionally separate from scenario accuracy campaigns: scenario runs answer whether monitors detect controlled failures, while capacity runs answer how resource use, check timeliness, lifecycle throughput, and service health scale with batch size.
 
@@ -747,12 +749,22 @@ Implemented:
 - The exporter is deployed on both Jetmon hosts at `203.0.113.170:9103` and `203.0.113.171:9103`.
 - `fleet.toml` supports `[[targets.generated_sites]]` ranges so DNS can resolve million-scale synthetic hostnames without expanding all hosts into the zone map.
 - `cmd/uptime-bench-targetload` can probe generated host ranges against DNS and HTTP before those hosts are loaded into Jetmon.
+- `cmd/uptime-bench-jetmon-capacity-run` can execute guarded Jetmon v1/v2
+  capacity lifecycle batches from a private fleet config.
+- Capacity `run-suite` invocations persist the last successfully completed
+  batch and resume from that batch by default; `-full-suite` restores a complete
+  first-batch-to-last-batch pass, while `-batch-sizes`, `-duration`, and
+  `-cooldown` support quick scout passes.
+- `uptime-bench-finalize -capacity` writes `capacity.md` and `capacity.json`
+  alongside `report.md`/`report.json`, using the finalized campaign window as
+  the Prometheus query range.
 - `docs/capacity-benchmark.md` records the test shape, stop thresholds, target direction, and bulk lifecycle approach.
 
 Remaining follow-up:
 
 - Stress test target-side DNS and HTTP capacity before monitor-side million-site runs.
-- Implement a benchmark-owned bulk lifecycle path for Jetmon v1/v2 using bridge/API or controlled database-side seeded ranges, without changing Jetmon v1 application code.
+- Use the guarded Jetmon lifecycle runner for staged active-monitor growth
+  suites and compare report `capacity.md` findings against detection behavior.
 
 ---
 

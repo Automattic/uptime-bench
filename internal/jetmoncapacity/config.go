@@ -171,9 +171,12 @@ func (c RunConfig) Validate() error {
 	if _, err := c.RateWindowDuration(); err != nil {
 		return err
 	}
-	for _, size := range c.Batches.Sizes {
+	for i, size := range c.Batches.Sizes {
 		if size <= 0 {
 			return fmt.Errorf("batch sizes must be positive")
+		}
+		if i > 0 && size <= c.Batches.Sizes[i-1] {
+			return fmt.Errorf("batch sizes must be strictly increasing")
 		}
 		if size > c.Targets.Count {
 			return fmt.Errorf("batch size %d exceeds targets.count %d", size, c.Targets.Count)

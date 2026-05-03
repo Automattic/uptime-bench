@@ -553,6 +553,40 @@ After the smoke passes, run the configured growth sequence:
   -apply
 ```
 
+By default, `run-suite` resumes from the last successfully completed batch for
+the same capacity plan. The runner writes a suite-state file beside the suite
+output directory after each successful live batch, then the next `run-suite`
+starts at that recorded batch size instead of repeating every lower control
+batch. This keeps repeated tuning runs from spending another full window on
+already-clean low-load batches while still rechecking the last known load point.
+
+Use a full pass when you need a clean end-to-end baseline from the first batch:
+
+```sh
+./bin/uptime-bench-jetmon-capacity-run \
+  -config=configs/jetmon.fleet.toml \
+  -mode=run-suite \
+  -full-suite \
+  -apply
+```
+
+For quick scout passes, override the suite shape without editing the TOML. The
+batch list must be strictly increasing so resume behavior remains predictable:
+
+```sh
+./bin/uptime-bench-jetmon-capacity-run \
+  -config=configs/jetmon.fleet.toml \
+  -mode=run-suite \
+  -batch-sizes=1000,10000,100000,500000,1000000 \
+  -duration=10m \
+  -cooldown=2m \
+  -apply
+```
+
+Use `-suite-start-count=N` to start at the first configured or overridden batch
+that is at least `N`. Use `-suite-state-path=PATH` when multiple labs share the
+same reports parent and need separate resume state.
+
 The runner writes a `summary.txt` operator summary, a `run.json` machine-readable
 manifest, generated SQL files, execution results, exact UTC window timestamps,
 and `prometheus-window.json` when Prometheus capture is enabled. The manifest

@@ -350,6 +350,184 @@ func TestRunSuiteSummaryIncludesRuntimeEstimate(t *testing.T) {
 	}
 }
 
+func TestRunSuiteDefaultsToLastCompletedBatchState(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "suite-state.json")
+	if err := writeSuiteState(statePath, SuiteState{
+		ID:                 "capacity-test",
+		LastCompletedBatch: 20,
+		LastCompletedAt:    time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC),
+		LastRunDir:         filepath.Join(dir, "previous"),
+		LastBatchDir:       filepath.Join(dir, "previous", "batch-0000020"),
+	}); err != nil {
+		t.Fatalf("write suite state: %v", err)
+	}
+
+	manifest, err := (Runner{
+		Executor: &fakeSQLExecutor{activeByDSN: map[string]int64{}},
+		Clock:    fixedClock{},
+		Sleeper:  noSleep{},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:       cfgPath,
+		Mode:             "run-suite",
+		OutDir:           filepath.Join(dir, "out"),
+		SuiteStatePath:   statePath,
+		DurationOverride: 2 * time.Minute,
+		Apply:            false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if manifest.SuiteStartSource != "state" {
+		t.Fatalf("SuiteStartSource = %q, want state", manifest.SuiteStartSource)
+	}
+	if manifest.SuiteStartCount != 20 {
+		t.Fatalf("SuiteStartCount = %d, want 20", manifest.SuiteStartCount)
+	}
+	if got := joinInts(manifest.BatchSizes); got != "20" {
+		t.Fatalf("BatchSizes = %s, want 20", got)
+	}
+	if manifest.BatchCount != 1 || manifest.TotalBatchCount != 2 {
+		t.Fatalf("batch counts = %d/%d, want 1 selected / 2 total", manifest.BatchCount, manifest.TotalBatchCount)
+	}
+	if manifest.EstimatedRuntime != "2m0s" {
+		t.Fatalf("EstimatedRuntime = %q, want 2m0s", manifest.EstimatedRuntime)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "out", "summary.txt"))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	summary := string(data)
+	for _, want := range []string{"Batch Count: 1", "Total Configured Batches: 2", "Batch Sizes: 20", "Suite Start Source: state"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary missing %q:\n%s", want, summary)
+		}
+	}
+}
+
+func TestRunSuiteFullSuiteIgnoresState(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "suite-state.json")
+	if err := writeSuiteState(statePath, SuiteState{
+		ID:                 "capacity-test",
+		LastCompletedBatch: 20,
+		LastCompletedAt:    time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("write suite state: %v", err)
+	}
+
+	manifest, err := (Runner{
+		Executor: &fakeSQLExecutor{activeByDSN: map[string]int64{}},
+		Clock:    fixedClock{},
+		Sleeper:  noSleep{},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:     cfgPath,
+		Mode:           "run-suite",
+		OutDir:         filepath.Join(dir, "out"),
+		SuiteStatePath: statePath,
+		FullSuite:      true,
+		Apply:          false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if manifest.SuiteStartSource != "full_suite" {
+		t.Fatalf("SuiteStartSource = %q, want full_suite", manifest.SuiteStartSource)
+	}
+	if got := joinInts(manifest.BatchSizes); got != "10,20" {
+		t.Fatalf("BatchSizes = %s, want 10,20", got)
+	}
+}
+
+func TestRunSuiteExplicitBatchSizesAndStartCount(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	manifest, err := (Runner{
+		Executor: &fakeSQLExecutor{activeByDSN: map[string]int64{}},
+		Clock:    fixedClock{},
+		Sleeper:  noSleep{},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:       cfgPath,
+		Mode:             "run-suite",
+		OutDir:           filepath.Join(t.TempDir(), "out"),
+		BatchSizes:       []int{10, 50, 90},
+		SuiteStartCount:  40,
+		DurationOverride: time.Minute,
+		CooldownOverride: 2 * time.Second,
+		Apply:            false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if manifest.SuiteStartSource != "explicit" {
+		t.Fatalf("SuiteStartSource = %q, want explicit", manifest.SuiteStartSource)
+	}
+	if manifest.SuiteStartCount != 50 {
+		t.Fatalf("SuiteStartCount = %d, want next available batch 50", manifest.SuiteStartCount)
+	}
+	if got := joinInts(manifest.BatchSizes); got != "50,90" {
+		t.Fatalf("BatchSizes = %s, want 50,90", got)
+	}
+	if manifest.EstimatedRuntime != "2m2s" {
+		t.Fatalf("EstimatedRuntime = %q, want 2m2s", manifest.EstimatedRuntime)
+	}
+}
+
+func TestRunSuiteRejectsUnsortedBatchSizes(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	_, err := (Runner{
+		Executor: &fakeSQLExecutor{activeByDSN: map[string]int64{}},
+		Clock:    fixedClock{},
+		Sleeper:  noSleep{},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath: cfgPath,
+		Mode:       "run-suite",
+		OutDir:     filepath.Join(t.TempDir(), "out"),
+		BatchSizes: []int{10, 50, 20},
+		Apply:      false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "strictly increasing") {
+		t.Fatalf("Run error = %v, want strictly increasing batch size error", err)
+	}
+}
+
+func TestRunSuiteApplyWritesSuiteStateAfterSuccessfulBatch(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "suite-state.json")
+
+	_, err := (Runner{
+		Executor:  &fakeSQLExecutor{},
+		Clock:     fixedClock{},
+		Sleeper:   noSleep{},
+		Collector: fakeCollector{report: scrapeUpReport("jetmon-v1", "jetmon-v2")},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:     cfgPath,
+		Mode:           "run-suite",
+		OutDir:         filepath.Join(dir, "out"),
+		SuiteStatePath: statePath,
+		BatchSizes:     []int{10},
+		Apply:          true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	state, err := readSuiteState(statePath)
+	if err != nil {
+		t.Fatalf("read suite state: %v", err)
+	}
+	if state == nil {
+		t.Fatal("suite state was not written")
+	}
+	if state.LastCompletedBatch != 10 {
+		t.Fatalf("LastCompletedBatch = %d, want 10", state.LastCompletedBatch)
+	}
+	if got := joinInts(state.CompletedBatchSequence); got != "10" {
+		t.Fatalf("CompletedBatchSequence = %s, want 10", got)
+	}
+}
+
 type runnerConfigOption func(*runnerConfigSpec)
 
 type runnerConfigSpec struct {
