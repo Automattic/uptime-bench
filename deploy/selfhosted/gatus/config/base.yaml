@@ -1,0 +1,10 @@
+storage:
+  type: sqlite
+  path: /data/gatus.sqlite
+
+ui:
+  title: uptime-bench Gatus
+  header: uptime-bench Gatus
+
+web:
+  port: 8080

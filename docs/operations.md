@@ -2,7 +2,7 @@
 
 This guide covers everything needed to stand up a working uptime-bench fleet: server requirements, domain configuration, provisioning, credential setup, and starting the service.
 
-> **Implementation status:** The target binary, DNS binary, harness, and six adapters — Jetmon 1 (`jetmon-v1`), Jetmon 2 (`jetmon-v2`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), and Datadog Synthetics (`datadog-synthetics`) — are implemented. Jetmon 2 and all four probe-based adapters have been exercised against their APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`.
+> **Implementation status:** The target binary, DNS binary, harness, and adapters for Jetmon 1 (`jetmon-v1`), Jetmon 2 (`jetmon-v2`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), Datadog Synthetics (`datadog-synthetics`), Gatus (`gatus`), and Uptime Kuma (`uptime-kuma`) are implemented. Jetmon 2 and all four public probe-based adapters have been exercised against their APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`; Gatus and Uptime Kuma use deployed self-hosted bridge smoke checks.
 
 ---
 
@@ -374,7 +374,7 @@ sudoedit /etc/uptime-bench/services.toml
 
 Edit each `[[services]]` block: set `enabled = true` for the services you want to evaluate, and fill in the `url` and `auth` fields. The `id` field in each block must match the IDs used in scenario `monitors` lists.
 
-`jetmon-v1`, `jetmon-v2`, `uptimerobot`, `pingdom`, `better-uptime`, and `datadog-synthetics` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate.
+`jetmon-v1`, `jetmon-v2`, `uptimerobot`, `pingdom`, `better-uptime`, `datadog-synthetics`, `gatus`, and `uptime-kuma` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate.
 
 ### Pre-seeding monitors for `jetmon-v1`
 
@@ -384,6 +384,14 @@ Jetmon 1 has no public API; the adapter talks to a sidecar `jetmon-bridge` that 
 - `write_mode = "true"` — read/write. Provision creates (or reactivates) the row automatically; Deprovision soft-deletes it at the end of the run. Current `jetmon-bridge` write mode resets `site_status = 1` and refreshes `last_status_change` on both POST and DELETE, so uptime-bench treats this mode as clean-state capable for campaign cooldown gating. Use this only if your `jetmon-bridge` deployment was started with write capability enabled, and only against a Jetmon environment whose contents you fully control.
 
 The API-backed adapters create their monitors via API on every run and have no equivalent pre-seeding step.
+
+### Self-hosted bridge-backed monitors
+
+`gatus` and `uptime-kuma` point at uptime-bench bridge ports, not at the product UI/API ports directly. The bridges expose the small API surface the adapters need: create, list, delete, and status/history retrieval. Configure `auth.token` to match the bridge `BRIDGE_TOKEN`.
+
+Both adapters are single-origin self-hosted checks by default. They are useful comparison points, but their results should not be described as equivalent to SaaS providers that probe from multiple external regions unless the self-hosted deployment has been explicitly expanded to do that.
+
+Uptime Kuma automation uses an internal Socket.IO API through `uptime-kuma-api`, so the deployed image version is pinned. Revalidate the bridge smoke before upgrading Uptime Kuma. Gatus automation writes a generated config fragment and reads status history through Gatus's public HTTP API.
 
 ### Jetmon v2 API-backed monitors
 

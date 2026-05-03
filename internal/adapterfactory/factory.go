@@ -9,9 +9,11 @@ import (
 	"github.com/Automattic/uptime-bench/internal/adapter"
 	"github.com/Automattic/uptime-bench/internal/adapter/betteruptime"
 	"github.com/Automattic/uptime-bench/internal/adapter/datadog"
+	"github.com/Automattic/uptime-bench/internal/adapter/gatus"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv1"
 	"github.com/Automattic/uptime-bench/internal/adapter/jetmonv2"
 	"github.com/Automattic/uptime-bench/internal/adapter/pingdom"
+	"github.com/Automattic/uptime-bench/internal/adapter/uptimekuma"
 	"github.com/Automattic/uptime-bench/internal/adapter/uptimerobot"
 	"github.com/Automattic/uptime-bench/internal/serviceconfig"
 )
@@ -110,6 +112,44 @@ var Registry = map[string]Factory{
 			}
 		}
 		return datadog.New(id, apiURL, apiKey, appKey, opts...), nil
+	},
+	"gatus": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
+		if apiURL == "" {
+			return nil, fmt.Errorf("gatus: url is required (point at the uptime-bench Gatus bridge)")
+		}
+		token := auth["token"]
+		if token == "" {
+			return nil, fmt.Errorf("gatus: auth.token is required")
+		}
+		var opts []gatus.Option
+		if method := strings.TrimSpace(auth["http_method"]); method != "" {
+			switch strings.ToUpper(method) {
+			case "GET", "HEAD":
+				opts = append(opts, gatus.WithHTTPMethod(method))
+			default:
+				return nil, fmt.Errorf("gatus: auth.http_method must be GET or HEAD")
+			}
+		}
+		return gatus.New(id, apiURL, token, opts...), nil
+	},
+	"uptime-kuma": func(id, apiURL string, auth map[string]string) (adapter.Adapter, error) {
+		if apiURL == "" {
+			return nil, fmt.Errorf("uptime-kuma: url is required (point at the uptime-bench Uptime Kuma bridge)")
+		}
+		token := auth["token"]
+		if token == "" {
+			return nil, fmt.Errorf("uptime-kuma: auth.token is required")
+		}
+		var opts []uptimekuma.Option
+		if method := strings.TrimSpace(auth["http_method"]); method != "" {
+			switch strings.ToUpper(method) {
+			case "GET", "HEAD":
+				opts = append(opts, uptimekuma.WithHTTPMethod(method))
+			default:
+				return nil, fmt.Errorf("uptime-kuma: auth.http_method must be GET or HEAD")
+			}
+		}
+		return uptimekuma.New(id, apiURL, token, opts...), nil
 	},
 }
 

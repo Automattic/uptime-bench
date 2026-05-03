@@ -199,7 +199,7 @@ type RunWindow struct {
     RunID           string
     FailureStarted  time.Time // when failure injection began (ground truth)
     FailureEnded    time.Time // when failure injection stopped (ground truth)
-    GracePeriodEnds time.Time // end of the window the harness will wait for resolution
+    GracePeriodEnd  time.Time // end of the window the harness will wait for resolution
 }
 ```
 
@@ -218,6 +218,15 @@ type RetrieveResult struct {
 
     // Reason explains why Status is RetrieveUnknown. Empty when Status is RetrieveKnown.
     Reason string
+
+    // ReasonCode is a structured category such as "adapter_error",
+    // "capability_mismatch", "cooldown_suppressed", or
+    // "maintenance_suppressed". Empty means uncategorized.
+    ReasonCode string
+
+    // Metadata carries retrieve-level context that is not tied to a single
+    // alert event. The runner persists it even when Reports is empty.
+    Metadata map[string]any
 }
 
 // RetrieveStatus indicates whether the adapter could determine the service's state.
@@ -361,6 +370,7 @@ The harness must distinguish these outcomes and never conflate them:
 
 - `Deprovision` must be safe to call even if `Provision` only partially completed. The harness calls it unconditionally on run end, including aborts.
 - `Retrieve` must return `RetrieveUnknown` — not a Go error — when the service API is unavailable. Reserve Go errors for adapter bugs and misconfiguration.
+- `RetrieveResult.Reason` and provider error strings must be bounded. Include enough context to debug the provider failure, but truncate long API/bridge bodies so report tables do not become unreadable.
 - `Retrieve` must respect context cancellation promptly. When `ctx` is cancelled mid-poll, return whatever has been retrieved so far with `Status: RetrieveUnknown` and `Reason: ctx.Err().Error()`.
 - `MonitorHandle.Fields` values must be safe to serialize to strings. The harness persists handles between Provision and Retrieve; complex types do not survive.
 - `ServiceID()` must return the same value on every call. It must match the `id` field in `services.toml` and the IDs in scenario `monitors` lists.
@@ -369,6 +379,18 @@ The harness must distinguish these outcomes and never conflate them:
 ---
 
 ## Implementation notes for common service behaviors
+
+### Self-hosted bridge adapters
+
+Gatus and Uptime Kuma are driven through narrow uptime-bench bridges rather than through direct adapter access to the upstream process. Keep those bridges intentionally small:
+
+- expose only health, list, create, delete, and history/status endpoints needed by the adapter;
+- require a bearer token even on private networks;
+- pin upstream image versions when automation relies on an internal API surface;
+- name every benchmark-created resource with an `uptime-bench` prefix and implement scoped stale cleanup before campaign use;
+- preserve provider-native timestamps/classifications where available, while keeping long bridge/API errors truncated in retrieve reasons.
+
+Self-hosted monitors are single-origin checks unless explicitly configured otherwise. Reports and docs should call that out so they are not confused with multi-region SaaS probe networks.
 
 ### Alert cooldown / suppression windows
 

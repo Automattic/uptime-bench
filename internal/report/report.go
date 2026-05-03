@@ -899,15 +899,15 @@ func writeMarkdown(w io.Writer, r Report) error {
 		if _, err := fmt.Fprint(w, "\n## Service Scores\n\n"); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(w, "| Service | Passed | Failed | Comparable | Excluded | Sample Pass Rate | Scenario-Normalized | Category-Normalized |"); err != nil {
+		if _, err := fmt.Fprintln(w, "| Service | Total | Passed | Failed | Comparable | Excluded | Unknown | Capability Mismatch | Sample Pass Rate | Scenario-Normalized | Category-Normalized |"); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(w, "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"); err != nil {
+		if _, err := fmt.Fprintln(w, "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"); err != nil {
 			return err
 		}
 		for _, s := range r.ServiceScores {
-			if _, err := fmt.Fprintf(w, "| %s | %d | %d | %d | %d | %s | %s | %s |\n",
-				s.ServiceID, s.Passed, s.Failed, s.Comparable, s.Excluded,
+			if _, err := fmt.Fprintf(w, "| %s | %d | %d | %d | %d | %d | %d | %d | %s | %s | %s |\n",
+				s.ServiceID, s.TotalSamples, s.Passed, s.Failed, s.Comparable, s.Excluded, s.Unknown, s.CapabilityMismatch,
 				formatPercent(s.SampleWeightedPassRate), formatPercent(s.ScenarioNormalizedPassRate), formatPercent(s.CategoryNormalizedPassRate)); err != nil {
 				return err
 			}

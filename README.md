@@ -60,7 +60,7 @@ harness  ->  target and DNS fleet  ->  controlled failure
    |           ground-truth events
    |
    v
-monitor adapters  ->  Jetmon, Pingdom, UptimeRobot, Datadog, Better Uptime
+monitor adapters  ->  Jetmon, Pingdom, UptimeRobot, Datadog, Better Uptime, Gatus, Uptime Kuma
    |
    v
 monitor reports  ->  derived metrics  ->  campaign reports
@@ -86,6 +86,8 @@ The important rule: **the harness does not special-case services.** Service quir
 | Pingdom | `pingdom` | Probe-based public API |
 | Datadog Synthetics | `datadog-synthetics` | Probe-based public API |
 | Better Uptime | `better-uptime` | Probe-based public API |
+| Gatus | `gatus` | Self-hosted single-origin monitor via uptime-bench bridge |
+| Uptime Kuma | `uptime-kuma` | Self-hosted single-origin monitor via uptime-bench bridge |
 
 New services are added by implementing the adapter interface, declaring capabilities, and mapping vendor event vocabulary into uptime-bench's normalized model.
 

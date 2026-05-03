@@ -319,7 +319,7 @@ func TestWriteMarkdownIncludesServiceScores(t *testing.T) {
 	rate := 0.5
 	r := Report{
 		ServiceScores: []ServiceScore{
-			{ServiceID: "svc", Passed: 1, Failed: 1, Comparable: 2, SampleWeightedPassRate: &rate},
+			{ServiceID: "svc", TotalSamples: 4, Passed: 1, Failed: 1, Comparable: 2, Excluded: 2, Unknown: 1, CapabilityMismatch: 1, SampleWeightedPassRate: &rate},
 		},
 		Summaries: []Summary{{
 			FailureType: "http_status",
@@ -334,7 +334,7 @@ func TestWriteMarkdownIncludesServiceScores(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "## Service Scores") || !strings.Contains(out, "| svc | 1 | 1 | 2 |") {
+	if !strings.Contains(out, "## Service Scores") || !strings.Contains(out, "| svc | 4 | 1 | 1 | 2 | 2 | 1 | 1 | 50.0% |") {
 		t.Fatalf("markdown missing service score table: %q", out)
 	}
 	if !strings.Contains(out, "## Failure-Type Details") {

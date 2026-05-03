@@ -1,0 +1,25 @@
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2.3.0
+    container_name: uptime-bench-uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      UPTIME_KUMA_DB_TYPE: sqlite
+    volumes:
+      - ./data:/app/data
+
+  bridge:
+    build: ./bridge
+    container_name: uptime-bench-uptime-kuma-bridge
+    restart: unless-stopped
+    depends_on:
+      - uptime-kuma
+    ports:
+      - "3002:3002"
+    environment:
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN:?set BRIDGE_TOKEN in .env}
+      KUMA_URL: http://uptime-kuma:3001
+      KUMA_USERNAME: ${KUMA_USERNAME:?set KUMA_USERNAME in .env}
+      KUMA_PASSWORD: ${KUMA_PASSWORD:?set KUMA_PASSWORD in .env}

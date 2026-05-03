@@ -1,0 +1,7 @@
+endpoints:
+  - name: uptime-bench-bootstrap
+    group: uptime-bench-internal
+    url: http://127.0.0.1:8080/health
+    interval: 5m
+    conditions:
+      - "[STATUS] == 200"

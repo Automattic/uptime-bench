@@ -23,7 +23,8 @@ type Service struct {
 	ID string
 
 	// Type is the adapter type: "jetmon-v1", "jetmon-v2", "pingdom",
-	// "uptimerobot", "datadog-synthetics", or "better-uptime".
+	// "uptimerobot", "datadog-synthetics", "better-uptime", "gatus",
+	// or "uptime-kuma".
 	Type string
 
 	// URL is the root API URL. If empty, the adapter uses its default
