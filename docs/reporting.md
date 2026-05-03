@@ -33,7 +33,9 @@ Every scenario or campaign run should include these files. For campaign runs,
 `uptime-bench-finalize` now writes the durable database/report artifacts
 directly. Run launchers/controllers are still responsible for copying
 process-local artifacts such as logs, generated ad-hoc scenario files, and
-post-run target cleanup snapshots.
+post-run target cleanup snapshots. The checked-in harness can write those
+controller-owned artifacts when invoked with
+`-out-dir=/home/gaarai/code/uptime-bench/reports/<run-tag>`.
 
 | Path | Purpose |
 |---|---|
@@ -74,6 +76,24 @@ directory, and controller output before considering the run finished.
 The finalizer intentionally does not contact target controls or provider APIs
 after the run. `target-status-after.json`, `logs/`, `scenarios/`, and optional
 driver/controller files must come from the run controller.
+
+`uptime-bench-harness -out-dir=<report-dir>` writes:
+
+- `logs/harness.log`
+- `controller.log`
+- `run-results.tsv`
+- `target-status-after.json`
+- `scenarios/<input>.toml` for single-scenario runs
+- `campaigns/<input>.toml` for campaign runs
+
+The post-run status snapshot queries every distinct target and DNS control
+endpoint in `fleet.toml`. Per-member control errors are preserved inside
+`target-status-after.json` instead of being collapsed into one log line, so the
+report can distinguish clean target state from an unreachable control plane.
+Use the same `-out-dir` value when later running `uptime-bench-finalize` so the
+controller artifacts and durable database/report artifacts land in one bundle.
+The finalizer scans the report directory before writing `manifest.json`, so
+pre-existing controller artifacts are included in the final manifest.
 
 ## Capacity Artifacts
 

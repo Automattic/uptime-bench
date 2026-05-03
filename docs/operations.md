@@ -486,10 +486,13 @@ Scenario TOML files live in the repo's `scenarios/` directory; copy the ones you
 ssh <user>@203.0.113.5
 sudo -u uptime-bench bash -c '
   set -a; . /etc/uptime-bench/harness.env; set +a
+  REPORT_DIR=/var/lib/uptime-bench/reports/manual-http-503-20260503-150000Z
+  mkdir -p "${REPORT_DIR}"
   exec /usr/local/bin/uptime-bench-harness \
     -fleet=/etc/uptime-bench/fleet.toml \
     -services=/etc/uptime-bench/services.toml \
-    -scenario=/tmp/http-503.toml
+    -scenario=/tmp/http-503.toml \
+    -out-dir="${REPORT_DIR}"
 '
 ```
 
@@ -506,6 +509,13 @@ sudo -u uptime-bench bash -c '
 '
 ```
 
+For report-ready runs, always pass `-out-dir` with the final report bundle
+directory. The harness writes `logs/harness.log`, `controller.log`,
+`run-results.tsv`, `target-status-after.json`, and a copy of the scenario or
+campaign TOML there. Use the same directory when running
+`uptime-bench-finalize` after campaign runs so `report.md`, raw TSV exports,
+capacity artifacts, controller logs, and cleanup status stay together.
+
 Running as `uptime-bench` matches the systemd unit's user; the `sudo -u` step is necessary because `/etc/uptime-bench/harness.env` is mode 0640 root:uptime-bench and `sudo` strips environment variables by default.
 
 The harness will:
@@ -519,7 +529,8 @@ The harness will:
 8. Call `Retrieve` on each adapter to collect detection data
 9. Deprovision all monitors
 10. Write derived metrics to MySQL
-11. Print a summary
+11. Write controller artifacts when `-out-dir` is set
+12. Print a summary
 
 Do not run provider cleanup, deploys, fleet config syncs, target restarts, DNS
 restarts, or adapter smoke tests while a long campaign is active. Those actions

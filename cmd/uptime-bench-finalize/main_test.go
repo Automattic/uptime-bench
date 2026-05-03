@@ -81,6 +81,15 @@ func TestWriteReportFilesIncludesCapacityArtifacts(t *testing.T) {
 
 func TestWriteReportFilesIncludesStandardArtifacts(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "logs", "harness.log"), []byte("harness log\n"), 0o644); err != nil {
+		t.Fatalf("write harness log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "target-status-after.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write target status: %v", err)
+	}
 	start := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 1, 11, 0, 0, 0, time.UTC)
 	report := benchreport.Report{
@@ -163,7 +172,7 @@ func TestWriteReportFilesIncludesStandardArtifacts(t *testing.T) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
-	for _, name := range []string{"run.meta.tsv", "scenario-plan.tsv", "schedule.tsv", "campaigns/tiny-run.toml"} {
+	for _, name := range []string{"run.meta.tsv", "scenario-plan.tsv", "schedule.tsv", "campaigns/tiny-run.toml", "logs/harness.log", "target-status-after.json"} {
 		if !contains(manifest.Files, name) {
 			t.Fatalf("manifest files = %#v, want %s", manifest.Files, name)
 		}

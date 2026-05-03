@@ -31,8 +31,19 @@ func main() {
 	scenarioPath := flag.String("scenario", "", "path to scenario TOML file to run")
 	campaignPath := flag.String("campaign", "", "path to campaign TOML file to run")
 	monitorOverride := flag.String("monitors", "", "comma-separated monitor IDs to use for a scenario run (overrides scenario monitors)")
+	outDir := flag.String("out-dir", "", "optional report artifact directory for controller-local files")
 	dsnFlag := flag.String("dsn", "", "MySQL DSN (overrides DB_DSN env var)")
 	flag.Parse()
+
+	artifacts, err := setupHarnessArtifacts(*outDir)
+	if err != nil {
+		log.Fatalf("harness: artifacts: %v", err)
+	}
+	defer func() {
+		if err := artifacts.Close(); err != nil {
+			log.Printf("harness: close artifacts: %v", err)
+		}
+	}()
 
 	if (*scenarioPath == "") == (*campaignPath == "") {
 		log.Fatal("harness: set exactly one of -scenario or -campaign")
@@ -80,6 +91,9 @@ func main() {
 			sc.Monitors = monitors
 			log.Printf("harness: scenario monitors overridden: %s", strings.Join(monitors, ","))
 		}
+		if err := artifacts.CopyInput("scenario", *scenarioPath); err != nil {
+			log.Fatalf("harness: scenario artifact: %v", err)
+		}
 		log.Printf("harness: scenario loaded: %s v%s", sc.ID, sc.Version)
 	} else {
 		campaignData, err = os.ReadFile(*campaignPath)
@@ -89,6 +103,9 @@ func main() {
 		c, err = campaign.Parse(campaignData)
 		if err != nil {
 			log.Fatalf("harness: campaign: parse: %v", err)
+		}
+		if err := artifacts.CopyInput("campaign", *campaignPath); err != nil {
+			log.Fatalf("harness: campaign artifact: %v", err)
 		}
 		log.Printf("harness: campaign loaded: %s", c.ID)
 	}
@@ -131,6 +148,7 @@ func main() {
 
 	if sc != nil {
 		log.Printf("harness: starting scenario: %s", sc.ID)
+		startedAt := time.Now().UTC()
 		runID, runErr := runner.Run(ctx, sc, fl, database, adapters, svcCfg)
 
 		if runID != "" {
@@ -141,8 +159,28 @@ func main() {
 			}
 		}
 
-		if runErr != nil {
-			log.Printf("harness: run failed: %v", runErr)
+		endedAt := time.Now().UTC()
+		artifactErr := errors.Join(
+			artifacts.WriteRunResult(controllerRunResult{
+				Kind:      "scenario",
+				ID:        sc.ID,
+				RunID:     runID,
+				StartedAt: startedAt,
+				EndedAt:   endedAt,
+				Err:       runErr,
+			}),
+			artifacts.WriteTargetStatusAfter(fl),
+		)
+		if artifactErr != nil {
+			log.Printf("harness: artifact capture: %v", artifactErr)
+		}
+		if runErr != nil || artifactErr != nil {
+			if runErr != nil {
+				log.Printf("harness: run failed: %v", runErr)
+			}
+			if err := artifacts.Close(); err != nil {
+				log.Printf("harness: close artifacts: %v", err)
+			}
 			os.Exit(1)
 		}
 		log.Println("harness: done")
@@ -150,6 +188,7 @@ func main() {
 	}
 
 	log.Printf("harness: starting campaign: %s", c.ID)
+	startedAt := time.Now().UTC()
 	campaignRunID, runErr := runner.RunCampaign(ctx, c, c.Seed, fl, database, adapters, svcCfg, runner.RunCampaignOptions{
 		ConfigTOML: string(campaignData),
 	})
@@ -160,8 +199,28 @@ func main() {
 			log.Printf("harness: campaign metric derivation: %v", err)
 		}
 	}
-	if runErr != nil {
-		log.Printf("harness: campaign failed: %v", runErr)
+	endedAt := time.Now().UTC()
+	artifactErr := errors.Join(
+		artifacts.WriteRunResult(controllerRunResult{
+			Kind:      "campaign",
+			ID:        c.ID,
+			RunID:     campaignRunID,
+			StartedAt: startedAt,
+			EndedAt:   endedAt,
+			Err:       runErr,
+		}),
+		artifacts.WriteTargetStatusAfter(fl),
+	)
+	if artifactErr != nil {
+		log.Printf("harness: artifact capture: %v", artifactErr)
+	}
+	if runErr != nil || artifactErr != nil {
+		if runErr != nil {
+			log.Printf("harness: campaign failed: %v", runErr)
+		}
+		if err := artifacts.Close(); err != nil {
+			log.Printf("harness: close artifacts: %v", err)
+		}
 		os.Exit(1)
 	}
 	log.Println("harness: done")

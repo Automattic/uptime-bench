@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -243,6 +245,11 @@ func writeReportFiles(dir string, r report.Report, capacityReport *capacitybench
 		}
 		files = append(files, artifactFiles...)
 	}
+	existingFiles, err := discoverReportFiles(dir)
+	if err != nil {
+		return err
+	}
+	files = mergeManifestFiles(files, existingFiles)
 	manifest := map[string]any{
 		"generated_at":  time.Now().UTC().Format(time.RFC3339),
 		"input":         r.Meta.Input,
@@ -254,6 +261,54 @@ func writeReportFiles(dir string, r report.Report, capacityReport *capacitybench
 		return err
 	}
 	return writeFileAtomic(filepath.Join(dir, "manifest.json"), append(data, '\n'))
+}
+
+func discoverReportFiles(dir string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		base := filepath.Base(rel)
+		if rel == "manifest.json" || strings.HasPrefix(base, ".") {
+			return nil
+		}
+		files = append(files, rel)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func mergeManifestFiles(primary, discovered []string) []string {
+	seen := make(map[string]bool, len(primary)+len(discovered))
+	out := make([]string, 0, len(primary)+len(discovered))
+	for _, name := range primary {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, name := range discovered {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 func writeFinalizeArtifacts(dir string, r report.Report, artifacts finalizeArtifacts) ([]string, error) {
