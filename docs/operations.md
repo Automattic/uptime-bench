@@ -385,6 +385,14 @@ Jetmon 1 has no public API; the adapter talks to a sidecar `jetmon-bridge` that 
 
 The API-backed adapters create their monitors via API on every run and have no equivalent pre-seeding step.
 
+### Self-hosted bridge-backed monitors
+
+`gatus` and `uptime-kuma` point at uptime-bench bridge ports, not at the product UI/API ports directly. The bridges expose the small API surface the adapters need: create, list, delete, and status/history retrieval. Configure `auth.token` to match the bridge `BRIDGE_TOKEN`.
+
+Both adapters are single-origin self-hosted checks by default. They are useful comparison points, but their results should not be described as equivalent to SaaS providers that probe from multiple external regions unless the self-hosted deployment has been explicitly expanded to do that.
+
+Uptime Kuma automation uses an internal Socket.IO API through `uptime-kuma-api`, so the deployed image version is pinned. Revalidate the bridge smoke before upgrading Uptime Kuma. Gatus automation writes a generated config fragment and reads status history through Gatus's public HTTP API.
+
 ### Jetmon v2 API-backed monitors
 
 Jetmon 2 uses the internal `/api/v1` REST API. Configure `url` as either the API server root or the versioned API root, set `auth.token` to a Jetmon API token with write scope, and optionally set `auth.bucket_no` to a bucket owned by the Jetmon v2 host under test. The adapter creates a synthetic high-range positive `blog_id` per run, sets `check_interval` from the scenario in whole minutes, configures present-mode `check_keyword` when requested, retrieves HTTP and TLS-expiry events, maps Jetmon `error_code` metadata into raw timeout/TLS/redirect/keyword labels, and soft-deletes the site at deprovision time.

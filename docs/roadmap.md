@@ -279,12 +279,12 @@ Acceptance:
 
 ## Next-wave adapter expansion
 
-**Status:** In progress. Gatus and Uptime Kuma have deployed self-hosted instances on single-service hosts plus narrow uptime-bench bridges. The adapters start with HTTP monitor coverage and should stay out of scored campaign runs until harness-driven live smoke covers provision, retrieve, deprovision, cleanup, and at least one injected failure.
+**Status:** In progress. Gatus and Uptime Kuma have deployed self-hosted instances on single-service hosts plus narrow uptime-bench bridges. Initial harness-driven smoke covered provision, retrieve, deprovision, cleanup, and an injected HTTP failure for both adapters. They are ready for controlled campaign inclusion, with the caveat that reports must identify them as single-origin self-hosted checks rather than global SaaS probe networks.
 
 Recommended order:
 
 1. **Uptime Kuma** — first self-hosted UI-driven comparison point. Deployed with pinned `louislam/uptime-kuma:2.3.0` and an uptime-bench bridge because direct automation uses Uptime Kuma's internal Socket.IO surface. Initial adapter coverage is HTTP status and present-keyword checks; inverted keyword, maintenance, TCP, DNS, and TLS/cert support remain deferred until validated.
-2. **Gatus** — second self-hosted comparison point. Deployed with pinned `ghcr.io/twin/gatus:v5.35.0` and an uptime-bench bridge that manages a generated config fragment while reading endpoint status/history from the public API. Initial adapter coverage is HTTP status, present/inverted keyword checks, response-time threshold, and custom request headers.
+2. **Gatus** — second self-hosted comparison point. Deployed with pinned `ghcr.io/twin/gatus:v5.35.0` and an uptime-bench bridge that manages a generated config fragment while reading endpoint status/history from the public API. Initial adapter coverage is HTTP status, present/inverted keyword checks, response-time threshold, and custom request headers. Next capability work is validating Gatus native DNS/TCP/TLS checks behind explicit `monitor_kind` support.
 3. **updown.io** — first additional third-party service. Its API is simple, supports create/update/delete checks, exposes downtimes, publishes node/IP APIs, supports HTTP/TCP/ICMP-like coverage, string matching, and configurable `GET/HEAD` behavior.
 4. **StatusCake** — useful market comparison with uptime APIs and period/history endpoints.
 5. **Checkly** — high-capability API checks with method/assertion support; valuable after the simpler API-shaped adapters prove out the expansion path.

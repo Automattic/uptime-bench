@@ -19,6 +19,18 @@ func TestCapabilities_HEADDisablesBodyChecks(t *testing.T) {
 	}
 }
 
+func TestProvisionRejectsHEADKeyword(t *testing.T) {
+	a := New("gatus-head", "http://bridge", "tok", WithHTTPMethod("HEAD"))
+	_, err := a.Provision(context.Background(), adapter.Target{ID: "bench-a", URL: "http://bench.example/"}, adapter.ProvisionConfig{
+		CheckFrequency: time.Minute,
+		Keyword:        "canary",
+		KeywordCheck:   adapter.KeywordCheckPresent,
+	})
+	if err == nil || !strings.Contains(err.Error(), "keyword monitoring requires a response body") {
+		t.Fatalf("Provision error = %v, want HEAD keyword rejection", err)
+	}
+}
+
 func TestProvisionRetrieveDeprovision(t *testing.T) {
 	var monitorID string
 	var deleted bool
@@ -116,5 +128,79 @@ func TestProvisionRetrieveDeprovision(t *testing.T) {
 	}
 	if !deleted {
 		t.Fatal("delete was not called")
+	}
+}
+
+func TestRetrieveTruncatesBridgeErrors(t *testing.T) {
+	longBody := strings.Repeat("x", 260)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/monitors/m/statuses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		http.Error(w, longBody, http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	a := New("gatus", srv.URL, "tok")
+	res, err := a.Retrieve(context.Background(), adapter.MonitorHandle{ServiceID: "gatus", MonitorID: "m"}, adapter.RunWindow{})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if res.Status != adapter.RetrieveUnknown || res.ReasonCode != adapter.ReasonAdapterError {
+		t.Fatalf("retrieve = %+v, want adapter_error unknown", res)
+	}
+	if strings.Contains(res.Reason, strings.Repeat("x", 220)) || !strings.Contains(res.Reason, "...") {
+		t.Fatalf("reason was not truncated: %q", res.Reason)
+	}
+}
+
+func TestCleanupStaleScopesDryRunAndDelete(t *testing.T) {
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/monitors":
+			_ = json.NewEncoder(w).Encode(map[string]any{"monitors": []map[string]string{
+				{"name": "uptime-bench-bootstrap", "url": "http://127.0.0.1:8080/health"},
+				{"name": "uptime-bench_alpha", "url": "https://bench-a.example/check"},
+				{"name": "uptime-bench_beta", "url": "https://outside.example/check"},
+				{"name": "manual", "url": "https://bench-a.example/check"},
+			}})
+		case r.Method == http.MethodDelete:
+			deleted = append(deleted, strings.TrimPrefix(r.URL.Path, "/monitors/"))
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	a := New("gatus", srv.URL, "tok")
+	scope := adapter.CleanupScope{TargetHosts: []string{"bench-a.example"}}
+	dry, err := a.CleanupStale(context.Background(), adapter.CleanupOptions{DryRun: true, Scope: scope})
+	if err != nil {
+		t.Fatalf("CleanupStale dry run: %v", err)
+	}
+	if len(dry.Actions) != 2 {
+		t.Fatalf("dry run actions = %+v, want scoped candidate and skipped out-of-scope candidate", dry.Actions)
+	}
+	if dry.Actions[0].Action != adapter.CleanupActionWouldDelete || dry.Actions[0].Candidate.ResourceID != "alpha" {
+		t.Fatalf("first dry run action = %+v", dry.Actions[0])
+	}
+	if dry.Actions[1].Action != adapter.CleanupActionSkipped || dry.Actions[1].Candidate.ResourceID != "beta" {
+		t.Fatalf("second dry run action = %+v", dry.Actions[1])
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("dry run deleted resources: %v", deleted)
+	}
+
+	live, err := a.CleanupStale(context.Background(), adapter.CleanupOptions{Scope: scope})
+	if err != nil {
+		t.Fatalf("CleanupStale live: %v", err)
+	}
+	if len(live.Actions) != 2 || live.Actions[0].Action != adapter.CleanupActionDeleted || live.Actions[1].Action != adapter.CleanupActionSkipped {
+		t.Fatalf("live actions = %+v", live.Actions)
+	}
+	if len(deleted) != 1 || deleted[0] != "alpha" {
+		t.Fatalf("deleted = %v, want [alpha]", deleted)
 	}
 }

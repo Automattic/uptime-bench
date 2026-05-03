@@ -315,7 +315,7 @@ func (a *Adapter) do(ctx context.Context, method, path string, body, out any) er
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return fmt.Errorf("status %d: %s", resp.StatusCode, truncate(strings.TrimSpace(string(data)), 200))
 	}
 	if out == nil {
 		return nil
@@ -395,4 +395,11 @@ func rawClassification(r statusResult) string {
 		return fmt.Sprintf("http_%d", r.Status)
 	}
 	return "unhealthy"
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
