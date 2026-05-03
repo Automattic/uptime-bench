@@ -15,6 +15,7 @@ The root [README](../README.md) explains what uptime-bench is and why it exists.
 - [Scenario format](scenario-format.md) - TOML schema, field reference, and failure parameters.
 - [Events and metrics](events.md) - ground truth, monitor reports, derived metrics, and scoring rules.
 - [Jetmon capacity benchmark](capacity-benchmark.md) - Prometheus collection and capacity-test design for Jetmon v1/v2.
+- [Post-run analysis](post-run-analysis.md) - checklist for turning completed run artifacts into comparable findings.
 - [Roadmap](roadmap.md) - completed milestones, active priorities, and deferred ideas.
 
 ## Extension Points

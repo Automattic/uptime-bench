@@ -130,6 +130,10 @@ capability mismatches, and uncategorized Unknown rows. TSV output is row-only
 for scripts. JSON output wraps the same data as `meta`, `bias_checks`, and
 `summaries`.
 
+For live or long-running campaigns, use the [post-run analysis checklist](post-run-analysis.md)
+to verify preserved artifacts, adapter-error buckets, scenario accuracy,
+detection timing, and capacity summaries before drawing service comparisons.
+
 ## 6. Available v1 Scenarios
 
 | Scenario | Failure | What it tests |

@@ -80,9 +80,10 @@ The capacity collector expects these scrape labels:
 | `dockerstats` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | Docker container CPU, memory, network, and scrape health |
 | `process` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | native Jetmon process CPU, RSS, counts, threads, and open file descriptors |
 
-The monitoring Prometheus for this work is `http://prometheus.example.com:9090` on
-`monitoring.example.com`; do not use a retired monitoring stack or any unrelated
-Prometheus running on the network.
+The examples below use `http://prometheus.example.com:9090` on
+`monitoring.example.com` as placeholders. Replace them with the Prometheus that
+scrapes the Jetmon hosts under test, and do not mix data from an unrelated
+monitoring stack.
 
 Useful readiness checks:
 
@@ -96,9 +97,9 @@ All returned series should be `1`.
 
 ## Grafana Dashboards
 
-The Grafana instance for this work is `http://grafana.example.com:3000`. The admin
-password is stored on `monitoring.example.com` in
-`/opt/jetmon-monitoring/.env`.
+The example Grafana instance is `http://grafana.example.com:3000`. In a live
+environment, keep the admin password on the monitoring host outside the repo,
+for example in `/opt/jetmon-monitoring/.env`.
 
 Provisioned dashboards:
 
