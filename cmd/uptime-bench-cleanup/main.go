@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automattic/uptime-bench/internal/activeguard"
 	"github.com/Automattic/uptime-bench/internal/adapter"
 	"github.com/Automattic/uptime-bench/internal/adapterfactory"
 	"github.com/Automattic/uptime-bench/internal/fleet"
@@ -21,7 +22,15 @@ func main() {
 	servicesPath := flag.String("services", "services.toml", "path to services configuration file")
 	dryRun := flag.Bool("dry-run", true, "list stale benchmark-owned provider resources without deleting them")
 	timeout := flag.Duration("timeout", 2*time.Minute, "overall cleanup timeout")
+	activeRunLock := flag.String("active-run-lock", "", "path to active-run lock file (default UPTIME_BENCH_ACTIVE_RUN_LOCK or /tmp/uptime-bench-active-run.lock)")
+	allowActiveRun := flag.Bool("allow-active-run", false, "allow delete cleanup even when an active-run lock exists")
 	flag.Parse()
+
+	if !*dryRun {
+		if err := activeguard.EnsureInactive(*activeRunLock, *allowActiveRun); err != nil {
+			log.Fatalf("cleanup: refusing mutating cleanup while another run appears active: %v (rerun with -allow-active-run only for emergency cleanup)", err)
+		}
+	}
 
 	fl, err := fleet.Load(*fleetPath)
 	if err != nil {

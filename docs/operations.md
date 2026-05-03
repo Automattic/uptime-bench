@@ -539,6 +539,14 @@ provider state while the campaign is still collecting evidence. Safe concurrent
 work is limited to read-only inspection and local-only code/docs/tests that do
 not call the live fleet or provider APIs.
 
+Mutating operator commands use a local active-run lock when available:
+`UPTIME_BENCH_ACTIVE_RUN_LOCK` or `/tmp/uptime-bench-active-run.lock` by
+default. `uptime-bench-jetmon-capacity-run -apply` creates this lock for the
+duration of the run, and `uptime-bench-cleanup -dry-run=false` refuses to delete
+provider resources while the lock exists. The emergency override is
+`-allow-active-run`; use it only when you have verified the active run can be
+interrupted or the lock is stale.
+
 ---
 
 ## Updating the fleet

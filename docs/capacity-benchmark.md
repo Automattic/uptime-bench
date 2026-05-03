@@ -668,3 +668,10 @@ window_end]` range. A Prometheus capture failure is recorded as
 thresholds are not hidden by monitoring failures. If the process receives
 SIGINT or SIGTERM during a batch, it uses a short fresh cleanup context to
 deactivate rows before returning.
+
+`uptime-bench-jetmon-capacity-run -apply` also creates a local active-run lock
+for the command duration. The default path is
+`/tmp/uptime-bench-active-run.lock`, or set `UPTIME_BENCH_ACTIVE_RUN_LOCK` /
+`-active-run-lock` when the orchestrator uses a different lock location. Other
+mutating tools should refuse to run while this lock exists; `-allow-active-run`
+is reserved for confirmed emergency cleanup or stale-lock recovery.

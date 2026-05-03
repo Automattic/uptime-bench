@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/Automattic/uptime-bench/internal/activeguard"
 	"github.com/Automattic/uptime-bench/internal/jetmoncapacity"
 )
 
@@ -29,6 +30,8 @@ func main() {
 	apply := flag.Bool("apply", false, "apply SQL to live DBs; without this flag the command only writes artifacts")
 	forceReseed := flag.Bool("force-reseed", false, "allow seed to delete and recreate existing benchmark-owned generated rows")
 	promURL := flag.String("prometheus-url", "", "Prometheus base URL override")
+	activeRunLock := flag.String("active-run-lock", "", "path to active-run lock file for -apply (default UPTIME_BENCH_ACTIVE_RUN_LOCK or /tmp/uptime-bench-active-run.lock)")
+	allowActiveRun := flag.Bool("allow-active-run", false, "allow -apply even when an active-run lock exists")
 	flag.Parse()
 
 	parsedBatchSizes, err := parseBatchSizes(*batchSizes)
@@ -38,6 +41,19 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	var lock *activeguard.Lock
+	if *apply {
+		lock, err = activeguard.Acquire(*activeRunLock, "uptime-bench-jetmon-capacity-run "+strings.ToLower(strings.TrimSpace(*mode)), *allowActiveRun)
+		if err != nil {
+			log.Fatalf("capacity-run: refusing -apply while another run appears active: %v (rerun with -allow-active-run only if this is intentional)", err)
+		}
+		defer func() {
+			if err := lock.Release(); err != nil {
+				log.Printf("capacity-run: release active-run lock: %v", err)
+			}
+		}()
+	}
 
 	manifest, err := jetmoncapacity.Runner{}.Run(ctx, jetmoncapacity.RunOptions{
 		ConfigPath:       *configPath,
