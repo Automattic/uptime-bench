@@ -537,7 +537,8 @@ restarts, or adapter smoke tests while a long campaign is active. Those actions
 can delete monitors, change scenario routing, restart failure targets, or alter
 provider state while the campaign is still collecting evidence. Safe concurrent
 work is limited to read-only inspection and local-only code/docs/tests that do
-not call the live fleet or provider APIs.
+not call the live fleet or provider APIs. See
+[Safe Concurrent Work](concurrent-work.md) for the detailed safe/unsafe matrix.
 
 ---
 
