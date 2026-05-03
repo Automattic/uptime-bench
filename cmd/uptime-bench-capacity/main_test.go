@@ -53,7 +53,9 @@ func TestWriteTableIncludesSummary(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	writeTable(&buf, report)
+	if err := capacitybench.WriteTable(&buf, report); err != nil {
+		t.Fatalf("WriteTable: %v", err)
+	}
 	out := buf.String()
 	for _, want := range []string{"host_cpu_used", "jetmon-v1.example.com", "12.35"} {
 		if !strings.Contains(out, want) {

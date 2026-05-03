@@ -2,16 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/capacitybench"
@@ -73,11 +70,13 @@ func main() {
 
 	switch strings.ToLower(*format) {
 	case "json":
-		if err := writeJSON(os.Stdout, report); err != nil {
+		if err := capacitybench.WriteJSON(os.Stdout, report); err != nil {
 			log.Fatalf("capacity: write json: %v", err)
 		}
 	case "table":
-		writeTable(os.Stdout, report)
+		if err := capacitybench.WriteTable(os.Stdout, report); err != nil {
+			log.Fatalf("capacity: write table: %v", err)
+		}
 	default:
 		log.Fatalf("capacity: unsupported -format %q (want table or json)", *format)
 	}
@@ -139,63 +138,4 @@ func parseTimeArg(raw string) (time.Time, error) {
 		return time.Unix(whole, int64(frac*1e9)).UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("expected RFC3339 or Unix timestamp")
-}
-
-func writeJSON(w io.Writer, report capacitybench.Report) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(report)
-}
-
-func writeTable(w io.Writer, report capacitybench.Report) {
-	fmt.Fprintf(w, "Prometheus: %s\n", report.PrometheusURL)
-	fmt.Fprintf(w, "Window:     %s to %s\n", report.Start.Format(time.RFC3339), report.End.Format(time.RFC3339))
-	fmt.Fprintf(w, "Step:       %s\n\n", report.Step)
-
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "METRIC\tSERIES\tUNIT\tSAMPLES\tAVG\tP95\tMAX\tLAST")
-	for _, s := range report.Summaries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
-			s.Query,
-			capacitybench.SeriesLabel(s.Labels),
-			s.Unit,
-			s.Samples,
-			formatValue(s.Unit, s.Avg),
-			formatValue(s.Unit, s.P95),
-			formatValue(s.Unit, s.Max),
-			formatValue(s.Unit, s.Last),
-		)
-	}
-	_ = tw.Flush()
-}
-
-func formatValue(unit string, value float64) string {
-	switch unit {
-	case "percent", "percent_core":
-		return fmt.Sprintf("%.2f", value)
-	case "bytes":
-		return formatBytes(value)
-	case "bytes_per_second":
-		return formatBytes(value) + "/s"
-	case "state":
-		return fmt.Sprintf("%.0f", value)
-	case "count":
-		return fmt.Sprintf("%.0f", value)
-	default:
-		return fmt.Sprintf("%.3f", value)
-	}
-}
-
-func formatBytes(value float64) string {
-	const unit = 1024
-	if value < unit {
-		return fmt.Sprintf("%.0f B", value)
-	}
-	div := float64(unit)
-	exp := 0
-	for n := value / unit; n >= unit && exp < 4; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.2f %ciB", value/div, "KMGTPE"[exp])
 }

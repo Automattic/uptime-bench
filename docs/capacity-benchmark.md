@@ -41,8 +41,25 @@ bin/uptime-bench-capacity \
   -format=json
 ```
 
-For a finished scenario report directory, capture the exact run window from
-`run.meta.tsv` and write capacity artifacts into the report:
+For a finished scenario campaign, finalization can capture the exact campaign
+window and write capacity artifacts beside the normal scenario report:
+
+```sh
+make finalize-campaign \
+  CAMPAIGN=example-campaign-id \
+  REPORT_OUT_DIR=reports/example-run-20260430-191911Z \
+  FINALIZE_CAPACITY=true \
+  CAPACITY_PROMETHEUS_URL=http://prometheus.example.com:9090 \
+  CAPACITY_INSTANCES=jetmon-v1.example.com,jetmon-v2.example.com
+```
+
+This writes `report.md`, `report.json`, `capacity.md`, `capacity.json`, and a
+manifest that lists all generated files. Capacity finalization requires the
+campaign to be complete because it uses the campaign's earliest start and
+latest end timestamps as the Prometheus range window.
+
+For older report directories that contain `run.meta.tsv`, capture the exact
+run window into a nested capacity directory:
 
 ```sh
 make capacity-capture-run CAPACITY_RUN_DIR=reports/example-run-20260430-191911Z
@@ -64,7 +81,7 @@ The capacity collector expects these scrape labels:
 | `process` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | native Jetmon process CPU, RSS, counts, threads, and open file descriptors |
 
 The monitoring Prometheus for this work is `http://prometheus.example.com:9090` on
-`monitoring.example.com`; do not use the retired retired monitoring stack or any unrelated
+`monitoring.example.com`; do not use a retired monitoring stack or any unrelated
 Prometheus running on the network.
 
 Useful readiness checks:

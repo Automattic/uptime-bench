@@ -176,6 +176,11 @@ CAPACITY_FORMAT ?= table
 CAPACITY_RUN_DIR ?=
 CAPACITY_OUTPUT_DIR ?=
 CAPACITY_POSTRUN_DURATION ?= 15m
+FINALIZE_CAPACITY ?= false
+CAPACITY_PROMETHEUS_URL ?=
+CAPACITY_STEP ?= 15s
+CAPACITY_RATE_WINDOW ?= 2m
+FINALIZE_CAPACITY_FLAGS = -capacity $(if $(CAPACITY_PROMETHEUS_URL),-capacity-prometheus-url=$(CAPACITY_PROMETHEUS_URL)) -capacity-instances=$(CAPACITY_INSTANCES) -capacity-step=$(CAPACITY_STEP) -capacity-rate-window=$(CAPACITY_RATE_WINDOW)
 
 .PHONY: capacity-metrics
 capacity-metrics: $(BINARY_CAPACITY)
@@ -210,7 +215,8 @@ preflight-campaign: $(BINARY_PREFLIGHT)
 
 .PHONY: finalize-campaign
 finalize-campaign: $(BINARY_FINALIZE)
-	$(BINARY_FINALIZE) -campaign=$(CAMPAIGN) $(if $(REPORT_OUT_DIR),-out-dir=$(REPORT_OUT_DIR))
+	$(BINARY_FINALIZE) -campaign=$(CAMPAIGN) $(if $(REPORT_OUT_DIR),-out-dir=$(REPORT_OUT_DIR)) \
+	  $(if $(filter true,$(FINALIZE_CAPACITY)),$(FINALIZE_CAPACITY_FLAGS))
 
 CLEANUP_FLEET ?= fleet.toml
 CLEANUP_SERVICES ?= services.toml
@@ -323,7 +329,8 @@ help:
 	@echo "  make preflight-campaign Validate campaign config and print timing estimates"
 	@echo "    [CAMPAIGN_CONFIG=configs/campaign/example.toml] [PREFLIGHT_FORMAT=table|json]"
 	@echo "  make finalize-campaign Derive metrics and write report.md/report.json"
-	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_OUT_DIR=reports/<run-tag>]"
+	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_OUT_DIR=reports/<run-tag>] [FINALIZE_CAPACITY=true]"
+	@echo "    [CAPACITY_PROMETHEUS_URL=http://prometheus.example.com:9090] [CAPACITY_INSTANCES=jetmon-v1.example.com,jetmon-v2.example.com]"
 	@echo "  make provider-cleanup Dry-run stale provider resource cleanup"
 	@echo "    [CLEANUP_FLEET=fleet.toml] [CLEANUP_SERVICES=services.toml] [CLEANUP_DRY_RUN=true]"
 	@echo "  make capacity-metrics Summarize Jetmon v1/v2 Prometheus capacity metrics"
