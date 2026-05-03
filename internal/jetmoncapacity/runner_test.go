@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -387,6 +390,36 @@ func TestDefaultTargetURLCheckerRejectsUnsupportedSourceWithoutNetwork(t *testin
 	}
 	if check.DNSOK || check.HTTPOK || !strings.Contains(check.Error, "source-aware TargetURLChecker") {
 		t.Fatalf("check = %#v, want local unsupported-source error", check)
+	}
+}
+
+func TestResolvedHTTPClientUsesResolvedAddressAndPreservesHost(t *testing.T) {
+	var gotHost string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	rawURL := "http://site-0000049.steadycadence.party:" + serverURL.Port() + "/"
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse target URL: %v", err)
+	}
+	resp, err := resolvedHTTPClient(parsed, []string{"127.0.0.1"}, time.Second).Get(rawURL)
+	if err != nil {
+		t.Fatalf("GET through resolved client: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	wantHost := "site-0000049.steadycadence.party:" + serverURL.Port()
+	if gotHost != wantHost {
+		t.Fatalf("Host header = %q, want %q", gotHost, wantHost)
 	}
 }
 

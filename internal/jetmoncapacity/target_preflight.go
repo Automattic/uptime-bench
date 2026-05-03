@@ -52,13 +52,14 @@ type TargetURLSample struct {
 
 // TargetURLCheck records one DNS/HTTP validation from a configured source.
 type TargetURLCheck struct {
-	Source     string   `json:"source"`
-	DNSOK      bool     `json:"dns_ok"`
-	Addresses  []string `json:"addresses,omitempty"`
-	HTTPOK     bool     `json:"http_ok"`
-	HTTPStatus int      `json:"http_status,omitempty"`
-	Attempts   int      `json:"attempts,omitempty"`
-	Error      string   `json:"error,omitempty"`
+	Source      string   `json:"source"`
+	DNSOK       bool     `json:"dns_ok"`
+	DNSResolver string   `json:"dns_resolver,omitempty"`
+	Addresses   []string `json:"addresses,omitempty"`
+	HTTPOK      bool     `json:"http_ok"`
+	HTTPStatus  int      `json:"http_status,omitempty"`
+	Attempts    int      `json:"attempts,omitempty"`
+	Error       string   `json:"error,omitempty"`
 }
 
 // TargetURLChecker checks exact target URLs before the capacity clock starts.
@@ -88,14 +89,13 @@ func (defaultTargetURLChecker) CheckURL(ctx context.Context, source string, rawU
 		check.Error = "URL missing hostname"
 		return check
 	}
-	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	addrs, err := net.DefaultResolver.LookupHost(lookupCtx, host)
+	addrs, resolverName, err := lookupTargetHost(ctx, host, timeout)
 	if err != nil {
 		check.Error = "dns: " + err.Error()
 		return check
 	}
 	check.DNSOK = true
+	check.DNSResolver = resolverName
 	check.Addresses = addrs
 
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -105,7 +105,7 @@ func (defaultTargetURLChecker) CheckURL(ctx context.Context, source string, rawU
 		check.Error = "request: " + err.Error()
 		return check
 	}
-	client := &http.Client{Timeout: timeout}
+	client := resolvedHTTPClient(parsed, addrs, timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		check.Error = "http: " + err.Error()
@@ -119,6 +119,84 @@ func (defaultTargetURLChecker) CheckURL(ctx context.Context, source string, rawU
 		check.Error = fmt.Sprintf("http status %d, want %s", resp.StatusCode, expectedStatusText(expectedStatus))
 	}
 	return check
+}
+
+var targetDNSFallbackServers = []string{
+	"1.1.1.1:53",
+	"8.8.8.8:53",
+}
+
+func lookupTargetHost(ctx context.Context, host string, timeout time.Duration) ([]string, string, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
+	addrs, err := net.DefaultResolver.LookupHost(lookupCtx, host)
+	cancel()
+	if err == nil {
+		return addrs, "default", nil
+	}
+	var failures []string
+	failures = append(failures, "default: "+err.Error())
+
+	for _, server := range targetDNSFallbackServers {
+		resolver := fallbackResolver(server, timeout)
+		lookupCtx, cancel := context.WithTimeout(ctx, timeout)
+		addrs, err := resolver.LookupHost(lookupCtx, host)
+		cancel()
+		if err == nil {
+			return addrs, server, nil
+		}
+		failures = append(failures, server+": "+err.Error())
+	}
+	return nil, "", fmt.Errorf("%s", strings.Join(failures, "; "))
+}
+
+func fallbackResolver(server string, timeout time.Duration) *net.Resolver {
+	dialer := &net.Dialer{Timeout: timeout}
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, server)
+		},
+	}
+}
+
+func resolvedHTTPClient(parsed *url.URL, addrs []string, timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{Timeout: timeout}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	targetHost := normalizeHostname(parsed.Hostname())
+	targetPort := parsed.Port()
+	if targetPort == "" {
+		targetPort = defaultURLPort(parsed.Scheme)
+	}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err == nil && normalizeHostname(host) == targetHost && port == targetPort && len(addrs) > 0 {
+			return dialResolvedAddresses(ctx, dialer, network, port, addrs)
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+	return &http.Client{Timeout: timeout, Transport: transport}
+}
+
+func dialResolvedAddresses(ctx context.Context, dialer *net.Dialer, network, port string, addrs []string) (net.Conn, error) {
+	var failures []string
+	for _, addr := range addrs {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addr, port))
+		if err == nil {
+			return conn, nil
+		}
+		failures = append(failures, addr+": "+err.Error())
+	}
+	return nil, fmt.Errorf("dial resolved addresses: %s", strings.Join(failures, "; "))
+}
+
+func defaultURLPort(scheme string) string {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "https":
+		return "443"
+	default:
+		return "80"
+	}
 }
 
 func validateTargetPattern(target TargetConfig) error {
