@@ -47,7 +47,7 @@ window and write capacity artifacts beside the normal scenario report:
 ```sh
 make finalize-campaign \
   CAMPAIGN=example-campaign-id \
-  REPORT_OUT_DIR=reports/example-run-20260430-191911Z \
+  REPORT_OUT_DIR=reports/20260430T191911Z-30m-example-run \
   FINALIZE_CAPACITY=true \
   CAPACITY_PROMETHEUS_URL=http://prometheus.example.com:9090 \
   CAPACITY_INSTANCES=jetmon-v1.example.com,jetmon-v2.example.com
@@ -68,7 +68,7 @@ For older report directories that contain `run.meta.tsv`, capture the exact
 run window into a nested capacity directory:
 
 ```sh
-make capacity-capture-run CAPACITY_RUN_DIR=reports/example-run-20260430-191911Z
+make capacity-capture-run CAPACITY_RUN_DIR=reports/20260430T191911Z-30m-example-run
 ```
 
 This writes `capacity/prometheus-window.{json,txt}` and, by default, a
@@ -478,7 +478,7 @@ size, run:
 bin/uptime-bench-jetmon-capacity-run \
   -config=configs/capacity/jetmon.example.toml \
   -mode=plan \
-  -out-dir=reports/capacity/full-plan
+  -out-dir=reports/20260430T180000Z-0m-capacity-full-plan
 ```
 
 Live runs require MySQL DSNs from local secret files. Inline `dsn` values in
@@ -581,8 +581,13 @@ After the smoke passes, run the configured growth sequence:
 ./bin/uptime-bench-jetmon-capacity-run \
   -config=configs/jetmon.fleet.toml \
   -mode=run-suite \
+  -description=capacity-growth \
   -apply
 ```
+
+When `-out-dir` is omitted, the capacity runner creates a report directory
+under `reports/` using `YYYYMMDDTHHMMSSZ-DURATION-DESCRIPTION`. Use
+`-description` to keep the slug short and recognizable.
 
 By default, `run-suite` resumes from the last successfully completed batch for
 the same capacity plan. The runner writes a suite-state file beside the suite
@@ -620,7 +625,7 @@ usual scheduler, MySQL, DNS, and target-capacity regressions:
 
 ```sh
 make capacity-jetmon-scout \
-  JETMON_CAPACITY_SCOUT_ARGS="-config=configs/jetmon.fleet.toml -apply"
+  JETMON_CAPACITY_SCOUT_ARGS="-config=configs/jetmon.fleet.toml -description=capacity-scout -apply"
 ```
 
 By default this preset runs:

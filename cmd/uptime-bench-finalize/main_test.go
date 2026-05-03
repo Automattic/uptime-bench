@@ -265,6 +265,27 @@ func TestWriteReportFilesDoesNotRequireTargetStatusAfter(t *testing.T) {
 	}
 }
 
+func TestDefaultReportOutDirUsesCanonicalName(t *testing.T) {
+	start := time.Date(2026, 5, 3, 4, 42, 55, 0, time.UTC)
+	end := start.Add(8*time.Hour + 2*time.Minute)
+	report := benchreport.Report{Meta: benchreport.Meta{
+		Input:             "campaign-run-id",
+		CampaignRuns:      1,
+		EarliestStartedAt: &start,
+		LatestEndedAt:     &end,
+	}}
+	artifacts := &finalizeArtifacts{CampaignRuns: []db.CampaignRunDetail{{
+		ID:         "campaign-run-id",
+		CampaignID: "V1/V2 Inclusive Overnight",
+	}}}
+
+	got := defaultReportOutDir("campaign-run-id", report, artifacts)
+	want := filepath.Join("reports", "20260503T044255Z-8h02m-v1-v2-inclusive-overnight")
+	if got != want {
+		t.Fatalf("defaultReportOutDir = %q, want %q", got, want)
+	}
+}
+
 func TestEscapeTSVField(t *testing.T) {
 	got := escapeTSVField("a\tb\nc\rd\\e")
 	if got != `a\tb\nc\rd\\e` {

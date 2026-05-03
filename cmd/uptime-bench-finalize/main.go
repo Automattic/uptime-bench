@@ -20,13 +20,14 @@ import (
 	"github.com/Automattic/uptime-bench/internal/db"
 	"github.com/Automattic/uptime-bench/internal/measurement"
 	"github.com/Automattic/uptime-bench/internal/report"
+	"github.com/Automattic/uptime-bench/internal/reportdir"
 )
 
 const defaultCapacityInstances = "jetmon-v1.example.com,jetmon-v2.example.com"
 
 func main() {
 	campaign := flag.String("campaign", "", "campaign run ID or campaign config ID to finalize")
-	outDir := flag.String("out-dir", "", "output directory (default reports/<campaign>)")
+	outDir := flag.String("out-dir", "", "output directory (default reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>)")
 	dsnFlag := flag.String("dsn", "", "MySQL DSN (overrides DB_DSN env var)")
 	derive := flag.Bool("derive", true, "recompute derived metrics before writing reports")
 	capacity := flag.Bool("capacity", false, "collect Prometheus capacity metrics for the finalized campaign window and write capacity.md/capacity.json")
@@ -39,10 +40,6 @@ func main() {
 	if *campaign == "" {
 		log.Fatal("finalize: -campaign is required")
 	}
-	if *outDir == "" {
-		*outDir = filepath.Join("reports", sanitizePathComponent(*campaign))
-	}
-
 	dsn := *dsnFlag
 	if dsn == "" {
 		dsn = os.Getenv("DB_DSN")
@@ -81,6 +78,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("finalize: artifacts: %v", err)
 	}
+	if *outDir == "" {
+		*outDir = defaultReportOutDir(*campaign, out, artifacts)
+	}
 
 	var capacityReport *capacitybench.Report
 	if *capacity {
@@ -103,6 +103,27 @@ func main() {
 		log.Fatalf("finalize: write: %v", err)
 	}
 	log.Printf("finalize: wrote %s", *outDir)
+}
+
+func defaultReportOutDir(input string, r report.Report, artifacts *finalizeArtifacts) string {
+	start := time.Time{}
+	duration := time.Duration(0)
+	if r.Meta.EarliestStartedAt != nil {
+		start = r.Meta.EarliestStartedAt.UTC()
+	}
+	if r.Meta.EarliestStartedAt != nil && r.Meta.LatestEndedAt != nil && r.Meta.LatestEndedAt.After(*r.Meta.EarliestStartedAt) {
+		duration = r.Meta.LatestEndedAt.Sub(*r.Meta.EarliestStartedAt)
+	}
+	return filepath.Join("reports", reportdir.Name(start, duration, defaultReportDescription(input, artifacts)))
+}
+
+func defaultReportDescription(input string, artifacts *finalizeArtifacts) string {
+	if artifacts != nil {
+		if ids := campaignIDs(artifacts.CampaignRuns); len(ids) > 0 {
+			return strings.Join(ids, "-")
+		}
+	}
+	return input
 }
 
 type capacityOptions struct {
