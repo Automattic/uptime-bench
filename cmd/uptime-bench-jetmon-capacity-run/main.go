@@ -16,6 +16,10 @@ import (
 )
 
 func main() {
+	os.Exit(runMain())
+}
+
+func runMain() int {
 	configPath := flag.String("config", "configs/capacity/jetmon.example.toml", "Jetmon capacity TOML config")
 	mode := flag.String("mode", "plan", "mode: plan, seed, activate, deactivate, verify, run-batch, or run-suite")
 	servicesFlag := flag.String("services", "all", "comma-separated services: all, jetmon-v1, jetmon-v2")
@@ -37,7 +41,8 @@ func main() {
 
 	parsedBatchSizes, err := parseBatchSizes(*batchSizes)
 	if err != nil {
-		log.Fatalf("capacity-run: -batch-sizes: %v", err)
+		log.Printf("capacity-run: -batch-sizes: %v", err)
+		return 1
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -47,7 +52,8 @@ func main() {
 	if *apply {
 		lock, err = activeguard.Acquire(*activeRunLock, "uptime-bench-jetmon-capacity-run "+strings.ToLower(strings.TrimSpace(*mode)), *allowActiveRun)
 		if err != nil {
-			log.Fatalf("capacity-run: refusing -apply while another run appears active: %v (rerun with -allow-active-run only if this is intentional)", err)
+			log.Printf("capacity-run: refusing -apply while another run appears active: %v (rerun with -allow-active-run only if this is intentional)", err)
+			return 1
 		}
 		defer func() {
 			if err := lock.Release(); err != nil {
@@ -74,7 +80,8 @@ func main() {
 		PrometheusURL:    *promURL,
 	})
 	if err != nil {
-		log.Fatalf("capacity-run: %v", err)
+		log.Printf("capacity-run: %v", err)
+		return 1
 	}
 	fmt.Printf("capacity-run: wrote artifacts to %s\n", manifest.OutDir)
 	if !*apply {
@@ -83,6 +90,7 @@ func main() {
 	if manifest.StopRecommended {
 		fmt.Printf("capacity-run: stop recommended: %s\n", manifest.StopReason)
 	}
+	return 0
 }
 
 func splitCSV(raw string) []string {

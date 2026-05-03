@@ -289,6 +289,97 @@ func TestPreflightServiceTargetsChecksEveryConfiguredSource(t *testing.T) {
 	}
 }
 
+func TestPreflightServiceTargetsRetriesTransientURLCheck(t *testing.T) {
+	exec := &fakeSQLExecutor{activeURLSampleRows: 1}
+	checker := &sequenceURLChecker{
+		responses: []TargetURLCheck{
+			{Source: "runner", Error: "dns: temporary failure"},
+			{Source: "runner", DNSOK: true, HTTPOK: true, HTTPStatus: 200},
+		},
+	}
+	cfg := RunConfig{
+		TargetPreflight: TargetPreflightConfig{
+			CheckSources:   []string{"runner"},
+			ExpectedStatus: 200,
+		},
+	}
+	service := ServiceLifecycle{
+		ID:     "jetmon-v1",
+		DSN:    "v1-dsn",
+		HasDSN: true,
+		Config: Config{
+			Schema:               SchemaV1,
+			BlogIDStart:          8000000000000000,
+			Count:                100,
+			BucketMin:            0,
+			BucketMax:            9,
+			URLPattern:           "http://site-%07d.load.example.test/",
+			URLNumberStart:       1,
+			CheckIntervalMinutes: 1,
+		},
+	}
+
+	preflight, err := (Runner{
+		Executor:   exec,
+		URLChecker: checker,
+		Sleeper:    noSleep{},
+	}).preflightServiceTargets(context.Background(), service, cfg, 1, time.Second)
+	if err != nil {
+		t.Fatalf("preflightServiceTargets: %v", err)
+	}
+	if checker.calls != 2 {
+		t.Fatalf("checker calls = %d, want 2", checker.calls)
+	}
+	if got := preflight.Samples[0].Checks[0].Attempts; got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+}
+
+func TestPreflightServiceTargetsFailsAfterURLCheckRetries(t *testing.T) {
+	exec := &fakeSQLExecutor{activeURLSampleRows: 1}
+	checker := &sequenceURLChecker{
+		responses: []TargetURLCheck{
+			{Source: "runner", Error: "dns: temporary failure"},
+		},
+	}
+	cfg := RunConfig{
+		TargetPreflight: TargetPreflightConfig{
+			CheckSources:   []string{"runner"},
+			ExpectedStatus: 200,
+		},
+	}
+	service := ServiceLifecycle{
+		ID:     "jetmon-v1",
+		DSN:    "v1-dsn",
+		HasDSN: true,
+		Config: Config{
+			Schema:               SchemaV1,
+			BlogIDStart:          8000000000000000,
+			Count:                100,
+			BucketMin:            0,
+			BucketMax:            9,
+			URLPattern:           "http://site-%07d.load.example.test/",
+			URLNumberStart:       1,
+			CheckIntervalMinutes: 1,
+		},
+	}
+
+	preflight, err := (Runner{
+		Executor:   exec,
+		URLChecker: checker,
+		Sleeper:    noSleep{},
+	}).preflightServiceTargets(context.Background(), service, cfg, 1, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "after 3 attempts") {
+		t.Fatalf("preflightServiceTargets error = %v, want retry exhaustion", err)
+	}
+	if checker.calls != 3 {
+		t.Fatalf("checker calls = %d, want 3", checker.calls)
+	}
+	if got := preflight.Samples[0].Checks[0].Attempts; got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+}
+
 func TestDefaultTargetURLCheckerRejectsUnsupportedSourceWithoutNetwork(t *testing.T) {
 	check := defaultTargetURLChecker{}.CheckURL(context.Background(), "jetmon-service-host-1", "http://example.test/", time.Second, 200)
 	if check.Source != "jetmon-service-host-1" {
@@ -983,6 +1074,23 @@ func (c *recordingURLChecker) CheckURL(ctx context.Context, source string, rawUR
 		HTTPOK:     true,
 		HTTPStatus: expectedStatus,
 	}
+}
+
+type sequenceURLChecker struct {
+	responses []TargetURLCheck
+	calls     int
+}
+
+func (c *sequenceURLChecker) CheckURL(context.Context, string, string, time.Duration, int) TargetURLCheck {
+	c.calls++
+	if len(c.responses) == 0 {
+		return TargetURLCheck{Source: "runner", DNSOK: true, HTTPOK: true, HTTPStatus: 200}
+	}
+	index := c.calls - 1
+	if index >= len(c.responses) {
+		index = len(c.responses) - 1
+	}
+	return c.responses[index]
 }
 
 func (e *fakeSQLExecutor) ExecuteSQL(ctx context.Context, dsn string, sqlText string) (SQLExecutionResult, error) {

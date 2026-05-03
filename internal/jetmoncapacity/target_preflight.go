@@ -57,6 +57,7 @@ type TargetURLCheck struct {
 	Addresses  []string `json:"addresses,omitempty"`
 	HTTPOK     bool     `json:"http_ok"`
 	HTTPStatus int      `json:"http_status,omitempty"`
+	Attempts   int      `json:"attempts,omitempty"`
 	Error      string   `json:"error,omitempty"`
 }
 
@@ -249,6 +250,13 @@ func expectedStatusText(expected int) string {
 	return strconv.Itoa(expected)
 }
 
+const targetURLCheckAttempts = 3
+
+var targetURLCheckRetryDelays = []time.Duration{
+	250 * time.Millisecond,
+	750 * time.Millisecond,
+}
+
 func (r Runner) preflightActivatedTargets(ctx context.Context, services []ServiceLifecycle, cfg RunConfig, activeCount int, m *RunManifest) error {
 	timeout, err := cfg.TargetPreflightTimeout()
 	if err != nil {
@@ -304,7 +312,7 @@ func (r Runner) preflightServiceTargets(ctx context.Context, service ServiceLife
 		}
 		if !cfg.TargetPreflight.SkipHTTP {
 			for _, source := range cfg.TargetPreflight.CheckSources {
-				check := r.URLChecker.CheckURL(ctx, source, samples[i].URL, timeout, cfg.TargetPreflight.ExpectedStatus)
+				check := r.checkTargetURLWithRetry(ctx, source, samples[i].URL, timeout, cfg.TargetPreflight.ExpectedStatus)
 				samples[i].Checks = append(samples[i].Checks, check)
 				if !check.DNSOK || !check.HTTPOK {
 					err = fmt.Errorf("activated URL %s failed %s DNS/HTTP check: %s", samples[i].URL, check.Source, check.Error)
@@ -321,6 +329,64 @@ func (r Runner) preflightServiceTargets(ctx context.Context, service ServiceLife
 	preflight.Samples = samples
 	preflight.SampleCount = len(samples)
 	return preflight, nil
+}
+
+func (r Runner) checkTargetURLWithRetry(ctx context.Context, source string, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck {
+	if r.URLChecker == nil {
+		r.URLChecker = defaultTargetURLChecker{}
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "runner"
+	}
+	var last TargetURLCheck
+	for attempt := 1; attempt <= targetURLCheckAttempts; attempt++ {
+		last = r.URLChecker.CheckURL(ctx, source, rawURL, timeout, expectedStatus)
+		if strings.TrimSpace(last.Source) == "" {
+			last.Source = source
+		}
+		last.Attempts = attempt
+		if last.DNSOK && last.HTTPOK {
+			return last
+		}
+		if attempt == targetURLCheckAttempts {
+			break
+		}
+		delay := targetURLCheckRetryDelay(attempt)
+		if delay <= 0 || r.Sleeper == nil {
+			continue
+		}
+		if err := r.Sleeper.Sleep(ctx, delay); err != nil {
+			last.Error = appendTargetCheckError(last.Error, fmt.Sprintf("retry wait interrupted after %d/%d attempts: %v", attempt, targetURLCheckAttempts, err))
+			return last
+		}
+	}
+	if strings.TrimSpace(last.Error) == "" {
+		last.Error = "check did not pass"
+	}
+	last.Error = appendTargetCheckError(last.Error, fmt.Sprintf("after %d attempts", targetURLCheckAttempts))
+	last.Attempts = targetURLCheckAttempts
+	return last
+}
+
+func targetURLCheckRetryDelay(attempt int) time.Duration {
+	index := attempt - 1
+	if index < 0 || index >= len(targetURLCheckRetryDelays) {
+		return 0
+	}
+	return targetURLCheckRetryDelays[index]
+}
+
+func appendTargetCheckError(base, extra string) string {
+	base = strings.TrimSpace(base)
+	extra = strings.TrimSpace(extra)
+	if base == "" {
+		return extra
+	}
+	if extra == "" {
+		return base
+	}
+	return base + " (" + extra + ")"
 }
 
 func targetSamplesFromResult(cfg Config, result SQLExecutionResult, activeCount int) ([]TargetURLSample, error) {
