@@ -104,6 +104,9 @@ func TestClassifyError(t *testing.T) {
 		"Get \"http://127.0.0.1/\": context deadline exceeded":                             "request_timeout",
 		"Get \"http://127.0.0.1/\": dial tcp 127.0.0.1:18080: connect: connection refused": "connect_refused",
 		"Get \"http://127.0.0.1/\": read: connection reset by peer":                        "connection_reset",
+		"Get \"https://127.0.0.1/\": tls: protocol version not supported":                  "tls_handshake",
+		"Get \"https://127.0.0.1/\": http: server gave HTTP response to HTTPS client":      "tls_handshake",
+		"Get \"https://127.0.0.1/\": x509: certificate has expired or is not yet valid":    "tls_certificate",
 		"EOF": "eof",
 	}
 	for input, want := range tests {

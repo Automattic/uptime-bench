@@ -9,10 +9,11 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 4. [Live maintenance-window validation](#live-maintenance-window-validation)
 5. [Report-driven provider reliability](#report-driven-provider-reliability)
 6. [Provider-state preflight cleanup](#provider-state-preflight-cleanup)
-7. [Campaign hardening dry run](#campaign-hardening-dry-run)
-8. [Provider feature coverage gaps](#provider-feature-coverage-gaps)
-9. [Next-wave adapter expansion](#next-wave-adapter-expansion)
-10. [Jetmon capacity benchmark](#jetmon-capacity-benchmark)
+7. [Active-run operational guardrails](#active-run-operational-guardrails)
+8. [Campaign hardening dry run](#campaign-hardening-dry-run)
+9. [Provider feature coverage gaps](#provider-feature-coverage-gaps)
+10. [Next-wave adapter expansion](#next-wave-adapter-expansion)
+11. [Jetmon capacity benchmark](#jetmon-capacity-benchmark)
 
 **Lower-priority follow-ups:**
 - [Probe IP CIDR refresh tool](#probe-ip-cidr-refresh-tool)
@@ -373,6 +374,20 @@ Acceptance:
 - ✅ Deletion uses the same idempotent deprovision paths as normal teardown where possible.
 - ✅ Ambiguous matches are reported but not deleted automatically.
 - ✅ Cleanup summaries include reason/kind breakdowns so repeated dry-runs can show whether remaining resources are unsupported, ambiguous, stale, or outside scope.
+
+## Active-run operational guardrails
+
+**Status:** Documented as an operator constraint; tooling guardrails are not implemented. During a long campaign or capacity suite, do not run provider cleanup, deploy binaries, sync fleet config, restart target/DNS services, run adapter live smokes, or mutate report directories. Those actions can delete monitors, change target routing, restart the failure surface, or alter provider state while the run is collecting evidence.
+
+This was intentionally skipped during an active overnight test. Safe concurrent work is limited to read-only inspection and local-only code, docs, and unit tests that do not call the live fleet or provider APIs.
+
+Remaining follow-up:
+
+- Add an active-run guard to mutating operator commands (`uptime-bench-cleanup`, deploy helpers, fleet sync helpers, and live smoke wrappers) so they warn or fail closed when a campaign/capacity run appears to be active.
+- Define the active-run signal. Good candidates are an in-progress `campaign_runs` row, a capacity suite state/lock file, or an explicit operator-owned lock path. The signal should be local to the orchestrator and should not require provider API calls.
+- Add a documented override flag for emergency cleanup, with the command printing exactly which running campaign or lock was ignored.
+- After the current active test window completes, run the parked live tasks: provider cleanup dry-run, adapter smoke checks, target/DNS cleanup checks, and any needed fleet config sync/restart.
+- Keep report finalization separate from provider cleanup so analysis can be regenerated without changing live monitor state.
 
 ## Automated randomized testing campaigns
 

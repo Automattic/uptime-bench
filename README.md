@@ -142,6 +142,7 @@ The local quick start is useful for proving the loop. Real benchmark data comes 
 | [docs/reporting.md](docs/reporting.md) | Required post-run report bundle and report contents |
 | [docs/testing.md](docs/testing.md) | Local end-to-end setup |
 | [docs/operations.md](docs/operations.md) | Deployed fleet provisioning and smoke tests |
+| [docs/post-run-analysis.md](docs/post-run-analysis.md) | Checklist for analyzing completed benchmark artifacts |
 | [docs/roadmap.md](docs/roadmap.md) | Completed work, active priorities, and deferred ideas |
 
 ## Status

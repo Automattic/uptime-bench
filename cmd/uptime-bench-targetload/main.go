@@ -325,6 +325,10 @@ func classifyError(err string) string {
 		}
 	}
 	switch {
+	case strings.Contains(lower, "x509:"), strings.Contains(lower, "certificate"):
+		return "tls_certificate"
+	case strings.Contains(lower, "tls:"), strings.Contains(lower, "handshake failure"), strings.Contains(lower, "protocol version"), strings.Contains(lower, "server gave http response to https client"):
+		return "tls_handshake"
 	case strings.Contains(lower, "deadline exceeded"), strings.Contains(lower, "client.timeout"), strings.Contains(lower, "timeout"):
 		return "request_timeout"
 	case strings.Contains(lower, "connection refused"):
