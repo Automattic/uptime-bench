@@ -192,7 +192,7 @@ capacity-metrics: $(BINARY_CAPACITY)
 
 .PHONY: capacity-capture-run
 capacity-capture-run: $(BINARY_CAPACITY)
-	@test -n "$(CAPACITY_RUN_DIR)" || (echo "set CAPACITY_RUN_DIR=reports/<run-tag>" >&2; exit 1)
+	@test -n "$(CAPACITY_RUN_DIR)" || (echo "set CAPACITY_RUN_DIR=reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>" >&2; exit 1)
 	CAPACITY_BIN=$(BINARY_CAPACITY) \
 	  PROMETHEUS_URL=$(PROMETHEUS_URL) \
 	  CAPACITY_INSTANCES=$(CAPACITY_INSTANCES) \
@@ -209,7 +209,7 @@ JETMON_CAPACITY_RUN_ARGS ?= -config=configs/capacity/jetmon.example.toml -mode=r
 capacity-jetmon-run: $(BINARY_JETMON_CAPACITY_RUN)
 	$(BINARY_JETMON_CAPACITY_RUN) $(JETMON_CAPACITY_RUN_ARGS)
 
-JETMON_CAPACITY_SCOUT_ARGS ?= -config=configs/capacity/jetmon.fleet.example.toml -mode=run-suite -batch-sizes=1000,5000,10000 -duration=10m -cooldown=2m
+JETMON_CAPACITY_SCOUT_ARGS ?= -config=configs/capacity/jetmon.fleet.example.toml -mode=run-suite -batch-sizes=1000,5000,10000 -duration=10m -cooldown=2m -description=capacity-scout
 .PHONY: capacity-jetmon-scout
 capacity-jetmon-scout: $(BINARY_JETMON_CAPACITY_RUN)
 	$(BINARY_JETMON_CAPACITY_RUN) $(JETMON_CAPACITY_SCOUT_ARGS)
@@ -334,14 +334,14 @@ help:
 	@echo "  make preflight-campaign Validate campaign config and print timing estimates"
 	@echo "    [CAMPAIGN_CONFIG=configs/campaign/example.toml] [PREFLIGHT_FORMAT=table|json]"
 	@echo "  make finalize-campaign Derive metrics and write report.md/report.json"
-	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_OUT_DIR=reports/<run-tag>] [FINALIZE_CAPACITY=true]"
+	@echo "    CAMPAIGN=<campaign-run-id-or-config-id> [REPORT_OUT_DIR=reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>] [FINALIZE_CAPACITY=true]"
 	@echo "    [CAPACITY_PROMETHEUS_URL=http://prometheus.example.com:9090] [CAPACITY_INSTANCES=jetmon-v1.example.com,jetmon-v2.example.com]"
 	@echo "  make provider-cleanup Dry-run stale provider resource cleanup"
 	@echo "    [CLEANUP_FLEET=fleet.toml] [CLEANUP_SERVICES=services.toml] [CLEANUP_DRY_RUN=true]"
 	@echo "  make capacity-metrics Summarize Jetmon v1/v2 Prometheus capacity metrics"
 	@echo "    [PROMETHEUS_URL=http://prometheus.example.com:9090] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
-	@echo "  make capacity-capture-run CAPACITY_RUN_DIR=reports/<run-tag>"
-	@echo "    Capture the exact run.meta.tsv window into reports/<run-tag>/capacity/"
+	@echo "  make capacity-capture-run CAPACITY_RUN_DIR=reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>"
+	@echo "    Capture the exact run.meta.tsv window into reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>/capacity/"
 	@echo "  make capacity-jetmon-run"
 	@echo "    Generate or apply guarded Jetmon v1/v2 capacity lifecycle artifacts"
 	@echo "    [JETMON_CAPACITY_RUN_ARGS='-mode=run-batch -active-count=10 -duration=5m [-apply]']"

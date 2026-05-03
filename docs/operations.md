@@ -486,7 +486,7 @@ Scenario TOML files live in the repo's `scenarios/` directory; copy the ones you
 ssh <user>@203.0.113.5
 sudo -u uptime-bench bash -c '
   set -a; . /etc/uptime-bench/harness.env; set +a
-  REPORT_DIR=/var/lib/uptime-bench/reports/manual-http-503-20260503-150000Z
+  REPORT_DIR=/var/lib/uptime-bench/reports/20260503T150000Z-15m-http-503-manual
   mkdir -p "${REPORT_DIR}"
   exec /usr/local/bin/uptime-bench-harness \
     -fleet=/etc/uptime-bench/fleet.toml \

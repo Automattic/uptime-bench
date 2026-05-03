@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/capacitybench"
+	"github.com/Automattic/uptime-bench/internal/reportdir"
 )
 
 // RunOptions describes one capacity runner invocation.
@@ -31,6 +32,7 @@ type RunOptions struct {
 	FullSuite        bool
 	SuiteStatePath   string
 	OutDir           string
+	Description      string
 	Apply            bool
 	ForceReseed      bool
 	PrometheusURL    string
@@ -311,7 +313,7 @@ func (r Runner) Run(ctx context.Context, opts RunOptions) (RunManifest, error) {
 
 	outDir := opts.OutDir
 	if outDir == "" {
-		outDir = filepath.Join("reports", "capacity", fmt.Sprintf("%s-%s", safeName(cfg.ID), r.Clock.Now().UTC().Format("20060102-150405Z")))
+		outDir = filepath.Join("reports", reportdir.Name(r.Clock.Now().UTC(), plannedReportDuration(mode, duration, cooldown, len(batchSizes)), capacityReportDescription(cfg.ID, mode, activeCount, opts.Description)))
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return RunManifest{}, fmt.Errorf("create out dir: %w", err)
@@ -1686,6 +1688,34 @@ func estimateSuiteRuntime(batchCount int, duration, cooldown time.Duration) time
 		total += time.Duration(batchCount-1) * cooldown
 	}
 	return total
+}
+
+func plannedReportDuration(mode string, duration, cooldown time.Duration, batchCount int) time.Duration {
+	switch mode {
+	case "run-batch":
+		return duration
+	case "run-suite":
+		return estimateSuiteRuntime(batchCount, duration, cooldown)
+	default:
+		return 0
+	}
+}
+
+func capacityReportDescription(id, mode string, activeCount int, override string) string {
+	if strings.TrimSpace(override) != "" {
+		return override
+	}
+	description := strings.TrimSpace(id)
+	if description == "" {
+		description = "jetmon-capacity"
+	}
+	if mode != "" && mode != "run-suite" {
+		description += "-" + mode
+	}
+	if activeCount > 0 && (mode == "activate" || mode == "run-batch" || mode == "verify") {
+		description += fmt.Sprintf("-%d-sites", activeCount)
+	}
+	return description
 }
 
 func cleanupContext() (context.Context, context.CancelFunc) {

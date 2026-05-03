@@ -26,7 +26,8 @@ func main() {
 	suiteStartCount := flag.Int("suite-start-count", 0, "for run-suite, start at the first configured/overridden batch >= this count")
 	fullSuite := flag.Bool("full-suite", false, "for run-suite, ignore prior suite state and start from the first batch")
 	suiteStatePath := flag.String("suite-state-path", "", "path to persisted run-suite state; default is beside the run output directory")
-	outDir := flag.String("out-dir", "", "artifact directory; default reports/capacity/<id>-<timestamp>Z")
+	outDir := flag.String("out-dir", "", "artifact directory; default reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>")
+	description := flag.String("description", "", "short description slug for the default report directory")
 	apply := flag.Bool("apply", false, "apply SQL to live DBs; without this flag the command only writes artifacts")
 	forceReseed := flag.Bool("force-reseed", false, "allow seed to delete and recreate existing benchmark-owned generated rows")
 	promURL := flag.String("prometheus-url", "", "Prometheus base URL override")
@@ -67,6 +68,7 @@ func main() {
 		FullSuite:        *fullSuite,
 		SuiteStatePath:   *suiteStatePath,
 		OutDir:           *outDir,
+		Description:      *description,
 		Apply:            *apply,
 		ForceReseed:      *forceReseed,
 		PrometheusURL:    *promURL,

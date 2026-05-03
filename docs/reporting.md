@@ -11,17 +11,28 @@ For the follow-on interpretation checklist, see
 Generated reports belong under the canonical reports tree:
 
 ```text
-/home/gaarai/code/uptime-bench/reports/<run-tag>/
+/home/gaarai/code/uptime-bench/reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>/
 ```
 
-Use a stable, sortable run tag that includes the campaign purpose and UTC start
-time, for example:
+Use a stable, sortable directory name with the UTC start timestamp first,
+followed by a compact planned or actual duration and a short human description:
 
 ```text
-v2-regression-20260502-063755Z
-overnight-v1-inclusive-20260503-044255Z
-capacity-scout-20260503-151102Z
+20260502T063755Z-7h-v2-regression
+20260503T044255Z-8h-v1-v2-overnight
+20260503T151102Z-34m-capacity-scout
 ```
+
+The timestamp format is `YYYYMMDDTHHMMSSZ`. Durations use compact forms such
+as `15m`, `1h30m`, or `8h`; exact start/end times remain in `run.meta.tsv` and
+`manifest.json`. Keep the description short and path-safe. Put full campaign
+IDs, monitor lists, notes, caveats, and analysis in the report files rather
+than the directory name.
+
+When `uptime-bench-finalize` writes a report without `-out-dir`, it uses the
+campaign's earliest start, actual completed duration, and campaign config ID.
+Jetmon capacity runs use the command start time, planned window length or suite
+runtime estimate, and either `-description` or the capacity config ID.
 
 When working from a sibling worktree, still write or move generated reports to
 `/home/gaarai/code/uptime-bench/reports`. Do not leave final report bundles in
@@ -35,7 +46,7 @@ directly. Run launchers/controllers are still responsible for copying
 process-local artifacts such as logs, generated ad-hoc scenario files, and
 post-run target cleanup snapshots. The checked-in harness can write those
 controller-owned artifacts when invoked with
-`-out-dir=/home/gaarai/code/uptime-bench/reports/<run-tag>`.
+`-out-dir=/home/gaarai/code/uptime-bench/reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>`.
 
 | Path | Purpose |
 |---|---|
@@ -200,6 +211,6 @@ Before declaring a run complete:
 5. Confirm capacity artifacts exist for Jetmon/local-service runs and use the
    actual run window.
 6. Confirm all generated artifacts are under
-   `/home/gaarai/code/uptime-bench/reports/<run-tag>/`.
+   `/home/gaarai/code/uptime-bench/reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>/`.
 7. Confirm no secrets are present in copied configs, logs, or redacted service
    snapshots.

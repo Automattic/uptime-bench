@@ -2,7 +2,7 @@
 # Capture Jetmon v1/v2 Prometheus capacity metrics for a finished report run.
 #
 # Usage:
-#   deploy/capture-capacity-window.sh reports/<run-tag> [output-dir]
+#   deploy/capture-capacity-window.sh reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION> [output-dir]
 #
 # The script reads started_at_utc and finished_at_utc from run.meta.tsv and
 # writes JSON and table summaries under <run-dir>/capacity by default.

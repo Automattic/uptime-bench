@@ -299,6 +299,31 @@ func TestDefaultTargetURLCheckerRejectsUnsupportedSourceWithoutNetwork(t *testin
 	}
 }
 
+func TestCapacityReportDescription(t *testing.T) {
+	got := capacityReportDescription("Jetmon V1/V2 Capacity", "run-batch", 1000, "")
+	want := "Jetmon V1/V2 Capacity-run-batch-1000-sites"
+	if got != want {
+		t.Fatalf("capacityReportDescription = %q, want %q", got, want)
+	}
+	if got := capacityReportDescription("ignored", "run-suite", 0, "Capacity Scout"); got != "Capacity Scout" {
+		t.Fatalf("override description = %q, want Capacity Scout", got)
+	}
+}
+
+func TestPlannedReportDuration(t *testing.T) {
+	duration := 10 * time.Minute
+	cooldown := 2 * time.Minute
+	if got := plannedReportDuration("run-batch", duration, cooldown, 3); got != duration {
+		t.Fatalf("run-batch duration = %s, want %s", got, duration)
+	}
+	if got := plannedReportDuration("run-suite", duration, cooldown, 3); got != 34*time.Minute {
+		t.Fatalf("run-suite duration = %s, want 34m", got)
+	}
+	if got := plannedReportDuration("plan", duration, cooldown, 3); got != 0 {
+		t.Fatalf("plan duration = %s, want 0", got)
+	}
+}
+
 func TestServiceHealthIncludesFreshnessDetails(t *testing.T) {
 	service := ServiceLifecycle{ID: "jetmon-v2", Config: Config{Schema: SchemaV2}}
 	result := SQLExecutionResult{
