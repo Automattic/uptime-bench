@@ -50,7 +50,7 @@ Deferred features that are intentionally not yet implemented. Items below the ac
 ## Monitoring adapters
 
 - **Adapter contract and capability gating** — adapters declare check frequency, keyword, maintenance, cooldown, and agent support; incompatible scenario/service pairs become `capability_mismatch` rows instead of misleading false negatives.
-- **Implemented adapters** — Jetmon v1, Jetmon v2, UptimeRobot, Pingdom, Datadog Synthetics, and Better Uptime all have concrete adapters.
+- **Implemented adapters** — Jetmon v1, Jetmon v2, UptimeRobot, Pingdom, Datadog Synthetics, Better Uptime, Gatus, and Uptime Kuma all have concrete adapters.
 - **Live API smoke coverage** — the public probe-based adapters, Jetmon v1 bridge, and Jetmon v2 API have build-tagged live smoke tests or live-test history captured in docs.
 - **Per-adapter normalization** — each adapter owns raw classification mapping into uptime-bench's common vocabulary.
 - **Adapter live-run hardening** — Jetmon v1 retrieval now treats its initial `SITE_DOWN` transition as an outage report, and UptimeRobot provisioning can clean up duplicate harness-owned monitors or adopt the single matching monitor after a timed-out create call.
@@ -279,12 +279,12 @@ Acceptance:
 
 ## Next-wave adapter expansion
 
-**Status:** Planned after provider-state preflight cleanup and the first campaign hardening dry run. The next adapter wave should broaden comparison coverage without making the harness harder to trust.
+**Status:** In progress. Gatus and Uptime Kuma have deployed self-hosted instances on single-service hosts plus narrow uptime-bench bridges. The adapters start with HTTP monitor coverage and should stay out of scored campaign runs until harness-driven live smoke covers provision, retrieve, deprovision, cleanup, and at least one injected failure.
 
 Recommended order:
 
-1. **Uptime Kuma** — first self-hosted UI-driven comparison point. Deploy on the same class of single-service host as `jetmon-v1`, pin the Uptime Kuma version in report metadata, and wrap its internal Socket.io API behind a stable uptime-bench adapter or small bridge if direct automation proves brittle. Start with HTTP status checks, then add keyword, HEAD/GET, TCP, DNS, TLS/cert, and maintenance support as validated.
-2. **Gatus** — second self-hosted comparison point. Its config-as-code model, hot reload, explicit concurrency, HTTP/TCP/ICMP/DNS support, condition language, and read APIs make it a good fit for uptime-bench. Start by managing a generated config fragment and reading endpoint status/history from the public API.
+1. **Uptime Kuma** — first self-hosted UI-driven comparison point. Deployed with pinned `louislam/uptime-kuma:2.3.0` and an uptime-bench bridge because direct automation uses Uptime Kuma's internal Socket.IO surface. Initial adapter coverage is HTTP status and present-keyword checks; inverted keyword, maintenance, TCP, DNS, and TLS/cert support remain deferred until validated.
+2. **Gatus** — second self-hosted comparison point. Deployed with pinned `ghcr.io/twin/gatus:v5.35.0` and an uptime-bench bridge that manages a generated config fragment while reading endpoint status/history from the public API. Initial adapter coverage is HTTP status, present/inverted keyword checks, response-time threshold, and custom request headers.
 3. **updown.io** — first additional third-party service. Its API is simple, supports create/update/delete checks, exposes downtimes, publishes node/IP APIs, supports HTTP/TCP/ICMP-like coverage, string matching, and configurable `GET/HEAD` behavior.
 4. **StatusCake** — useful market comparison with uptime APIs and period/history endpoints.
 5. **Checkly** — high-capability API checks with method/assertion support; valuable after the simpler API-shaped adapters prove out the expansion path.

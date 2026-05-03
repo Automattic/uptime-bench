@@ -223,3 +223,53 @@ notes                     = "Provider API may not expose quota; set this from th
 us-east  = ["23.88.96.0/24"]
 eu-west  = ["65.108.79.0/24"]
 ap-sea   = ["43.134.8.0/24"]
+
+# -----------------------------------------------------------------------------
+# Gatus
+# Required: url (uptime-bench Gatus bridge endpoint, not the Gatus UI/API port)
+# Auth keys:
+#   token       — bearer token configured in the bridge BRIDGE_TOKEN
+#   http_method — optional, "GET" or "HEAD"; keyword checks require GET
+# Note: Self-hosted single-origin monitor. No fixed probe IP ranges.
+# -----------------------------------------------------------------------------
+[[services]]
+id      = "gatus"
+type    = "gatus"
+url     = "http://localhost:8081"
+enabled = false
+auth    = { token = "replace-with-your-token", http_method = "GET" }
+
+[services.capacity]
+unlimited                 = true
+max_active_monitors       = 0
+reserved_monitors         = 0
+max_parallel_runs         = 0
+api_rate_limit_per_minute = 0
+billing_model             = "self_hosted"
+source                    = "Self-hosted Gatus instance via uptime-bench bridge"
+notes                     = "Single-origin checks. Practical cap is host/operator policy rather than a SaaS monitor quota."
+
+# -----------------------------------------------------------------------------
+# Uptime Kuma
+# Required: url (uptime-bench Uptime Kuma bridge endpoint, not the Uptime Kuma UI port)
+# Auth keys:
+#   token       — bearer token configured in the bridge BRIDGE_TOKEN
+#   http_method — optional, "GET" or "HEAD"; keyword checks require GET
+# Note: Self-hosted single-origin monitor. No fixed probe IP ranges.
+# -----------------------------------------------------------------------------
+[[services]]
+id      = "uptime-kuma"
+type    = "uptime-kuma"
+url     = "http://localhost:3002"
+enabled = false
+auth    = { token = "replace-with-your-token", http_method = "GET" }
+
+[services.capacity]
+unlimited                 = true
+max_active_monitors       = 0
+reserved_monitors         = 0
+max_parallel_runs         = 0
+api_rate_limit_per_minute = 0
+billing_model             = "self_hosted"
+source                    = "Self-hosted Uptime Kuma instance via uptime-bench bridge"
+notes                     = "Single-origin checks. Uptime Kuma bridge pins the upstream version because direct automation uses an internal Socket.IO surface."

@@ -2,7 +2,7 @@
 
 This guide covers everything needed to stand up a working uptime-bench fleet: server requirements, domain configuration, provisioning, credential setup, and starting the service.
 
-> **Implementation status:** The target binary, DNS binary, harness, and six adapters — Jetmon 1 (`jetmon-v1`), Jetmon 2 (`jetmon-v2`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), and Datadog Synthetics (`datadog-synthetics`) — are implemented. Jetmon 2 and all four probe-based adapters have been exercised against their APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`.
+> **Implementation status:** The target binary, DNS binary, harness, and adapters for Jetmon 1 (`jetmon-v1`), Jetmon 2 (`jetmon-v2`), UptimeRobot (`uptimerobot`), Pingdom (`pingdom`), Better Uptime (`better-uptime`), Datadog Synthetics (`datadog-synthetics`), Gatus (`gatus`), and Uptime Kuma (`uptime-kuma`) are implemented. Jetmon 2 and all four public probe-based adapters have been exercised against their APIs via build-tagged smoke tests under `internal/adapter/<name>/live_test.go`; Gatus and Uptime Kuma use deployed self-hosted bridge smoke checks.
 
 ---
 
@@ -374,7 +374,7 @@ sudoedit /etc/uptime-bench/services.toml
 
 Edit each `[[services]]` block: set `enabled = true` for the services you want to evaluate, and fill in the `url` and `auth` fields. The `id` field in each block must match the IDs used in scenario `monitors` lists.
 
-`jetmon-v1`, `jetmon-v2`, `uptimerobot`, `pingdom`, `better-uptime`, and `datadog-synthetics` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate.
+`jetmon-v1`, `jetmon-v2`, `uptimerobot`, `pingdom`, `better-uptime`, `datadog-synthetics`, `gatus`, and `uptime-kuma` have implemented adapters today — set those `enabled = true` (with credentials filled in) to participate.
 
 ### Pre-seeding monitors for `jetmon-v1`
 

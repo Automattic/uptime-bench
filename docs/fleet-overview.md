@@ -22,7 +22,7 @@ flowchart LR
   end
 
   subgraph External["Outside the fleet"]
-    VendorAPI["Monitoring service APIs<br/>Jetmon, Pingdom, UptimeRobot,<br/>Datadog, Better Uptime"]
+    VendorAPI["Monitoring service APIs<br/>Jetmon, Pingdom, UptimeRobot,<br/>Datadog, Better Uptime,<br/>Gatus, Uptime Kuma"]
     Probes["Vendor probe workers"]
     Registrar["Domain registrar<br/>NS + glue records"]
   end

@@ -14,7 +14,7 @@ import (
 // a new adapter should require an entry here, and removing one should
 // fail the test loudly rather than silently change behavior.
 func TestRegistry_KnownTypes(t *testing.T) {
-	want := []string{"jetmon-v1", "jetmon-v2", "uptimerobot", "pingdom", "better-uptime", "datadog-synthetics"}
+	want := []string{"jetmon-v1", "jetmon-v2", "uptimerobot", "pingdom", "better-uptime", "datadog-synthetics", "gatus", "uptime-kuma"}
 	for _, typ := range want {
 		if _, ok := adapterfactory.Registry[typ]; !ok {
 			t.Errorf("registry missing factory for %q", typ)
