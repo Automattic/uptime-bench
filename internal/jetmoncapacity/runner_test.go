@@ -525,6 +525,53 @@ func TestRunSuiteDefaultsToLastCompletedBatchState(t *testing.T) {
 	}
 }
 
+func TestRunSuiteDefaultsToLastCleanBatchWhenStateHasProblem(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "suite-state.json")
+	if err := writeSuiteState(statePath, SuiteState{
+		ID:                 "capacity-test",
+		LastCompletedBatch: 20,
+		LastCleanBatch:     10,
+		FirstProblemBatch:  20,
+		LastCompletedAt:    time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC),
+		LastRunDir:         filepath.Join(dir, "previous"),
+		LastBatchDir:       filepath.Join(dir, "previous", "batch-0000020"),
+		StopRecommended:    true,
+		StopReason:         "missed_check_percent exceeded threshold for jetmon-v2",
+	}); err != nil {
+		t.Fatalf("write suite state: %v", err)
+	}
+
+	manifest, err := (Runner{
+		Executor: &fakeSQLExecutor{activeByDSN: map[string]int64{}},
+		Clock:    fixedClock{},
+		Sleeper:  noSleep{},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:       cfgPath,
+		Mode:             "run-suite",
+		OutDir:           filepath.Join(dir, "out"),
+		SuiteStatePath:   statePath,
+		DurationOverride: 2 * time.Minute,
+		Apply:            false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if manifest.SuiteStartSource != "state" {
+		t.Fatalf("SuiteStartSource = %q, want state", manifest.SuiteStartSource)
+	}
+	if manifest.SuiteStartCount != 10 {
+		t.Fatalf("SuiteStartCount = %d, want 10", manifest.SuiteStartCount)
+	}
+	if got := joinInts(manifest.BatchSizes); got != "10,20" {
+		t.Fatalf("BatchSizes = %s, want 10,20", got)
+	}
+	if !containsString(manifest.Notes, "resuming run-suite from last clean batch 10 recorded in "+statePath) {
+		t.Fatalf("manifest notes missing clean resume note: %#v", manifest.Notes)
+	}
+}
+
 func TestRunSuiteFullSuiteIgnoresState(t *testing.T) {
 	cfgPath := writeRunnerConfig(t)
 	dir := t.TempDir()
@@ -642,8 +689,62 @@ func TestRunSuiteApplyWritesSuiteStateAfterSuccessfulBatch(t *testing.T) {
 	if state.LastCompletedBatch != 10 {
 		t.Fatalf("LastCompletedBatch = %d, want 10", state.LastCompletedBatch)
 	}
+	if state.LastCleanBatch != 10 {
+		t.Fatalf("LastCleanBatch = %d, want 10", state.LastCleanBatch)
+	}
+	if state.FirstProblemBatch != 0 {
+		t.Fatalf("FirstProblemBatch = %d, want 0", state.FirstProblemBatch)
+	}
 	if got := joinInts(state.CompletedBatchSequence); got != "10" {
 		t.Fatalf("CompletedBatchSequence = %s, want 10", got)
+	}
+}
+
+func TestRunSuiteApplyStateRecordsProblemBatch(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "suite-state.json")
+
+	manifest, err := (Runner{
+		Executor: &fakeSQLExecutor{
+			staleByDSN:   map[string]int64{"v2-dsn": 2},
+			historyByDSN: map[string]int64{"v2-dsn": 8},
+		},
+		Clock:     fixedClock{},
+		Sleeper:   noSleep{},
+		Collector: fakeCollector{report: scrapeUpReport("jetmon-v1", "jetmon-v2")},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:     cfgPath,
+		Mode:           "run-suite",
+		OutDir:         filepath.Join(dir, "out"),
+		SuiteStatePath: statePath,
+		BatchSizes:     []int{10},
+		Apply:          true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !manifest.StopRecommended {
+		t.Fatalf("StopRecommended = false, want true")
+	}
+	state, err := readSuiteState(statePath)
+	if err != nil {
+		t.Fatalf("read suite state: %v", err)
+	}
+	if state == nil {
+		t.Fatal("suite state was not written")
+	}
+	if state.LastCompletedBatch != 10 {
+		t.Fatalf("LastCompletedBatch = %d, want 10", state.LastCompletedBatch)
+	}
+	if state.LastCleanBatch != 0 {
+		t.Fatalf("LastCleanBatch = %d, want 0", state.LastCleanBatch)
+	}
+	if state.FirstProblemBatch != 10 {
+		t.Fatalf("FirstProblemBatch = %d, want 10", state.FirstProblemBatch)
+	}
+	if !state.StopRecommended || !strings.Contains(state.StopReason, "missed_check_percent") {
+		t.Fatalf("state stop = %t %q, want missed-check stop", state.StopRecommended, state.StopReason)
 	}
 }
 
@@ -1025,6 +1126,15 @@ func capacitySuiteReport(instances ...string) capacitybench.Report {
 func hasArtifact(artifacts []Artifact, action string) bool {
 	for _, artifact := range artifacts {
 		if artifact.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

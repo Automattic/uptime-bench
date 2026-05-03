@@ -48,13 +48,14 @@ func TestBuildSuiteReportTracksCleanAndProblemBatches(t *testing.T) {
 			PrometheusStatus: "pass",
 			CleanupStatus:    "pass",
 			Health: []ServiceHealth{{
-				Service:            "jetmon-v2",
-				Action:             "window-end-verify",
-				Status:             "fail",
-				ActiveSites:        int64Ptr(20),
-				StaleActiveSites:   int64Ptr(4),
-				MissedCheckPercent: float64Ptr(20),
-				Reason:             "missed check threshold exceeded",
+				Service:                "jetmon-v2",
+				Action:                 "window-end-verify",
+				Status:                 "pass",
+				ActiveSites:            int64Ptr(20),
+				StaleActiveSites:       int64Ptr(4),
+				MissedCheckPercent:     float64Ptr(20),
+				RecentChecksPerMinute:  float64Ptr(3),
+				FreshnessWindowMinutes: 5,
 			}},
 			Thresholds: []ThresholdFinding{{
 				Name:   "missed_check_percent",
@@ -83,6 +84,23 @@ func TestBuildSuiteReportTracksCleanAndProblemBatches(t *testing.T) {
 	}
 	if len(report.Batches[1].Health) != 1 || len(report.Batches[1].Thresholds) != 1 {
 		t.Fatalf("problem batch details missing: %+v", report.Batches[1])
+	}
+	if len(report.Batches[1].ThroughputMargins) != 1 {
+		t.Fatalf("throughput margins missing: %+v", report.Batches[1])
+	}
+	margin := report.Batches[1].ThroughputMargins[0]
+	if margin.Status != "fail" || margin.RequiredChecksPerMinute == nil || *margin.RequiredChecksPerMinute != 4 {
+		t.Fatalf("throughput margin = %+v, want fail with required/min 4", margin)
+	}
+	md := formatSuiteReportMarkdown(report)
+	for _, want := range []string{
+		"## Throughput Margin",
+		"| 20 | jetmon-v2 | pass | fail | 20 | 4 | 20.00 | 3.00",
+		"| 20 | jetmon-v2 | fail | 20 | 5 | 4.00 | 3.00 | -1.00 | -25.00 | - |",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, md)
+		}
 	}
 }
 

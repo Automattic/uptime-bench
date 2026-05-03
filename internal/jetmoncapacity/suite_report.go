@@ -59,8 +59,24 @@ type SuiteBatchReport struct {
 	Error             string                        `json:"error,omitempty"`
 	Health            []ServiceHealth               `json:"health,omitempty"`
 	Thresholds        []ThresholdFinding            `json:"thresholds,omitempty"`
+	ThroughputMargins []ThroughputMargin            `json:"throughput_margins,omitempty"`
 	PrometheusSummary []capacitybench.SeriesSummary `json:"prometheus_summary,omitempty"`
 	TargetPreflights  []TargetPreflight             `json:"target_preflights,omitempty"`
+}
+
+// ThroughputMargin is a derived freshness-capacity view for one service in one
+// batch. It compares recent check throughput to the minimum rate needed to keep
+// every active site fresh inside the verifier's freshness window.
+type ThroughputMargin struct {
+	Service                 string   `json:"service"`
+	Status                  string   `json:"status"`
+	ActiveSites             *int64   `json:"active_sites,omitempty"`
+	FreshnessWindowMinutes  int      `json:"freshness_window_minutes,omitempty"`
+	RequiredChecksPerMinute *float64 `json:"required_checks_per_minute,omitempty"`
+	RecentChecksPerMinute   *float64 `json:"recent_checks_per_minute,omitempty"`
+	MarginChecksPerMinute   *float64 `json:"margin_checks_per_minute,omitempty"`
+	MarginPercent           *float64 `json:"margin_percent,omitempty"`
+	Reason                  string   `json:"reason,omitempty"`
 }
 
 func buildSuiteReport(parent RunManifest, children []RunManifest) SuiteReport {
@@ -87,23 +103,24 @@ func buildSuiteReport(parent RunManifest, children []RunManifest) SuiteReport {
 	}
 	for _, child := range children {
 		batch := SuiteBatchReport{
-			ActiveCount:      child.ActiveCount,
-			OutDir:           child.OutDir,
-			Status:           suiteBatchStatus(child),
-			LifecycleStatus:  child.LifecycleStatus,
-			HealthStatus:     child.HealthStatus,
-			PrometheusStatus: child.PrometheusStatus,
-			PrometheusError:  child.PrometheusError,
-			CleanupStatus:    child.CleanupStatus,
-			CleanupError:     child.CleanupError,
-			WindowStart:      child.WindowStart,
-			WindowEnd:        child.WindowEnd,
-			StopRecommended:  child.StopRecommended,
-			StopReason:       child.StopReason,
-			Error:            child.Error,
-			Health:           append([]ServiceHealth(nil), child.Health...),
-			Thresholds:       append([]ThresholdFinding(nil), child.Thresholds...),
-			TargetPreflights: append([]TargetPreflight(nil), child.TargetPreflights...),
+			ActiveCount:       child.ActiveCount,
+			OutDir:            child.OutDir,
+			Status:            suiteBatchStatus(child),
+			LifecycleStatus:   child.LifecycleStatus,
+			HealthStatus:      child.HealthStatus,
+			PrometheusStatus:  child.PrometheusStatus,
+			PrometheusError:   child.PrometheusError,
+			CleanupStatus:     child.CleanupStatus,
+			CleanupError:      child.CleanupError,
+			WindowStart:       child.WindowStart,
+			WindowEnd:         child.WindowEnd,
+			StopRecommended:   child.StopRecommended,
+			StopReason:        child.StopReason,
+			Error:             child.Error,
+			Health:            append([]ServiceHealth(nil), child.Health...),
+			Thresholds:        append([]ThresholdFinding(nil), child.Thresholds...),
+			ThroughputMargins: throughputMarginsFromHealth(child.Health),
+			TargetPreflights:  append([]TargetPreflight(nil), child.TargetPreflights...),
 		}
 		if prom := child.loadPrometheusReport(child.OutDir); prom != nil {
 			batch.PrometheusSummary = append([]capacitybench.SeriesSummary(nil), prom.Summaries...)
@@ -206,6 +223,7 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 	}
 
 	writeSuiteServiceHealthMarkdown(&b, report)
+	writeSuiteThroughputMarginMarkdown(&b, report)
 	writeSuiteTargetPreflightMarkdown(&b, report)
 	writeSuiteThresholdMarkdown(&b, report)
 	writeSuitePrometheusMarkdown(&b, report)
@@ -232,14 +250,15 @@ func writeSuiteServiceHealthMarkdown(b *strings.Builder, report SuiteReport) {
 		return
 	}
 	fmt.Fprint(b, "\n## Service Health\n\n")
-	fmt.Fprintln(b, "| Active | Service | Status | Active Sites | Stale Sites | Missed % | Recent/Min | P95 Age Sec | Oldest Age Sec | Reason |")
-	fmt.Fprintln(b, "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+	fmt.Fprintln(b, "| Active | Service | Verify | Missed Check Threshold | Active Sites | Stale Sites | Missed % | Recent/Min | P95 Age Sec | Oldest Age Sec | Reason |")
+	fmt.Fprintln(b, "| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
 	for _, row := range rows {
 		h := row.Health
-		fmt.Fprintf(b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+		fmt.Fprintf(b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			row.Batch,
 			escapeSuiteCell(h.Service),
 			escapeSuiteCell(h.Status),
+			escapeSuiteCell(serviceMissedCheckThresholdStatus(reportBatch(report, row.Batch), h.Service)),
 			formatIntPtr(h.ActiveSites),
 			formatIntPtr(h.StaleActiveSites),
 			formatFloatPtr(h.MissedCheckPercent),
@@ -247,6 +266,42 @@ func writeSuiteServiceHealthMarkdown(b *strings.Builder, report SuiteReport) {
 			formatFloatPtr(h.P95CheckAgeSec),
 			formatFloatPtr(h.OldestCheckAgeSec),
 			escapeSuiteCell(h.Reason),
+		)
+	}
+}
+
+func writeSuiteThroughputMarginMarkdown(b *strings.Builder, report SuiteReport) {
+	var rows []struct {
+		Batch  int
+		Margin ThroughputMargin
+	}
+	for _, batch := range report.Batches {
+		for _, margin := range batch.ThroughputMargins {
+			rows = append(rows, struct {
+				Batch  int
+				Margin ThroughputMargin
+			}{Batch: batch.ActiveCount, Margin: margin})
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprint(b, "\n## Throughput Margin\n\n")
+	fmt.Fprintln(b, "| Active | Service | Status | Active Sites | Freshness Window Min | Required/Min | Recent/Min | Margin/Min | Margin % | Reason |")
+	fmt.Fprintln(b, "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+	for _, row := range rows {
+		m := row.Margin
+		fmt.Fprintf(b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			row.Batch,
+			escapeSuiteCell(m.Service),
+			escapeSuiteCell(m.Status),
+			formatIntPtr(m.ActiveSites),
+			formatMaybePositiveInt(m.FreshnessWindowMinutes),
+			formatFloatPtr(m.RequiredChecksPerMinute),
+			formatFloatPtr(m.RecentChecksPerMinute),
+			formatFloatPtr(m.MarginChecksPerMinute),
+			formatFloatPtr(m.MarginPercent),
+			escapeSuiteCell(m.Reason),
 		)
 	}
 }
@@ -285,6 +340,64 @@ func writeSuiteTargetPreflightMarkdown(b *strings.Builder, report SuiteReport) {
 			escapeSuiteCell(p.Error),
 		)
 	}
+}
+
+func reportBatch(report SuiteReport, activeCount int) SuiteBatchReport {
+	for _, batch := range report.Batches {
+		if batch.ActiveCount == activeCount {
+			return batch
+		}
+	}
+	return SuiteBatchReport{}
+}
+
+func serviceMissedCheckThresholdStatus(batch SuiteBatchReport, service string) string {
+	for _, finding := range batch.Thresholds {
+		if finding.Name == "missed_check_percent" && finding.Series == service {
+			return finding.Status
+		}
+	}
+	return "-"
+}
+
+func throughputMarginsFromHealth(health []ServiceHealth) []ThroughputMargin {
+	var margins []ThroughputMargin
+	for _, h := range health {
+		if h.Action != "window-end-verify" {
+			continue
+		}
+		margin := ThroughputMargin{
+			Service:     h.Service,
+			Status:      "not_measured",
+			ActiveSites: h.ActiveSites,
+			Reason:      h.Reason,
+		}
+		if h.ActiveSites == nil || h.FreshnessWindowMinutes <= 0 || h.RecentChecksPerMinute == nil {
+			if margin.Reason == "" {
+				margin.Reason = "freshness throughput was not measured"
+			}
+			margins = append(margins, margin)
+			continue
+		}
+		margin.FreshnessWindowMinutes = h.FreshnessWindowMinutes
+		required := float64(*h.ActiveSites) / float64(h.FreshnessWindowMinutes)
+		recent := *h.RecentChecksPerMinute
+		rawMargin := recent - required
+		marginPct := 0.0
+		if required > 0 {
+			marginPct = rawMargin / required * 100
+		}
+		margin.RequiredChecksPerMinute = &required
+		margin.RecentChecksPerMinute = &recent
+		margin.MarginChecksPerMinute = &rawMargin
+		margin.MarginPercent = &marginPct
+		margin.Status = "pass"
+		if rawMargin < 0 {
+			margin.Status = "fail"
+		}
+		margins = append(margins, margin)
+	}
+	return margins
 }
 
 func writeSuiteThresholdMarkdown(b *strings.Builder, report SuiteReport) {
@@ -426,6 +539,13 @@ func formatWindow(start, end *time.Time) string {
 func formatMaybeInt(value int) string {
 	if value == 0 {
 		return "none"
+	}
+	return strconv.Itoa(value)
+}
+
+func formatMaybePositiveInt(value int) string {
+	if value <= 0 {
+		return "-"
 	}
 	return strconv.Itoa(value)
 }

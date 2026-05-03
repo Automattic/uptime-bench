@@ -589,12 +589,14 @@ When `-out-dir` is omitted, the capacity runner creates a report directory
 under `reports/` using `YYYYMMDDTHHMMSSZ-DURATION-DESCRIPTION`. Use
 `-description` to keep the slug short and recognizable.
 
-By default, `run-suite` resumes from the last successfully completed batch for
-the same capacity plan. The runner writes a suite-state file beside the suite
-output directory after each successful live batch, then the next `run-suite`
-starts at that recorded batch size instead of repeating every lower control
-batch. This keeps repeated tuning runs from spending another full window on
-already-clean low-load batches while still rechecking the last known load point.
+By default, `run-suite` resumes from the last clean batch for the same capacity
+plan. The runner writes a suite-state file beside the suite output directory
+after each completed live batch. That state records both the last completed
+batch and the last clean batch; when a later batch fails a stop threshold, the
+next `run-suite` starts from the last clean batch instead of treating the failed
+batch as the new baseline. This keeps repeated tuning runs from spending another
+full window on already-clean low-load batches while still rechecking the last
+known-good load point.
 
 Use a full pass when you need a clean end-to-end baseline from the first batch:
 
@@ -650,15 +652,16 @@ The runner writes a `summary.txt` operator summary, a `run.json` machine-readabl
 manifest, generated SQL files, execution results, target preflight samples,
 exact UTC window timestamps, and `prometheus-window.json` when Prometheus capture is enabled. For
 `run-suite`, the suite directory also gets `capacity.md` and `capacity.json`.
-Those files roll up each batch's pass/fail state, DB health, thresholds,
-target preflight status, Prometheus highlights, last clean batch, and first
-problem batch while preserving the per-batch Prometheus summaries in JSON. The manifest also includes
-lifecycle, Prometheus, health, and cleanup statuses; per-service DB health
-snapshots; freshness lag details; threshold pass/fail/not-measured entries;
-suite batch count/runtime estimates; and a `stop_recommended` flag when a growth
-suite should stop before the next batch. Applying any mutating lifecycle action
-requires the explicit `-apply` flag so planning can continue safely while
-another benchmark is active.
+Those files roll up each batch's pass/fail state, DB health, missed-check
+threshold status, freshness throughput margin, thresholds, target preflight
+status, Prometheus highlights, last clean batch, and first problem batch while
+preserving the per-batch Prometheus summaries in JSON. The manifest also
+includes lifecycle, Prometheus, health, and cleanup statuses; per-service DB
+health snapshots; freshness lag details; threshold pass/fail/not-measured
+entries; suite batch count/runtime estimates; and a `stop_recommended` flag when
+a growth suite should stop before the next batch. Applying any mutating
+lifecycle action requires the explicit `-apply` flag so planning can continue
+safely while another benchmark is active.
 
 During a live batch, the runner preflights Prometheus, activates the benchmark
 rows, verifies active counts, samples the exact activated `monitor_url` values

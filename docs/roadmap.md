@@ -768,16 +768,17 @@ Implemented:
   saving HTTP-only and DNS-path target capacity reports.
 - `cmd/uptime-bench-jetmon-capacity-run` can execute guarded Jetmon v1/v2
   capacity lifecycle batches from a private fleet config.
-- Capacity `run-suite` invocations persist the last successfully completed
-  batch and resume from that batch by default; `-full-suite` restores a complete
-  first-batch-to-last-batch pass, while `-batch-sizes`, `-duration`, and
-  `-cooldown` support quick scout passes.
+- Capacity `run-suite` invocations persist the last completed, last clean, and
+  first problem batches and resume from the last clean batch by default;
+  `-full-suite` restores a complete first-batch-to-last-batch pass, while
+  `-batch-sizes`, `-duration`, and `-cooldown` support quick scout passes.
 - `make capacity-jetmon-scout` provides the standard 1k/5k/10k Jetmon capacity
   ladder so operators can run the next scalability gate without reconstructing
   the command by hand.
 - Capacity `run-suite` directories include `capacity.md` and `capacity.json`
-  rollups for batch pass/fail status, DB health, thresholds, Prometheus
-  highlights, last clean batch, and first problem batch.
+  rollups for batch pass/fail status, DB health, missed-check threshold status,
+  freshness throughput margin, thresholds, Prometheus highlights, last clean
+  batch, and first problem batch.
 - Capacity live batches validate exact activated target URL samples before the
   timed window starts, so a generated DNS/URL pattern mismatch fails as target
   setup rather than being misread as Jetmon missed checks.

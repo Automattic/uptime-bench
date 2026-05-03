@@ -167,6 +167,8 @@ type SuiteState struct {
 	ID                     string    `json:"id"`
 	ConfigPath             string    `json:"config_path,omitempty"`
 	LastCompletedBatch     int       `json:"last_completed_batch"`
+	LastCleanBatch         int       `json:"last_clean_batch,omitempty"`
+	FirstProblemBatch      int       `json:"first_problem_batch,omitempty"`
 	LastCompletedAt        time.Time `json:"last_completed_at"`
 	LastRunDir             string    `json:"last_run_dir"`
 	LastBatchDir           string    `json:"last_batch_dir"`
@@ -453,10 +455,19 @@ func selectSuiteBatches(sizes []int, id, statePath string, fullSuite bool, expli
 			return suiteSelection{}, err
 		}
 		if state != nil {
-			if state.ID == id && state.LastCompletedBatch > 0 {
-				start = state.LastCompletedBatch
+			resumeBatch := state.LastCleanBatch
+			resumeKind := "last clean"
+			if resumeBatch <= 0 {
+				resumeBatch = state.LastCompletedBatch
+				resumeKind = "last completed"
+			}
+			if state.ID == id && resumeBatch > 0 {
+				start = resumeBatch
 				source = "state"
-				notes = append(notes, fmt.Sprintf("resuming run-suite from last completed batch %d recorded in %s", start, statePath))
+				notes = append(notes, fmt.Sprintf("resuming run-suite from %s batch %d recorded in %s", resumeKind, start, statePath))
+				if state.FirstProblemBatch > 0 {
+					notes = append(notes, fmt.Sprintf("prior suite first problem batch was %d: %s", state.FirstProblemBatch, state.StopReason))
+				}
 			} else if state.ID != "" && state.ID != id {
 				notes = append(notes, fmt.Sprintf("suite state %s belongs to %q; starting from first configured batch for %q", statePath, state.ID, id))
 			}
@@ -663,6 +674,8 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 	}
 	var completed []int
 	var children []RunManifest
+	lastCleanBatch := 0
+	firstProblemBatch := 0
 	writeRollup := func() error {
 		if len(children) == 0 {
 			return nil
@@ -723,11 +736,18 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 			Path:   filepath.Join(batchDir, "run.json"),
 		})
 		completed = append(completed, size)
+		if suiteBatchStatus(child) == "pass" {
+			lastCleanBatch = size
+		} else if firstProblemBatch == 0 {
+			firstProblemBatch = size
+		}
 		if apply {
 			if err := writeSuiteState(suiteStatePath, SuiteState{
 				ID:                     cfg.ID,
 				ConfigPath:             m.ConfigPath,
 				LastCompletedBatch:     size,
+				LastCleanBatch:         lastCleanBatch,
+				FirstProblemBatch:      firstProblemBatch,
 				LastCompletedAt:        r.Clock.Now().UTC(),
 				LastRunDir:             dir,
 				LastBatchDir:           batchDir,
