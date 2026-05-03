@@ -58,6 +58,10 @@ manifest that lists all generated files. Capacity finalization requires the
 campaign to be complete because it uses the campaign's earliest start and
 latest end timestamps as the Prometheus range window.
 
+See [Reporting Standard](reporting.md) for the complete post-run report bundle
+that should be produced after every campaign, including raw TSV exports, logs,
+scenario definitions, cleanup verification, and capacity artifacts.
+
 For older report directories that contain `run.meta.tsv`, capture the exact
 run window into a nested capacity directory:
 

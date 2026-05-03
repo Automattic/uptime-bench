@@ -139,6 +139,7 @@ The local quick start is useful for proving the loop. Real benchmark data comes 
 | [docs/scenario-format.md](docs/scenario-format.md) | TOML fields and scenario examples |
 | [docs/adapters.md](docs/adapters.md) | How monitoring services plug in |
 | [docs/events.md](docs/events.md) | Output model and scoring rules |
+| [docs/reporting.md](docs/reporting.md) | Required post-run report bundle and report contents |
 | [docs/testing.md](docs/testing.md) | Local end-to-end setup |
 | [docs/operations.md](docs/operations.md) | Deployed fleet provisioning and smoke tests |
 | [docs/roadmap.md](docs/roadmap.md) | Completed work, active priorities, and deferred ideas |
