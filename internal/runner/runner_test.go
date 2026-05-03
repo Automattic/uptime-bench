@@ -992,6 +992,9 @@ func TestProvisionAdapters_HappyPath(t *testing.T) {
 	if a.provisionedAs.Keyword != "uptime-bench-canary" {
 		t.Errorf("ProvisionConfig.Keyword = %q", a.provisionedAs.Keyword)
 	}
+	if len(a.provisionedAs.ForbiddenKeywords) != 0 {
+		t.Errorf("ProvisionConfig.ForbiddenKeywords = %#v, want empty", a.provisionedAs.ForbiddenKeywords)
+	}
 	if a.provisionedAs.MonitorKind != adapter.MonitorKindHTTP {
 		t.Errorf("ProvisionConfig.MonitorKind = %q", a.provisionedAs.MonitorKind)
 	}
@@ -1006,6 +1009,53 @@ func TestProvisionAdapters_HappyPath(t *testing.T) {
 	}
 	if len(rec.monitorReportRows) != 0 {
 		t.Errorf("happy path should produce no monitor_reports rows yet (those come from Retrieve), got %d", len(rec.monitorReportRows))
+	}
+}
+
+func TestProvisionAdapters_DerivesForbiddenContentMarkers(t *testing.T) {
+	a := &gateTestAdapter{
+		id: "svc",
+		caps: adapter.Capabilities{
+			MinCheckFrequency: time.Minute,
+			SupportsKeyword:   true,
+		},
+	}
+	rec := &fakeRecorder{}
+	sc := &scenario.Scenario{
+		Target:         "bench",
+		CheckFrequency: time.Minute,
+		Keyword:        "uptime-bench-canary",
+		KeywordCheck:   adapter.KeywordCheckPresent,
+		Failures: []scenario.Failure{
+			{Type: "http_body", Content: "malicious_script"},
+			{Type: "http_body", Content: "spam_links"},
+			{Type: "http_body", Content: "malicious_script"},
+		},
+	}
+
+	_, provisionErr := provisionAdapters(context.Background(), sc, targetEndpointForScenario(sc, gateTestTarget()),
+		[]adapter.Adapter{a}, rec, "run-1", time.Now(), false)
+
+	if provisionErr {
+		t.Errorf("provisionErr = true, want false")
+	}
+	if a.provisionedAs == nil {
+		t.Fatal("Provision was not called")
+	}
+	want := []string{
+		"cdn.track-analytics-js.example/v2/t.min.js",
+		"metrics.evil-cdn.example/collect.js",
+		"buy cheap viagra online no prescription",
+		"free casino slots no deposit bonus",
+		"bitcoin investment platform guaranteed returns",
+	}
+	if len(a.provisionedAs.ForbiddenKeywords) != len(want) {
+		t.Fatalf("ForbiddenKeywords = %#v, want %#v", a.provisionedAs.ForbiddenKeywords, want)
+	}
+	for i := range want {
+		if a.provisionedAs.ForbiddenKeywords[i] != want[i] {
+			t.Fatalf("ForbiddenKeywords = %#v, want %#v", a.provisionedAs.ForbiddenKeywords, want)
+		}
 	}
 }
 

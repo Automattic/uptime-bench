@@ -541,6 +541,7 @@ func provisionAdapters(
 			MonitorKind:           sc.MonitorKind,
 			Keyword:               sc.Keyword,
 			KeywordCheck:          sc.KeywordCheck,
+			ForbiddenKeywords:     forbiddenKeywordsForScenario(sc),
 			ResponseTimeThreshold: sc.ResponseTimeThreshold,
 			RequestHeaders:        sc.RequestHeaders,
 		}
@@ -694,6 +695,48 @@ func maintenanceWindowFor(sc *scenario.Scenario, startedAt time.Time) *adapter.M
 	return &adapter.MaintenanceWindow{
 		Start: windowStart,
 		End:   windowStart.Add(sc.Maintenance.Duration),
+	}
+}
+
+func forbiddenKeywordsForScenario(sc *scenario.Scenario) []string {
+	if sc == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, failure := range sc.Failures {
+		for _, marker := range forbiddenMarkersForContent(failure.Content) {
+			if _, ok := seen[marker]; ok {
+				continue
+			}
+			seen[marker] = struct{}{}
+			out = append(out, marker)
+		}
+	}
+	return out
+}
+
+func forbiddenMarkersForContent(content string) []string {
+	switch content {
+	case "error_page":
+		return []string{"Error establishing a database connection"}
+	case "defacement":
+		return []string{"H4CK3D"}
+	case "ransomware":
+		return []string{"DARKLOCK RANSOMWARE v3.1"}
+	case "malicious_script":
+		return []string{
+			"cdn.track-analytics-js.example/v2/t.min.js",
+			"metrics.evil-cdn.example/collect.js",
+		}
+	case "spam_links":
+		return []string{
+			"buy cheap viagra online no prescription",
+			"free casino slots no deposit bonus",
+			"bitcoin investment platform guaranteed returns",
+		}
+	default:
+		return nil
 	}
 }
 

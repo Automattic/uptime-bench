@@ -86,29 +86,31 @@ func TestCapabilities(t *testing.T) {
 func TestNormalize(t *testing.T) {
 	a := newTestAdapter("http://x", "tok")
 	cases := map[string]string{
-		"down":           "http_failure",
-		"seems_down":     "http_failure",
-		"degraded":       "http_failure",
-		"server":         "http_failure",
-		"client":         "http_failure",
-		"blocked":        "http_failure",
-		"connect":        "http_failure",
-		"redirect":       "http_failure",
-		"timeout":        "timeout",
-		"ssl":            "tls_failure",
-		"tls_expired":    "tls_failure",
-		"tls_expiry":     "tls_advisory",
-		"tls_deprecated": "tls_advisory",
-		"keyword":        "content_failure",
-		"Down":           "http_failure",
-		"Seems Down":     "http_failure",
-		"Degraded":       "http_failure",
-		"up":             "recovered",
-		"Resolved":       "recovered",
-		"Warning":        "unknown",
-		"Maintenance":    "unknown",
-		"":               adapter.UnrecognizedClassification,
-		"flapping":       adapter.UnrecognizedClassification,
+		"down":             "http_failure",
+		"seems_down":       "http_failure",
+		"degraded":         "http_failure",
+		"server":           "http_failure",
+		"client":           "http_failure",
+		"blocked":          "http_failure",
+		"connect":          "http_failure",
+		"redirect":         "http_failure",
+		"timeout":          "timeout",
+		"ssl":              "tls_failure",
+		"tls_expired":      "tls_failure",
+		"tls_expiry":       "tls_advisory",
+		"tls_deprecated":   "tls_advisory",
+		"keyword":          "content_failure",
+		"partial_response": "partial_response",
+		"Down":             "http_failure",
+		"Seems Down":       "http_failure",
+		"Degraded":         "http_failure",
+		"up":               "recovered",
+		"Resolved":         "recovered",
+		"Warning":          "unknown",
+		"Maintenance":      "unknown",
+		"Partial Response": "partial_response",
+		"":                 adapter.UnrecognizedClassification,
+		"flapping":         adapter.UnrecognizedClassification,
 	}
 	for raw, want := range cases {
 		if got := a.Normalize(raw); got != want {
@@ -312,6 +314,46 @@ func TestProvision_KeywordAbsent(t *testing.T) {
 	}
 	if got.ForbiddenKeyword == nil || *got.ForbiddenKeyword != "HACKED" {
 		t.Fatalf("forbidden_keyword = %v, want HACKED", got.ForbiddenKeyword)
+	}
+}
+
+func TestProvision_ForbiddenKeywords(t *testing.T) {
+	var c captured
+	srv := fakeAPI(t, &c, http.StatusCreated, `{"id":8000000000000126,"blog_id":8000000000000126,"monitor_url":"http://bench-a.example/","monitor_active":true}`)
+	defer srv.Close()
+
+	a := newTestAdapter(srv.URL, "tok")
+	_, err := a.Provision(context.Background(),
+		adapter.Target{ID: "bench-a", URL: "http://bench-a.example/"},
+		adapter.ProvisionConfig{
+			CheckFrequency:    time.Minute,
+			Keyword:           "uptime-bench-canary",
+			KeywordCheck:      adapter.KeywordCheckPresent,
+			ForbiddenKeywords: []string{"metrics.evil-cdn.example/collect.js", "buy cheap viagra online no prescription"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	var got createSiteRequest
+	if err := json.Unmarshal(c.body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CheckKeyword == nil || *got.CheckKeyword != "uptime-bench-canary" {
+		t.Fatalf("check_keyword = %v, want uptime-bench-canary", got.CheckKeyword)
+	}
+	if got.ForbiddenKeyword != nil {
+		t.Fatalf("forbidden_keyword = %v, want nil", got.ForbiddenKeyword)
+	}
+	want := []string{"metrics.evil-cdn.example/collect.js", "buy cheap viagra online no prescription"}
+	if len(got.ForbiddenKeywords) != len(want) {
+		t.Fatalf("forbidden_keywords = %#v, want %#v", got.ForbiddenKeywords, want)
+	}
+	for i := range want {
+		if got.ForbiddenKeywords[i] != want[i] {
+			t.Fatalf("forbidden_keywords = %#v, want %#v", got.ForbiddenKeywords, want)
+		}
 	}
 }
 
@@ -652,22 +694,34 @@ func TestRetrieve_ClassifiesJetmonMetadata(t *testing.T) {
 			{
 				"id": 5,
 				"site_id": 8000000000000123,
-				"check_type": "tls_expiry",
-				"severity": 1,
-				"state": "Warning",
+				"check_type": "http",
+				"severity": 3,
+				"state": "Seems Down",
 				"started_at": "2026-04-25T08:04:00Z",
 				"ended_at": null,
-				"metadata": {"days_until": 5},
+				"metadata": {"http_code": 200, "error_code": 8},
 				"duration_ms": 1000,
 				"transition_count": 1
 			},
 			{
 				"id": 6,
 				"site_id": 8000000000000123,
+				"check_type": "tls_expiry",
+				"severity": 1,
+				"state": "Warning",
+				"started_at": "2026-04-25T08:05:00Z",
+				"ended_at": null,
+				"metadata": {"days_until": 5},
+				"duration_ms": 1000,
+				"transition_count": 1
+			},
+			{
+				"id": 7,
+				"site_id": 8000000000000123,
 				"check_type": "http",
 				"severity": 4,
 				"state": "Down",
-				"started_at": "2026-04-25T08:05:00Z",
+				"started_at": "2026-04-25T08:06:00Z",
 				"ended_at": null,
 				"metadata": {"http_code": "403", "error_code": "0"},
 				"duration_ms": 1000,
@@ -690,12 +744,12 @@ func TestRetrieve_ClassifiesJetmonMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Reports) != 6 {
-		t.Fatalf("reports = %d, want 6", len(res.Reports))
+	if len(res.Reports) != 7 {
+		t.Fatalf("reports = %d, want 7", len(res.Reports))
 	}
 
-	wantRaw := []string{"ssl", "timeout", "keyword", "tls_deprecated", "tls_expiry", "blocked"}
-	wantNormalized := []string{"tls_failure", "timeout", "content_failure", "tls_advisory", "tls_advisory", "http_failure"}
+	wantRaw := []string{"ssl", "timeout", "keyword", "tls_deprecated", "partial_response", "tls_expiry", "blocked"}
+	wantNormalized := []string{"tls_failure", "timeout", "content_failure", "tls_advisory", "partial_response", "tls_advisory", "http_failure"}
 	for i := range wantRaw {
 		if res.Reports[i].RawClassification != wantRaw[i] {
 			t.Fatalf("Reports[%d].RawClassification = %q, want %q", i, res.Reports[i].RawClassification, wantRaw[i])

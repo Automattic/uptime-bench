@@ -53,6 +53,7 @@ type Adapter interface {
 	//	"tls_advisory"    — TLS concern where the HTTP request can still succeed
 	//	"timeout"         — response timeout (any phase)
 	//	"content_failure" — body content check failed
+	//	"partial_response" — truncated/partial HTTP body integrity failure
 	//	"recovered"       — incident resolved
 	//	"unknown"         — service could not determine state (monitor-side)
 	//	"unrecognized"    — raw label unknown to this adapter; use UnrecognizedClassification
@@ -305,6 +306,13 @@ type ProvisionConfig struct {
 	// the adapter.
 	Keyword      string
 	KeywordCheck string
+
+	// ForbiddenKeywords carries additional explicit body strings that must
+	// not appear. The runner derives these from content variants with stable
+	// compromise markers, such as injected scripts or SEO spam links. Adapters
+	// that cannot express multiple forbidden strings may ignore this field and
+	// rely on the primary Keyword/KeywordCheck pair.
+	ForbiddenKeywords []string
 
 	// ResponseTimeThreshold requests an alert when the completed response
 	// exceeds this duration. Zero means no threshold assertion.

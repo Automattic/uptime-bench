@@ -54,6 +54,7 @@ const (
 	jetmonErrorKeyword       = 5
 	jetmonErrorTLSExpired    = 6
 	jetmonErrorTLSDeprecated = 7
+	jetmonErrorTruncatedBody = 8
 )
 
 // classification maps Jetmon v2 event states and metadata-derived reason
@@ -61,49 +62,51 @@ const (
 // snake case, matching Jetmon v1's existing adapter labels where the concepts
 // overlap.
 var classification = map[string]string{
-	"down":           "http_failure",
-	"seems_down":     "http_failure",
-	"degraded":       "http_failure",
-	"server":         "http_failure",
-	"client":         "http_failure",
-	"blocked":        "http_failure",
-	"connect":        "http_failure",
-	"redirect":       "http_failure",
-	"timeout":        "timeout",
-	"ssl":            "tls_failure",
-	"https":          "tls_failure",
-	"tls_expired":    "tls_failure",
-	"tls_expiry":     "tls_advisory",
-	"keyword":        "content_failure",
-	"up":             "recovered",
-	"resolved":       "recovered",
-	"tls_deprecated": "tls_advisory",
-	"warning":        "unknown",
-	"paused":         "unknown",
-	"maintenance":    "unknown",
-	"unknown":        "unknown",
+	"down":             "http_failure",
+	"seems_down":       "http_failure",
+	"degraded":         "http_failure",
+	"server":           "http_failure",
+	"client":           "http_failure",
+	"blocked":          "http_failure",
+	"connect":          "http_failure",
+	"redirect":         "http_failure",
+	"timeout":          "timeout",
+	"ssl":              "tls_failure",
+	"https":            "tls_failure",
+	"tls_expired":      "tls_failure",
+	"tls_expiry":       "tls_advisory",
+	"keyword":          "content_failure",
+	"partial_response": "partial_response",
+	"up":               "recovered",
+	"resolved":         "recovered",
+	"tls_deprecated":   "tls_advisory",
+	"warning":          "unknown",
+	"paused":           "unknown",
+	"maintenance":      "unknown",
+	"unknown":          "unknown",
 
-	"Down":           "http_failure",
-	"Seems Down":     "http_failure",
-	"Degraded":       "http_failure",
-	"Server":         "http_failure",
-	"Client":         "http_failure",
-	"Blocked":        "http_failure",
-	"Connect":        "http_failure",
-	"Redirect":       "http_failure",
-	"Timeout":        "timeout",
-	"SSL":            "tls_failure",
-	"HTTPS":          "tls_failure",
-	"TLS Expired":    "tls_failure",
-	"TLS Expiry":     "tls_advisory",
-	"Keyword":        "content_failure",
-	"Up":             "recovered",
-	"Resolved":       "recovered",
-	"TLS Deprecated": "tls_advisory",
-	"Warning":        "unknown",
-	"Paused":         "unknown",
-	"Maintenance":    "unknown",
-	"Unknown":        "unknown",
+	"Down":             "http_failure",
+	"Seems Down":       "http_failure",
+	"Degraded":         "http_failure",
+	"Server":           "http_failure",
+	"Client":           "http_failure",
+	"Blocked":          "http_failure",
+	"Connect":          "http_failure",
+	"Redirect":         "http_failure",
+	"Timeout":          "timeout",
+	"SSL":              "tls_failure",
+	"HTTPS":            "tls_failure",
+	"TLS Expired":      "tls_failure",
+	"TLS Expiry":       "tls_advisory",
+	"Keyword":          "content_failure",
+	"Partial Response": "partial_response",
+	"Up":               "recovered",
+	"Resolved":         "recovered",
+	"TLS Deprecated":   "tls_advisory",
+	"Warning":          "unknown",
+	"Paused":           "unknown",
+	"Maintenance":      "unknown",
+	"Unknown":          "unknown",
 }
 
 // Adapter implements adapter.Adapter for Jetmon 2.
@@ -171,6 +174,7 @@ type createSiteRequest struct {
 	BucketNo             int               `json:"bucket_no"`
 	CheckKeyword         *string           `json:"check_keyword"`
 	ForbiddenKeyword     *string           `json:"forbidden_keyword"`
+	ForbiddenKeywords    []string          `json:"forbidden_keywords,omitempty"`
 	RedirectPolicy       string            `json:"redirect_policy"`
 	TimeoutSeconds       *int              `json:"timeout_seconds"`
 	CustomHeaders        map[string]string `json:"custom_headers"`
@@ -179,23 +183,24 @@ type createSiteRequest struct {
 }
 
 type siteResponse struct {
-	ID                   int64   `json:"id"`
-	BlogID               int64   `json:"blog_id"`
-	MonitorURL           string  `json:"monitor_url"`
-	MonitorActive        bool    `json:"monitor_active"`
-	BucketNo             int     `json:"bucket_no"`
-	CheckInterval        int     `json:"check_interval"`
-	CurrentState         string  `json:"current_state"`
-	CurrentSeverity      uint8   `json:"current_severity"`
-	ActiveEventID        *int64  `json:"active_event_id"`
-	LastCheckedAt        *string `json:"last_checked_at"`
-	LastStatusChangeAt   *string `json:"last_status_change_at"`
-	CheckKeyword         *string `json:"check_keyword"`
-	ForbiddenKeyword     *string `json:"forbidden_keyword"`
-	RedirectPolicy       string  `json:"redirect_policy"`
-	MaintenanceStart     *string `json:"maintenance_start"`
-	MaintenanceEnd       *string `json:"maintenance_end"`
-	AlertCooldownMinutes *int    `json:"alert_cooldown_minutes"`
+	ID                   int64    `json:"id"`
+	BlogID               int64    `json:"blog_id"`
+	MonitorURL           string   `json:"monitor_url"`
+	MonitorActive        bool     `json:"monitor_active"`
+	BucketNo             int      `json:"bucket_no"`
+	CheckInterval        int      `json:"check_interval"`
+	CurrentState         string   `json:"current_state"`
+	CurrentSeverity      uint8    `json:"current_severity"`
+	ActiveEventID        *int64   `json:"active_event_id"`
+	LastCheckedAt        *string  `json:"last_checked_at"`
+	LastStatusChangeAt   *string  `json:"last_status_change_at"`
+	CheckKeyword         *string  `json:"check_keyword"`
+	ForbiddenKeyword     *string  `json:"forbidden_keyword"`
+	ForbiddenKeywords    []string `json:"forbidden_keywords"`
+	RedirectPolicy       string   `json:"redirect_policy"`
+	MaintenanceStart     *string  `json:"maintenance_start"`
+	MaintenanceEnd       *string  `json:"maintenance_end"`
+	AlertCooldownMinutes *int     `json:"alert_cooldown_minutes"`
 }
 
 type updateSiteRequest struct {
@@ -236,6 +241,7 @@ func (a *Adapter) Provision(ctx context.Context, target adapter.Target, config a
 			BucketNo:             a.bucketNo,
 			CheckKeyword:         checkKeyword,
 			ForbiddenKeyword:     forbiddenKeyword,
+			ForbiddenKeywords:    copyStrings(config.ForbiddenKeywords),
 			RedirectPolicy:       "follow",
 			CustomHeaders:        customHeaders,
 			AlertCooldownMinutes: &cooldown,
@@ -544,6 +550,15 @@ func keywordRules(config adapter.ProvisionConfig) (*string, *string) {
 	return keywordPtr(config.Keyword), nil
 }
 
+func copyStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
+}
+
 func randomSyntheticBlogID() (int64, error) {
 	n, err := rand.Int(rand.Reader, big.NewInt(syntheticBlogIDRange))
 	if err != nil {
@@ -615,6 +630,8 @@ func rawClassification(ev eventResponse) string {
 			return "tls_expired"
 		case jetmonErrorTLSDeprecated:
 			return "tls_deprecated"
+		case jetmonErrorTruncatedBody:
+			return "partial_response"
 		}
 	}
 	if httpCode, ok := metadataInt(ev.Metadata, "http_code"); ok {
