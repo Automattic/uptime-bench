@@ -65,7 +65,7 @@ func main() {
 	connectAddress := flag.String("connect-address", "", "optional host:port to connect to while preserving the generated Host header")
 	tlsInsecure := flag.Bool("tls-insecure", false, "skip HTTPS certificate verification for target smoke tests")
 	method := flag.String("method", http.MethodGet, "HTTP method")
-	format := flag.String("format", "table", "output format: table or json")
+	format := flag.String("format", "table", "output format: table, json, or markdown")
 	flag.Parse()
 
 	if *urlPattern == "" {
@@ -122,8 +122,10 @@ func main() {
 		}
 	case "table":
 		writeTable(os.Stdout, rep)
+	case "markdown", "md":
+		writeMarkdown(os.Stdout, rep)
 	default:
-		log.Fatalf("targetload: unsupported -format %q", *format)
+		log.Fatalf("targetload: unsupported -format %q (want table, json, or markdown)", *format)
 	}
 }
 
@@ -400,6 +402,63 @@ func writeTable(w io.Writer, rep report) {
 	}
 }
 
+func writeMarkdown(w io.Writer, rep report) {
+	fmt.Fprintln(w, "# Target Load Report")
+	fmt.Fprintf(w, "\nURL Pattern: `%s`\n", rep.URLPattern)
+	fmt.Fprintf(w, "Hosts: `%d` from `%d`\n", rep.Hosts, rep.Start)
+	fmt.Fprintf(w, "Requests: `%d`\n", rep.Requests)
+	fmt.Fprintf(w, "Concurrency: `%d`\n", rep.Concurrency)
+	if rep.DNSServer != "" {
+		fmt.Fprintf(w, "DNS Server: `%s`\n", rep.DNSServer)
+	}
+	if rep.ConnectAddress != "" {
+		fmt.Fprintf(w, "Connect Address: `%s`\n", rep.ConnectAddress)
+	}
+	fmt.Fprintf(w, "Duration: `%s`\n", rep.Duration)
+	fmt.Fprintf(w, "RPS: `%.2f`\n", rep.RPS)
+
+	fmt.Fprint(w, "\n## Analysis\n\n")
+	successRate := 0.0
+	if rep.Requests > 0 {
+		successRate = float64(rep.Success) / float64(rep.Requests) * 100
+	}
+	fmt.Fprintf(w, "- Success rate: `%.2f%%` (`%d` success, `%d` failure)\n", successRate, rep.Success, rep.Failure)
+	if rep.Failure > 0 {
+		fmt.Fprintf(w, "- Failure buckets: `%s`\n", formatMaybeMap(rep.Errors))
+	} else {
+		fmt.Fprintln(w, "- Failure buckets: `none`")
+	}
+	if rep.DNSServer != "" {
+		fmt.Fprintf(w, "- DNS p95 latency: `%.2f ms`\n", rep.DNSLatencyMS.P95)
+	}
+	fmt.Fprintf(w, "- HTTP p95 latency: `%.2f ms`\n", rep.LatencyMS.P95)
+
+	fmt.Fprint(w, "\n## Results\n\n")
+	fmt.Fprintln(w, "| Requests | Success | Failure | RPS | Status Codes | Errors |")
+	fmt.Fprintln(w, "| ---: | ---: | ---: | ---: | --- | --- |")
+	fmt.Fprintf(w, "| %d | %d | %d | %.2f | %s | %s |\n",
+		rep.Requests,
+		rep.Success,
+		rep.Failure,
+		rep.RPS,
+		escapeMarkdown(formatStatusCodes(rep.StatusCodes)),
+		escapeMarkdown(formatMaybeMap(rep.Errors)),
+	)
+
+	fmt.Fprint(w, "\n## Latency\n\n")
+	fmt.Fprintln(w, "| Path | Min ms | Avg ms | P50 ms | P95 ms | Max ms | Last ms |")
+	fmt.Fprintln(w, "| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+	writeMarkdownLatencyRow(w, "HTTP", rep.LatencyMS)
+	if rep.DNSServer != "" {
+		writeMarkdownLatencyRow(w, "DNS", rep.DNSLatencyMS)
+	}
+}
+
+func writeMarkdownLatencyRow(w io.Writer, label string, s stats) {
+	fmt.Fprintf(w, "| %s | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f |\n",
+		label, s.Min, s.Avg, s.P50, s.P95, s.Max, s.Last)
+}
+
 func formatStatusCodes(codes map[string]int) string {
 	keys := make([]string, 0, len(codes))
 	for k := range codes {
@@ -411,4 +470,15 @@ func formatStatusCodes(codes map[string]int) string {
 		parts = append(parts, k+"="+strconv.Itoa(codes[k]))
 	}
 	return strings.Join(parts, " ")
+}
+
+func formatMaybeMap(values map[string]int) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	return formatStatusCodes(values)
+}
+
+func escapeMarkdown(s string) string {
+	return strings.ReplaceAll(s, "|", "\\|")
 }

@@ -748,13 +748,18 @@ Implemented:
 - `cmd/uptime-bench-dockerstats-exporter` exposes Docker API container stats as Prometheus metrics for hosts where cAdvisor cannot identify Docker 29 `overlayfs` / containerd-snapshotter writable layers.
 - The exporter is deployed on both Jetmon hosts at `203.0.113.170:9103` and `203.0.113.171:9103`.
 - `fleet.toml` supports `[[targets.generated_sites]]` ranges so DNS can resolve million-scale synthetic hostnames without expanding all hosts into the zone map.
-- `cmd/uptime-bench-targetload` can probe generated host ranges against DNS and HTTP before those hosts are loaded into Jetmon.
+- `cmd/uptime-bench-targetload` can probe generated host ranges against DNS and
+  HTTP before those hosts are loaded into Jetmon, with Markdown output for
+  saving HTTP-only and DNS-path target capacity reports.
 - `cmd/uptime-bench-jetmon-capacity-run` can execute guarded Jetmon v1/v2
   capacity lifecycle batches from a private fleet config.
 - Capacity `run-suite` invocations persist the last successfully completed
   batch and resume from that batch by default; `-full-suite` restores a complete
   first-batch-to-last-batch pass, while `-batch-sizes`, `-duration`, and
   `-cooldown` support quick scout passes.
+- Capacity `run-suite` directories include `capacity.md` and `capacity.json`
+  rollups for batch pass/fail status, DB health, thresholds, Prometheus
+  highlights, last clean batch, and first problem batch.
 - `uptime-bench-finalize -capacity` writes `capacity.md` and `capacity.json`
   alongside `report.md`/`report.json`, using the finalized campaign window as
   the Prometheus query range.
@@ -764,7 +769,7 @@ Remaining follow-up:
 
 - Stress test target-side DNS and HTTP capacity before monitor-side million-site runs.
 - Use the guarded Jetmon lifecycle runner for staged active-monitor growth
-  suites and compare report `capacity.md` findings against detection behavior.
+  suites and compare suite `capacity.md` findings against detection behavior.
 
 ---
 

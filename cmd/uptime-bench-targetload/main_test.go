@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,6 +77,22 @@ func TestFormatStatusCodes(t *testing.T) {
 	got := formatStatusCodes(map[string]int{"error": 1, "200": 2})
 	if got != "200=2 error=1" {
 		t.Fatalf("formatStatusCodes = %q", got)
+	}
+}
+
+func TestWriteMarkdown(t *testing.T) {
+	rep := summarize("http://site-%07d.example.com/", 1, 10, 3, 2, "127.0.0.1:53", "", time.Second, []result{
+		{Latency: 10 * time.Millisecond, DNSLatency: time.Millisecond, StatusCode: 200},
+		{Latency: 20 * time.Millisecond, DNSLatency: 2 * time.Millisecond, StatusCode: 200},
+		{Latency: 30 * time.Millisecond, DNSLatency: 3 * time.Millisecond, Error: "dns: lookup site.example.com: i/o timeout"},
+	})
+	var buf bytes.Buffer
+	writeMarkdown(&buf, rep)
+	out := buf.String()
+	for _, want := range []string{"# Target Load Report", "## Analysis", "Success rate", "dns_timeout=1", "## Latency", "| DNS |"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, out)
+		}
 	}
 }
 

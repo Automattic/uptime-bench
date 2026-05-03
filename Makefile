@@ -343,7 +343,7 @@ help:
 	@echo "    [JETMON_CAPACITY_RUN_ARGS='-mode=run-suite [-full-suite] [-batch-sizes=1000,10000] [-duration=10m] [-cooldown=2m] [-apply]']"
 	@echo "  deploy/capacity-db-access.sh  Provision stable DSN files and SSH tunnels for live capacity runs"
 	@echo "  deploy/dockerstats-exporter.sh HOST [USER]  Deploy per-container Prometheus exporter"
-	@echo "  bin/uptime-bench-targetload -url-pattern=...  Probe generated target/DNS capacity"
+	@echo "  bin/uptime-bench-targetload -url-pattern=... [-format=markdown]  Probe generated target/DNS capacity"
 	@echo ""
 	@echo "Provision (first-time host setup — run before deploy):"
 	@echo "  make provision-harness  HARNESS_HOST=host  [HARNESS_IP=ip] [DEPLOY_USER=ubuntu]"

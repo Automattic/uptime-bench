@@ -649,6 +649,18 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 		}
 	}
 	var completed []int
+	var children []RunManifest
+	writeRollup := func() error {
+		if len(children) == 0 {
+			return nil
+		}
+		if err := writeSuiteReport(dir, *m, children); err != nil {
+			return err
+		}
+		recordArtifactOnce(m, Artifact{Action: "capacity-report", Path: filepath.Join(dir, "capacity.md")})
+		recordArtifactOnce(m, Artifact{Action: "capacity-json", Path: filepath.Join(dir, "capacity.json")})
+		return nil
+	}
 	for i, size := range sizes {
 		batchDir := filepath.Join(dir, fmt.Sprintf("batch-%07d", size))
 		if err := os.MkdirAll(batchDir, 0o755); err != nil {
@@ -678,6 +690,10 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 				child.Artifacts = append(child.Artifacts, Artifact{Action: "summary", Path: filepath.Join(batchDir, "summary.txt")})
 			}
 			_ = WriteManifest(batchDir, child)
+			children = append(children, child)
+			if reportErr := writeRollup(); reportErr != nil {
+				return errors.Join(fmt.Errorf("batch %d: %w", size, err), fmt.Errorf("write suite report: %w", reportErr))
+			}
 			return fmt.Errorf("batch %d: %w", size, err)
 		}
 		if err := WriteSummary(batchDir, child); err != nil {
@@ -687,6 +703,7 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 		if err := WriteManifest(batchDir, child); err != nil {
 			return fmt.Errorf("write batch %d manifest: %w", size, err)
 		}
+		children = append(children, child)
 		m.Artifacts = append(m.Artifacts, Artifact{
 			Action: fmt.Sprintf("batch-%d", size),
 			Path:   filepath.Join(batchDir, "run.json"),
@@ -721,7 +738,7 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 			}
 		}
 	}
-	return nil
+	return writeRollup()
 }
 
 func (r Runner) activateServicesDryRun(ctx context.Context, dir string, services []ServiceLifecycle, activeCount int, m *RunManifest) error {

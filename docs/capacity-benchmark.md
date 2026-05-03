@@ -251,11 +251,14 @@ bin/uptime-bench-targetload \
   -hosts=1000000 \
   -requests=10000 \
   -concurrency=100 \
-  -dns-server=<authoritative-dns-ip>:53
+  -dns-server=<authoritative-dns-ip>:53 \
+  -format=markdown
 ```
 
 For HTTP-only target testing that bypasses DNS while preserving the generated
-Host header, use `-connect-address=<target-ip>:80`.
+Host header, use `-connect-address=<target-ip>:80`. The `markdown` format is
+intended to be saved beside capacity run artifacts so HTTP-only and DNS-path
+target capacity checks can be compared before monitor-side million-site runs.
 
 ### Local Target Capacity Lab
 
@@ -337,7 +340,8 @@ Run HTTP-only checks first to isolate target capacity from DNS behavior:
   -hosts=100000 \
   -requests=100000 \
   -concurrency=500 \
-  -connect-address=127.0.0.1:18080
+  -connect-address=127.0.0.1:18080 \
+  -format=markdown
 ```
 
 Then include the DNS path:
@@ -348,7 +352,8 @@ Then include the DNS path:
   -hosts=100000 \
   -requests=100000 \
   -concurrency=100 \
-  -dns-server=127.0.0.1:15353
+  -dns-server=127.0.0.1:15353 \
+  -format=markdown
 ```
 
 ## Bulk Lifecycle Direction
@@ -589,13 +594,17 @@ same reports parent and need separate resume state.
 
 The runner writes a `summary.txt` operator summary, a `run.json` machine-readable
 manifest, generated SQL files, execution results, exact UTC window timestamps,
-and `prometheus-window.json` when Prometheus capture is enabled. The manifest
-also includes lifecycle, Prometheus, health, and cleanup statuses; per-service
-DB health snapshots; freshness lag details; threshold pass/fail/not-measured
-entries; suite batch count/runtime estimates; and a `stop_recommended` flag when
-a growth suite should stop before the next batch. Applying any mutating
-lifecycle action requires the explicit `-apply` flag so planning can continue
-safely while another benchmark is active.
+and `prometheus-window.json` when Prometheus capture is enabled. For
+`run-suite`, the suite directory also gets `capacity.md` and `capacity.json`.
+Those files roll up each batch's pass/fail state, DB health, thresholds,
+Prometheus highlights, last clean batch, and first problem batch while preserving
+the per-batch Prometheus summaries in JSON. The manifest also includes
+lifecycle, Prometheus, health, and cleanup statuses; per-service DB health
+snapshots; freshness lag details; threshold pass/fail/not-measured entries;
+suite batch count/runtime estimates; and a `stop_recommended` flag when a growth
+suite should stop before the next batch. Applying any mutating lifecycle action
+requires the explicit `-apply` flag so planning can continue safely while
+another benchmark is active.
 
 During a live batch, the runner preflights Prometheus, verifies active counts
 before starting the window, captures a DB health snapshot at the recorded end

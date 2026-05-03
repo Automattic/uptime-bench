@@ -2,6 +2,7 @@ package jetmoncapacity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -528,6 +529,58 @@ func TestRunSuiteApplyWritesSuiteStateAfterSuccessfulBatch(t *testing.T) {
 	}
 }
 
+func TestRunSuiteWritesCapacityRollup(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	outDir := filepath.Join(t.TempDir(), "out")
+	manifest, err := (Runner{
+		Executor:  &fakeSQLExecutor{},
+		Clock:     fixedClock{},
+		Sleeper:   noSleep{},
+		Collector: fakeCollector{report: capacitySuiteReport("jetmon-v1", "jetmon-v2")},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath: cfgPath,
+		Mode:       "run-suite",
+		OutDir:     outDir,
+		BatchSizes: []int{10},
+		Apply:      true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, name := range []string{"capacity.md", "capacity.json"} {
+		if _, err := os.Stat(filepath.Join(outDir, name)); err != nil {
+			t.Fatalf("%s was not written: %v", name, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(outDir, "capacity.md"))
+	if err != nil {
+		t.Fatalf("read capacity.md: %v", err)
+	}
+	md := string(data)
+	for _, want := range []string{"# Jetmon Capacity Suite Report", "## Batch Results", "## Service Health", "## Thresholds", "## Prometheus Highlights", "| 10 | pass |"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("capacity.md missing %q:\n%s", want, md)
+		}
+	}
+	data, err = os.ReadFile(filepath.Join(outDir, "capacity.json"))
+	if err != nil {
+		t.Fatalf("read capacity.json: %v", err)
+	}
+	var report SuiteReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("unmarshal capacity.json: %v", err)
+	}
+	if report.CompletedBatches != 1 || report.LastCleanBatch != 10 {
+		t.Fatalf("suite report batches = completed %d clean %d, want 1/10", report.CompletedBatches, report.LastCleanBatch)
+	}
+	if len(report.Batches) != 1 || len(report.Batches[0].PrometheusSummary) == 0 {
+		t.Fatalf("suite report missing batch Prometheus summary: %+v", report.Batches)
+	}
+	if !hasArtifact(manifest.Artifacts, "capacity-report") || !hasArtifact(manifest.Artifacts, "capacity-json") {
+		t.Fatalf("manifest missing capacity report artifacts: %#v", manifest.Artifacts)
+	}
+}
+
 type runnerConfigOption func(*runnerConfigSpec)
 
 type runnerConfigSpec struct {
@@ -766,4 +819,36 @@ func scrapeUpReport(instances ...string) capacitybench.Report {
 		})
 	}
 	return report
+}
+
+func capacitySuiteReport(instances ...string) capacitybench.Report {
+	report := scrapeUpReport(instances...)
+	report.PrometheusURL = "http://prometheus:9090"
+	report.Start = time.Unix(1_700_000_000, 0).UTC()
+	report.End = report.Start.Add(time.Minute)
+	report.Step = "15s"
+	for _, instance := range instances {
+		report.Summaries = append(report.Summaries, capacitybench.SeriesSummary{
+			Query:   "host_cpu_used",
+			Unit:    "percent",
+			Labels:  map[string]string{"instance": instance},
+			Samples: 4,
+			Min:     10,
+			Avg:     20,
+			P50:     20,
+			P95:     30,
+			Max:     35,
+			Last:    25,
+		})
+	}
+	return report
+}
+
+func hasArtifact(artifacts []Artifact, action string) bool {
+	for _, artifact := range artifacts {
+		if artifact.Action == action {
+			return true
+		}
+	}
+	return false
 }
