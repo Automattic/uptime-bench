@@ -748,6 +748,63 @@ func TestRunSuiteApplyStateRecordsProblemBatch(t *testing.T) {
 	}
 }
 
+func TestRunSuiteApplyPreservesPriorCleanWhenHigherFirstBatchFails(t *testing.T) {
+	cfgPath := writeRunnerConfig(t)
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "suite-state.json")
+	if err := writeSuiteState(statePath, SuiteState{
+		ID:                 "capacity-test",
+		LastCompletedBatch: 10,
+		LastCleanBatch:     10,
+		LastCompletedAt:    time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC),
+		LastRunDir:         filepath.Join(dir, "previous"),
+		LastBatchDir:       filepath.Join(dir, "previous", "batch-0000010"),
+	}); err != nil {
+		t.Fatalf("write suite state: %v", err)
+	}
+
+	manifest, err := (Runner{
+		Executor: &fakeSQLExecutor{
+			activeByDSN:         map[string]int64{"v1-dsn": 20, "v2-dsn": 20},
+			staleByDSN:          map[string]int64{"v2-dsn": 2},
+			historyByDSN:        map[string]int64{"v2-dsn": 8},
+			activeURLSampleRows: 20,
+		},
+		Clock:     fixedClock{},
+		Sleeper:   noSleep{},
+		Collector: fakeCollector{report: scrapeUpReport("jetmon-v1", "jetmon-v2")},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:     cfgPath,
+		Mode:           "run-suite",
+		OutDir:         filepath.Join(dir, "out"),
+		SuiteStatePath: statePath,
+		BatchSizes:     []int{20},
+		Apply:          true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !manifest.StopRecommended {
+		t.Fatalf("StopRecommended = false, want true")
+	}
+	state, err := readSuiteState(statePath)
+	if err != nil {
+		t.Fatalf("read suite state: %v", err)
+	}
+	if state == nil {
+		t.Fatal("suite state was not written")
+	}
+	if state.LastCompletedBatch != 20 {
+		t.Fatalf("LastCompletedBatch = %d, want 20", state.LastCompletedBatch)
+	}
+	if state.LastCleanBatch != 10 {
+		t.Fatalf("LastCleanBatch = %d, want preserved prior clean 10", state.LastCleanBatch)
+	}
+	if state.FirstProblemBatch != 20 {
+		t.Fatalf("FirstProblemBatch = %d, want 20", state.FirstProblemBatch)
+	}
+}
+
 func TestRunSuiteWritesCapacityRollup(t *testing.T) {
 	cfgPath := writeRunnerConfig(t)
 	outDir := filepath.Join(t.TempDir(), "out")
@@ -893,14 +950,15 @@ dsn_env = "JETMON_V2_DB_DSN"
 }
 
 type fakeSQLExecutor struct {
-	calls           []fakeSQLCall
-	activeByDSN     map[string]int64
-	staleByDSN      map[string]int64
-	historyByDSN    map[string]int64
-	failActivateDSN string
-	badSampleURLDSN string
-	seedTotal       int64
-	seedMatching    int64
+	calls               []fakeSQLCall
+	activeByDSN         map[string]int64
+	staleByDSN          map[string]int64
+	historyByDSN        map[string]int64
+	failActivateDSN     string
+	badSampleURLDSN     string
+	activeURLSampleRows int
+	seedTotal           int64
+	seedMatching        int64
 }
 
 type fakeSQLCall struct {
@@ -983,8 +1041,12 @@ func (e *fakeSQLExecutor) activeURLSamples(dsn string) SQLExecutionResult {
 		start = 8000001000000000
 		bucketMin = 10
 	}
+	samples := e.activeURLSampleRows
+	if samples <= 0 {
+		samples = 10
+	}
 	var rows [][]string
-	for i := 0; i < 10; i++ {
+	for i := 0; i < samples; i++ {
 		blogID := start + int64(i)
 		rows = append(rows, []string{
 			intString(blogID),

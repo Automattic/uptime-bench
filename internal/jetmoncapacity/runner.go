@@ -676,6 +676,16 @@ func (r Runner) runSuite(ctx context.Context, dir string, services []ServiceLife
 	var children []RunManifest
 	lastCleanBatch := 0
 	firstProblemBatch := 0
+	if apply && len(sizes) > 0 {
+		state, err := readSuiteState(suiteStatePath)
+		if err != nil {
+			return err
+		}
+		if state != nil && state.ID == cfg.ID && state.LastCleanBatch > 0 && state.LastCleanBatch < sizes[0] {
+			lastCleanBatch = state.LastCleanBatch
+			m.Notes = append(m.Notes, fmt.Sprintf("preserving prior last clean batch %d from %s until a higher batch passes", lastCleanBatch, suiteStatePath))
+		}
+	}
 	writeRollup := func() error {
 		if len(children) == 0 {
 			return nil
