@@ -71,7 +71,7 @@ type Nameserver struct {
 
 	// Hosts is the list of public hostnames the registrar's NS + glue
 	// records advertise for this member (e.g. ns1.example.com,
-	// ns1.steadycadence.party). Used by BuildFromFleet to emit
+	// ns1.example.net). Used by BuildFromFleet to emit
 	// authoritative A records for the nameservers themselves so the
 	// child zone is consistent with the parent's glue. Optional, but
 	// strongly recommended once the fleet is reachable from public

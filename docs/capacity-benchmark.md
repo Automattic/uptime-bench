@@ -8,7 +8,7 @@ count.
 
 ## Current Scope
 
-The first implemented piece is read-only Prometheus collection:
+Prometheus collection can be used independently:
 
 ```sh
 make capacity-metrics
@@ -16,8 +16,8 @@ make capacity-metrics
 
 Defaults:
 
-- Prometheus: `http://prometheus.example.com:9090`
-- instances: `jetmon-v1.example.com,jetmon-v2.example.com`
+- Prometheus: `http://10.0.0.67:9091`
+- instances: `jetmon-service-host-1,jetmon-service-host-2`
 - window: last `15m`
 - output: table
 
@@ -25,8 +25,8 @@ Equivalent direct command:
 
 ```sh
 bin/uptime-bench-capacity \
-  -prometheus-url=http://prometheus.example.com:9090 \
-  -instances=jetmon-v1.example.com,jetmon-v2.example.com \
+  -prometheus-url=http://10.0.0.67:9091 \
+  -instances=jetmon-service-host-1,jetmon-service-host-2 \
   -duration=15m
 ```
 
@@ -34,8 +34,8 @@ Use exact timestamps for benchmark windows:
 
 ```sh
 bin/uptime-bench-capacity \
-  -prometheus-url=http://prometheus.example.com:9090 \
-  -instances=jetmon-v1.example.com,jetmon-v2.example.com \
+  -prometheus-url=http://10.0.0.67:9091 \
+  -instances=jetmon-service-host-1,jetmon-service-host-2 \
   -start=2026-04-30T18:00:00Z \
   -end=2026-04-30T18:30:00Z \
   -format=json
@@ -58,29 +58,29 @@ The capacity collector expects these scrape labels:
 
 | Job | Required instances | Purpose |
 |---|---|---|
-| `node` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | host CPU, memory, disk, network, scrape health |
-| `cadvisor` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | host/system cgroup metrics and cAdvisor scrape health |
-| `dockerstats` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | Docker container CPU, memory, network, and scrape health |
-| `process` | `jetmon-v1.example.com`, `jetmon-v2.example.com` | native Jetmon process CPU, RSS, counts, threads, and open file descriptors |
+| `node` | `jetmon-service-host-1`, `jetmon-service-host-2` | host CPU, memory, disk, network, scrape health |
+| `cadvisor` | `jetmon-service-host-1`, `jetmon-service-host-2` | host/system cgroup metrics and cAdvisor scrape health |
+| `dockerstats` | `jetmon-service-host-1`, `jetmon-service-host-2` | Docker container CPU, memory, network, and scrape health |
+| `process` | `jetmon-service-host-1`, `jetmon-service-host-2` | native Jetmon process CPU, RSS, counts, threads, and open file descriptors |
 
-The monitoring Prometheus for this work is `prometheus.example.com:9090` on
-`monitoring.example.com`; do not use any retired or unrelated Prometheus running on
-the network.
+The monitoring Prometheus for this work is `http://10.0.0.67:9091` on
+`jetmon-vm-host-3`; do not use the retired paprika stack or any unrelated
+Prometheus running on the network.
 
 Useful readiness checks:
 
 ```promql
-up{job=~"node|cadvisor|dockerstats|process",instance=~"jetmon-v1.example.com|jetmon-v2.example.com"}
-uptime_bench_dockerstats_scrape_success{job="dockerstats",instance=~"jetmon-v1.example.com|jetmon-v2.example.com"}
-namedprocess_namegroup_num_procs{job="process",instance=~"jetmon-v1.example.com|jetmon-v2.example.com"}
+up{job=~"node|cadvisor|dockerstats|process",instance=~"jetmon-service-host-1|jetmon-service-host-2"}
+uptime_bench_dockerstats_scrape_success{job="dockerstats",instance=~"jetmon-service-host-1|jetmon-service-host-2"}
+namedprocess_namegroup_num_procs{job="process",instance=~"jetmon-service-host-1|jetmon-service-host-2"}
 ```
 
 All returned series should be `1`.
 
 ## Grafana Dashboards
 
-The Grafana instance for this work is `http://grafana.example.com:3000`. The admin
-password is stored on `monitoring.example.com` in
+The Grafana instance for this work is `http://10.0.0.67:3001`. The admin
+password is stored on `jetmon-vm-host-3` in
 `/home/jetmon/jetmon-monitoring/.env`.
 
 Provisioned dashboards:
@@ -98,14 +98,14 @@ links between fleet overview, host detail, and container detail while preserving
 the selected time range and variables.
 
 The monitoring stack itself is managed in
-`deploy/monitoring/jetmon/`. Sync it to `monitoring.example.com` with:
+`deploy/monitoring/jetmon/`. Sync it to `jetmon-vm-host-3` with:
 
 ```sh
 deploy/monitoring/jetmon/sync-to-host.sh
 ```
 
 Grafana SQLite backups are scheduled by `jetmon-grafana-backup.timer` on
-`monitoring.example.com` and retained under
+`jetmon-vm-host-3` and retained under
 `/home/jetmon/jetmon-monitoring/backups/grafana/`.
 
 The Jetmon hosts currently run Docker 29 with the `overlayfs` containerd
@@ -127,13 +127,13 @@ Example `targets.d/dockerstats_jetmon.yml`:
 
 ```yaml
 - labels:
-    instance: jetmon-v1.example.com
+    instance: jetmon-service-host-1
   targets:
-    - 203.0.113.170:9103
+    - 10.0.0.170:9103
 - labels:
-    instance: jetmon-v2.example.com
+    instance: jetmon-service-host-2
   targets:
-    - 203.0.113.171:9103
+    - 10.0.0.171:9103
 ```
 
 The same example is tracked in
@@ -169,13 +169,15 @@ count, average, p50, p95, max, and last value.
 Deploy the Docker stats exporter to a Jetmon host with:
 
 ```sh
-deploy/dockerstats-exporter.sh 203.0.113.170 jetmon
-deploy/dockerstats-exporter.sh 203.0.113.171 jetmon
+deploy/dockerstats-exporter.sh 10.0.0.170 jetmon
+deploy/dockerstats-exporter.sh 10.0.0.171 jetmon
 ```
 
 The deploy helper installs the binary at
 `/usr/local/bin/uptime-bench-dockerstats-exporter` and runs it in a
-Docker-published `alpine:3.20` container on host port `9103`.
+Docker-published `alpine:3.20` container on host port `9103`. It defaults to a
+256 MiB memory limit; override with `MEMORY_LIMIT=512m` if a host has enough
+containers for Docker stats collection to need more headroom.
 
 The binary can also run directly if host firewall rules expose the port:
 
@@ -239,6 +241,28 @@ For HTTP-only target testing that bypasses DNS while preserving the generated
 Host header, use `-connect-address=<target-ip>:80`.
 
 ### Local Target Capacity Lab
+
+For a delegated capacity lab, use a generated target namespace under a placeholder such as
+`load.example.com`:
+
+```toml
+[[targets]]
+id           = "capacity-a"
+address      = "203.0.113.20"
+control_port = 9000
+
+  [[targets.generated_sites]]
+  id           = "capacity-load"
+  host_pattern = "site-%07d.load.example.com"
+  start        = 1
+  count        = 1000000
+  paths        = ["/"]
+```
+
+This requires updating the private fleet DNS config and restarting the fleet DNS
+services after the updated DNS binary is deployed. In a real run, use a test
+domain that delegates to the fleet DNS hosts; `example.com` is only a committed
+placeholder.
 
 `configs/capacity/targetload.local.toml` defines a one-host lab for
 target-capacity checks. It serves one million generated hosts under
@@ -378,7 +402,7 @@ bin/uptime-bench-jetmon-capacity \
 ```
 
 Generate verification queries for counts, bucket distribution, stale checks,
-open events, and recent check history:
+open events, recent check history, freshness lag, and stale buckets:
 
 ```sh
 bin/uptime-bench-jetmon-capacity \
@@ -388,7 +412,136 @@ bin/uptime-bench-jetmon-capacity \
   -count=1000000
 ```
 
-The current helper outputs SQL only. The next automation step is a DB executor
-that takes per-service DSNs, applies these plans to both Jetmon services, records
-the exact UTC activation/deactivation timestamps, and runs the existing
-Prometheus capture for each batch window.
+The SQL-only helper remains useful for review, but the guarded runner can now
+generate artifacts and, only with `-apply`, execute the lifecycle against both
+Jetmon DBs.
+
+First create a dry-run smoke artifact set. This does not connect to either
+Jetmon DB:
+
+```sh
+make capacity-jetmon-run
+```
+
+To generate the full seed and activation SQL review set for every example batch
+size, run:
+
+```sh
+bin/uptime-bench-jetmon-capacity-run \
+  -config=configs/capacity/jetmon.example.toml \
+  -mode=plan \
+  -out-dir=reports/capacity/full-plan
+```
+
+Live runs require MySQL DSNs from local secret files. Inline `dsn` values in
+TOML are intentionally rejected so credentials do not end up in checked-in
+configs or dry-run artifacts. Use `configs/capacity/jetmon.fleet.toml` for live
+fleet runs; the example config is rejected by live `-apply` runs because it
+contains placeholder Prometheus labels.
+
+The recommended setup is to run long capacity suites from `jetmon-vm-host-3`
+using DSN files and systemd-managed SSH tunnels. This keeps MySQL bound to the
+service hosts while still giving the runner stable local TCP endpoints:
+
+```sh
+deploy/capacity-db-access.sh
+```
+
+The helper:
+
+- creates or reuses `/home/jetmon/.ssh/id_uptime_bench_capacity_ed25519` on
+  `jetmon-vm-host-3`;
+- authorizes that key on the service hosts for the systemd-managed `ssh -N`
+  tunnel services;
+- installs an sshd drop-in on each service host that allows local TCP forwarding
+  for `jetmon` connections from `jetmon-vm-host-3` to `127.0.0.1:3307`;
+- creates or rotates an `uptime_bench_capacity` MySQL user on each Jetmon DB;
+- grants only `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and
+  `CREATE TEMPORARY TABLES` on each Jetmon database for localhost and Docker
+  bridge gateway sources;
+- writes `0600` DSN files under
+  `/home/jetmon/uptime-bench-capacity/secrets/`;
+- installs `uptime-bench-capacity-tunnel-v1.service` and
+  `uptime-bench-capacity-tunnel-v2.service`;
+- installs the capacity-runner binary and fleet config under
+  `/home/jetmon/uptime-bench-capacity/`.
+
+The committed fleet config expects these secret paths:
+
+```text
+/home/jetmon/uptime-bench-capacity/secrets/jetmon-v1-capacity.dsn
+/home/jetmon/uptime-bench-capacity/secrets/jetmon-v2-capacity.dsn
+```
+
+The runner rejects secret files that are readable by group or other users.
+Long-running `-apply` commands should be started from `jetmon-vm-host-3`:
+
+```sh
+ssh -F ~/.ssh/config jetmon-vm-host-3
+cd /home/jetmon/uptime-bench-capacity
+./bin/uptime-bench-jetmon-capacity-run \
+  -config=configs/jetmon.fleet.toml \
+  -mode=verify \
+  -apply
+```
+
+Seed the inactive benchmark-owned ranges during a maintenance window:
+
+```sh
+./bin/uptime-bench-jetmon-capacity-run \
+  -config=configs/jetmon.fleet.toml \
+  -mode=seed \
+  -apply
+```
+
+The seed action refuses to delete existing rows unless the reserved range is
+empty. If the preflight finds rows and every row in the range already matches
+the generated capacity URL namespace, rerun with `-force-reseed` to deliberately
+delete and recreate that benchmark-owned range:
+
+```sh
+./bin/uptime-bench-jetmon-capacity-run \
+  -config=configs/jetmon.fleet.toml \
+  -mode=seed \
+  -apply \
+  -force-reseed
+```
+
+Run a small smoke window before increasing batch size:
+
+```sh
+./bin/uptime-bench-jetmon-capacity-run \
+  -config=configs/jetmon.fleet.toml \
+  -mode=run-batch \
+  -active-count=10 \
+  -duration=5m \
+  -apply
+```
+
+After the smoke passes, run the configured growth sequence:
+
+```sh
+./bin/uptime-bench-jetmon-capacity-run \
+  -config=configs/jetmon.fleet.toml \
+  -mode=run-suite \
+  -apply
+```
+
+The runner writes a `summary.txt` operator summary, a `run.json` machine-readable
+manifest, generated SQL files, execution results, exact UTC window timestamps,
+and `prometheus-window.json` when Prometheus capture is enabled. The manifest
+also includes lifecycle, Prometheus, health, and cleanup statuses; per-service
+DB health snapshots; freshness lag details; threshold pass/fail/not-measured
+entries; suite batch count/runtime estimates; and a `stop_recommended` flag when
+a growth suite should stop before the next batch. Applying any mutating
+lifecycle action requires the explicit `-apply` flag so planning can continue
+safely while another benchmark is active.
+
+During a live batch, the runner preflights Prometheus, verifies active counts
+before starting the window, captures a DB health snapshot at the recorded end
+time, deactivates the benchmark rows, then captures Prometheus for the exact
+`[window_start, window_end]` range. A Prometheus capture failure is recorded as
+`prometheus_status=fail`, but DB health and cleanup still run so missed-check
+thresholds are not hidden by monitoring failures. If the process receives
+SIGINT or SIGTERM during a batch, it uses a short fresh cleanup context to
+deactivate rows before returning.

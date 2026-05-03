@@ -1,10 +1,12 @@
 package jetmoncapacity
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/url"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -199,6 +201,47 @@ func WriteSQL(w io.Writer, plan Plan) error {
 	return nil
 }
 
+// RenderSQL renders a SQL lifecycle plan to a string.
+func RenderSQL(plan Plan) (string, error) {
+	var out bytes.Buffer
+	if err := WriteSQL(&out, plan); err != nil {
+		return "", err
+	}
+	return out.String(), nil
+}
+
+// RenderActiveCountSQL renders a verification query for the active row count.
+func RenderActiveCountSQL(c Config) (string, error) {
+	c = c.Normalize()
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`SELECT
+  COUNT(*) AS active_sites
+FROM jetpack_monitor_sites
+WHERE blog_id BETWEEN %d AND %d
+  AND monitor_active = 1;
+`, c.BlogIDStart, c.BlogIDEnd()), nil
+}
+
+// RenderSeedSafetySQL renders a preflight query for destructive seed resets.
+func RenderSeedSafetySQL(c Config) (string, error) {
+	c = c.Normalize()
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	likePattern, err := generatedURLLikePattern(c.URLPattern)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`SELECT
+  COUNT(*) AS total_rows,
+  SUM(CASE WHEN monitor_url LIKE %s ESCAPE '\\' THEN 1 ELSE 0 END) AS matching_url_rows
+FROM jetpack_monitor_sites
+WHERE blog_id BETWEEN %d AND %d;
+`, sqlString(likePattern), c.BlogIDStart, c.BlogIDEnd()), nil
+}
+
 func writeHeader(w io.Writer, plan Plan) {
 	c := plan.Config
 	fmt.Fprintf(w, "-- uptime-bench Jetmon capacity %s plan\n", plan.Action)
@@ -311,6 +354,45 @@ FROM jetmon_check_history
 WHERE blog_id BETWEEN %d AND %d
   AND checked_at >= UTC_TIMESTAMP() - INTERVAL %d MINUTE;
 `, c.BlogIDStart, c.BlogIDEnd(), freshSinceMinutes)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "-- Freshness lag percentiles for active checked rows in the benchmark-owned range.")
+	fmt.Fprintf(w, `WITH freshness AS (
+  SELECT TIMESTAMPDIFF(SECOND, last_checked_at, UTC_TIMESTAMP()) AS check_age_sec
+  FROM jetpack_monitor_sites
+  WHERE blog_id BETWEEN %d AND %d
+    AND monitor_active = 1
+    AND last_checked_at IS NOT NULL
+),
+ranked AS (
+  SELECT
+    check_age_sec,
+    CUME_DIST() OVER (ORDER BY check_age_sec) AS cumulative_rank
+  FROM freshness
+)
+SELECT
+  COUNT(*) AS freshness_samples,
+  MIN(check_age_sec) AS freshest_check_age_sec,
+  AVG(check_age_sec) AS average_check_age_sec,
+  MIN(CASE WHEN cumulative_rank >= 0.50 THEN check_age_sec END) AS p50_check_age_sec,
+  MIN(CASE WHEN cumulative_rank >= 0.95 THEN check_age_sec END) AS p95_check_age_sec,
+  MIN(CASE WHEN cumulative_rank >= 0.99 THEN check_age_sec END) AS p99_check_age_sec,
+  MAX(check_age_sec) AS oldest_check_age_sec
+FROM ranked;
+`, c.BlogIDStart, c.BlogIDEnd())
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "-- Stale active sites by scheduler bucket.")
+	fmt.Fprintf(w, `SELECT
+  bucket_no,
+  COUNT(*) AS active_sites,
+  SUM(CASE WHEN last_checked_at IS NULL OR last_checked_at < UTC_TIMESTAMP() - INTERVAL %d MINUTE THEN 1 ELSE 0 END) AS stale_active_sites
+FROM jetpack_monitor_sites
+WHERE blog_id BETWEEN %d AND %d
+  AND monitor_active = 1
+GROUP BY bucket_no
+ORDER BY bucket_no;
+`, freshSinceMinutes, c.BlogIDStart, c.BlogIDEnd())
 }
 
 func writeInsertBatchSQL(w io.Writer, c Config, offset, n int) error {
@@ -428,4 +510,64 @@ func formatMonitorURL(pattern string, number int64) (string, error) {
 
 func sqlString(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func generatedURLLikePattern(pattern string) (string, error) {
+	start, end, err := integerPlaceholderBounds(pattern)
+	if err != nil {
+		return "", err
+	}
+	return sqlLikeEscape(pattern[:start]) + "%" + sqlLikeEscape(pattern[end:]), nil
+}
+
+func integerPlaceholderBounds(pattern string) (int, int, error) {
+	foundStart := -1
+	foundEnd := -1
+	for i := 0; i < len(pattern); i++ {
+		if pattern[i] != '%' {
+			continue
+		}
+		if i+1 < len(pattern) && pattern[i+1] == '%' {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(pattern) {
+			r := rune(pattern[j])
+			if strings.ContainsRune("#0+- ", r) || unicode.IsDigit(r) {
+				j++
+				continue
+			}
+			if r == '.' {
+				j++
+				for j < len(pattern) && unicode.IsDigit(rune(pattern[j])) {
+					j++
+				}
+				continue
+			}
+			break
+		}
+		if j >= len(pattern) {
+			return 0, 0, fmt.Errorf("url pattern contains incomplete fmt placeholder")
+		}
+		if !strings.ContainsRune("vdboxXU", rune(pattern[j])) {
+			return 0, 0, fmt.Errorf("url pattern placeholder must be integer-like")
+		}
+		if foundStart != -1 {
+			return 0, 0, fmt.Errorf("url pattern must contain exactly one fmt integer placeholder")
+		}
+		foundStart = i
+		foundEnd = j + 1
+	}
+	if foundStart == -1 {
+		return 0, 0, fmt.Errorf("url pattern must contain exactly one fmt integer placeholder")
+	}
+	return foundStart, foundEnd, nil
+}
+
+func sqlLikeEscape(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	value = strings.ReplaceAll(value, `_`, `\_`)
+	return value
 }

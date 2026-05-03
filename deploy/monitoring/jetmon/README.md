@@ -1,12 +1,12 @@
 # Jetmon Monitoring Stack
 
 This stack is the repo-managed source for the Grafana and Prometheus setup on
-`monitoring.example.com`.
+`jetmon-vm-host-3` (`10.0.0.67`).
 
 ## Access
 
-- Grafana: `http://grafana.example.com:3000`
-- Prometheus: `http://prometheus.example.com:9090`
+- Grafana: `http://10.0.0.67:3001`
+- Prometheus: `http://10.0.0.67:9091`
 - Grafana admin user: `admin`
 - Grafana admin password: stored on the host in `/home/jetmon/jetmon-monitoring/.env`
 
@@ -32,7 +32,7 @@ single file; replacing it during sync changes the host-side inode.
 
 ## Compose
 
-On `monitoring.example.com`:
+On `jetmon-vm-host-3`:
 
 ```sh
 cd /home/jetmon/jetmon-monitoring
@@ -43,11 +43,11 @@ sudo docker compose -p jetmon-monitoring up -d
 
 ## Scraped Targets
 
-- `node`: all Jetmon service hosts plus `jetmon-lab-1.example.com`, `jetmon-lab-2.example.com`, and `monitoring.example.com`
-- `cadvisor`: all Docker-capable Jetmon service/VM hosts except `jetmon-lab-1.example.com`
-- `dockerstats`: all Docker-capable Jetmon service/VM hosts except `jetmon-lab-1.example.com`
-- `process`: native Jetmon service processes on `jetmon-v1.example.com` and `jetmon-v2.example.com`
-- `smartctl`: `monitoring.example.com`
+- `node`: all Jetmon service hosts plus `jetmon-vm-host-1`, `jetmon-vm-host-2`, and `jetmon-vm-host-3`
+- `cadvisor`: all Docker-capable Jetmon service/VM hosts except `jetmon-vm-host-1`
+- `dockerstats`: all Docker-capable Jetmon service/VM hosts except `jetmon-vm-host-1`
+- `process`: native Jetmon service processes on `jetmon-service-host-1` and `jetmon-service-host-2`
+- `smartctl`: `jetmon-vm-host-3`
 - `prometheus` and `grafana`: this monitoring stack
 
 Target files live in `configs/prometheus/targets.d/`.
@@ -86,7 +86,7 @@ Grafana stores mutable state in SQLite at:
 /home/jetmon/jetmon-monitoring/dbs/grafana/grafana.db
 ```
 
-Install the daily backup timer on `monitoring.example.com`:
+Install the daily backup timer on `jetmon-vm-host-3`:
 
 ```sh
 cd /home/jetmon/jetmon-monitoring

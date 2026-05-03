@@ -731,23 +731,27 @@ Deferred for different scenario lanes:
 
 ## Jetmon capacity benchmark
 
-**Status:** Initial observability path and generated target DNS support are implemented on `trunk`.
+**Status:** Live Jetmon v1/v2 capacity-run tooling is implemented on this branch.
 
 The first capacity track compares Jetmon v1 and Jetmon v2 as active monitor count grows. It is intentionally separate from scenario accuracy campaigns: scenario runs answer whether monitors detect controlled failures, while capacity runs answer how resource use, check timeliness, lifecycle throughput, and service health scale with batch size.
 
 Implemented:
 
-- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-v1.example.com` and `jetmon-v2.example.com`.
+- `cmd/uptime-bench-capacity` summarizes Prometheus range windows for `jetmon-service-host-1` and `jetmon-service-host-2`.
 - `cmd/uptime-bench-dockerstats-exporter` exposes Docker API container stats as Prometheus metrics for hosts where cAdvisor cannot identify Docker 29 `overlayfs` / containerd-snapshotter writable layers.
-- The exporter is deployed on both Jetmon hosts at `203.0.113.170:9103` and `203.0.113.171:9103`.
+- The exporter, cAdvisor, node exporter, process exporter, Grafana, and Prometheus configs are managed under `deploy/monitoring/jetmon/` for the local Jetmon fleet.
 - `fleet.toml` supports `[[targets.generated_sites]]` ranges so DNS can resolve million-scale synthetic hostnames without expanding all hosts into the zone map.
 - `cmd/uptime-bench-targetload` can probe generated host ranges against DNS and HTTP before those hosts are loaded into Jetmon.
-- `docs/capacity-benchmark.md` records the test shape, stop thresholds, target direction, and bulk lifecycle approach.
+- `cmd/uptime-bench-jetmon-capacity-run` can seed benchmark-owned DB ranges, activate/deactivate selected batch sizes, run 30-minute growth windows, capture exact-window Prometheus metrics, and stop when configured health thresholds fail.
+- `configs/capacity/jetmon.fleet.toml` records the live fleet plan for the local Jetmon capacity environment.
+- `deploy/capacity-db-access.sh` provisions scoped DB users, DSN secret files, and systemd-managed SSH tunnels from `jetmon-vm-host-3` to the Jetmon service hosts.
+- `docs/capacity-benchmark.md` records the test shape, live runbook, stop thresholds, target direction, and bulk lifecycle approach.
 
 Remaining follow-up:
 
-- Stress test target-side DNS and HTTP capacity before monitor-side million-site runs.
-- Implement a benchmark-owned bulk lifecycle path for Jetmon v1/v2 using bridge/API or controlled database-side seeded ranges, without changing Jetmon v1 application code.
+- Continue growth-suite runs beyond the currently validated 1,000-site Jetmon v2 fix to find the next failure point.
+- Add capacity result rollups that compare runs and generate handoff summaries automatically.
+- Keep validating target-side DNS and HTTP capacity before monitor-side million-site runs.
 
 ---
 

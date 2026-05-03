@@ -14,6 +14,8 @@ REMOTE_USER="${2:-jetmon}"
 PORT="${PORT:-9103}"
 IMAGE="${IMAGE:-alpine:3.20}"
 CONTAINER_NAME="${CONTAINER_NAME:-uptime-bench-dockerstats-exporter}"
+MEMORY_LIMIT="${MEMORY_LIMIT:-256m}"
+CPU_LIMIT="${CPU_LIMIT:-0.25}"
 
 if [[ -z "$HOST" ]]; then
     echo "Usage: $0 <host> [user]" >&2
@@ -31,7 +33,11 @@ echo "==> Building dockerstats exporter for linux/amd64"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$BINARY" ./cmd/uptime-bench-dockerstats-exporter
 
 echo "==> Copying exporter to ${REMOTE_USER}@${HOST}"
-scp "$BINARY" "${REMOTE_USER}@${HOST}:${REMOTE_STAGING}"
+if ! scp "$BINARY" "${REMOTE_USER}@${HOST}:${REMOTE_STAGING}"; then
+    # Some existing lab hosts do not have a working SFTP subsystem for modern
+    # scp. Fall back to legacy scp mode before giving up.
+    scp -O "$BINARY" "${REMOTE_USER}@${HOST}:${REMOTE_STAGING}"
+fi
 
 echo "==> Installing and starting Docker-published exporter on ${HOST}:${PORT}"
 # shellcheck disable=SC2029
@@ -40,21 +46,25 @@ ssh "${REMOTE_USER}@${HOST}" "
     sudo install -m 755 -o root -g root ${REMOTE_STAGING} ${REMOTE_BIN}
     rm -f ${REMOTE_STAGING}
     sudo systemctl disable --now uptime-bench-dockerstats-exporter.service >/dev/null 2>&1 || true
-    docker rm -f ${CONTAINER_NAME} >/dev/null 2>&1 || true
-    docker run -d \
+    DOCKER=docker
+    if ! docker info >/dev/null 2>&1; then
+        DOCKER='sudo docker'
+    fi
+    \${DOCKER} rm -f ${CONTAINER_NAME} >/dev/null 2>&1 || true
+    \${DOCKER} run -d \
       --name ${CONTAINER_NAME} \
       --restart unless-stopped \
       -p ${PORT}:9103 \
       -v ${REMOTE_BIN}:${REMOTE_BIN}:ro \
       -v /var/run/docker.sock:/var/run/docker.sock:ro \
-      --memory=64m \
-      --cpus=0.25 \
+      --memory=${MEMORY_LIMIT} \
+      --cpus=${CPU_LIMIT} \
       --read-only \
       --security-opt no-new-privileges:true \
       --cap-drop=ALL \
       ${IMAGE} \
       ${REMOTE_BIN} -listen=:9103
-    docker ps --filter name=${CONTAINER_NAME} --format '{{.Names}} {{.Status}} {{.Ports}}'
+    \${DOCKER} ps --filter name=${CONTAINER_NAME} --format '{{.Names}} {{.Status}} {{.Ports}}'
 "
 
 echo "==> Done"
