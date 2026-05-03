@@ -674,6 +674,47 @@ func TestMonitorTargetURLUsesConfiguredNonRootPathAndScenarioToken(t *testing.T)
 	}
 }
 
+func TestStableScenarioIndexNeverReturnsNegative(t *testing.T) {
+	ids := []string{
+		"http-partial",
+		"http-timeout-ttfb",
+		"http-redirect-loop",
+		"dns-nxdomain",
+		"dns-servfail",
+		"tls-invalid-self-signed",
+		"tls-expiring-5d",
+		"http-header-status",
+	}
+	for _, id := range ids {
+		for n := 2; n <= 16; n++ {
+			got := stableScenarioIndex(&scenario.Scenario{ID: id}, n)
+			if got < 0 || got >= n {
+				t.Fatalf("stableScenarioIndex(%q, %d) = %d, want [0,%d)", id, n, got, n)
+			}
+		}
+	}
+}
+
+func TestSelectMonitorPathDoesNotPanicForKnownCrashScenarios(t *testing.T) {
+	paths := []string{"/", "/api/health", "/shop"}
+	ids := []string{
+		"http-partial",
+		"http-timeout-ttfb",
+		"http-redirect-loop",
+		"dns-nxdomain",
+		"dns-servfail",
+		"tls-invalid-self-signed",
+		"tls-expiring-5d",
+		"http-header-status",
+	}
+	for _, id := range ids {
+		got := selectMonitorPath(&scenario.Scenario{ID: id}, paths)
+		if got != "/api/health" && got != "/shop" {
+			t.Fatalf("selectMonitorPath(%q) = %q, want one of the configured non-root paths", id, got)
+		}
+	}
+}
+
 func TestTargetHostPathForFailureScopesHTTPToSelectedPath(t *testing.T) {
 	endpoint := targetEndpoint{host: "bench-a.example", path: "/api/health"}
 	host, path := targetHostPathForFailure(endpoint, scenario.Failure{Type: "http_status"})

@@ -655,8 +655,9 @@ func stableScenarioIndex(sc *scenario.Scenario, n int) int {
 		key = sc.ID
 	}
 	sum := sha256.Sum256([]byte(key))
-	return int(uint64(sum[0])<<56|uint64(sum[1])<<48|uint64(sum[2])<<40|uint64(sum[3])<<32|
-		uint64(sum[4])<<24|uint64(sum[5])<<16|uint64(sum[6])<<8|uint64(sum[7])) % n
+	value := uint64(sum[0])<<56 | uint64(sum[1])<<48 | uint64(sum[2])<<40 | uint64(sum[3])<<32 |
+		uint64(sum[4])<<24 | uint64(sum[5])<<16 | uint64(sum[6])<<8 | uint64(sum[7])
+	return int(value % uint64(n))
 }
 
 func monitorURLToken(sc *scenario.Scenario) string {
