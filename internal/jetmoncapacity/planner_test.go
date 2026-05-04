@@ -98,6 +98,25 @@ func TestWriteActivateSQL(t *testing.T) {
 	assertContains(t, sql, "WHERE blog_id BETWEEN 100 AND 109;")
 	assertContains(t, sql, "WHERE blog_id BETWEEN 100 AND 102;")
 	assertContains(t, sql, "monitor_active = 1")
+	assertContains(t, sql, "last_checked_at = NULL,\n       next_check_at = NULL,\n       last_alert_sent_at = NULL")
+}
+
+func TestWriteDeactivateSQLV2ResetsSchedulerState(t *testing.T) {
+	var out bytes.Buffer
+	plan := Plan{
+		Action: OperationDeactivate,
+		Config: Config{
+			Schema:      SchemaV2,
+			BlogIDStart: 100,
+			Count:       10,
+			URLPattern:  "http://site-%d.example.test/",
+		},
+	}
+	if err := WriteSQL(&out, plan); err != nil {
+		t.Fatalf("WriteSQL: %v", err)
+	}
+	sql := out.String()
+	assertContains(t, sql, "last_checked_at = NULL,\n       next_check_at = NULL,\n       last_alert_sent_at = NULL")
 }
 
 func TestWriteVerifySQLV2UsesStableFreshnessSnapshot(t *testing.T) {

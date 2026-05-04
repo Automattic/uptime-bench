@@ -492,6 +492,7 @@ func writeSetRangeActiveSQL(w io.Writer, c Config, start, end int64, active bool
        site_status = 1,
        last_status_change = UTC_TIMESTAMP(),
        last_checked_at = NULL,
+       next_check_at = NULL,
        last_alert_sent_at = NULL,
        maintenance_start = NULL,
        maintenance_end = NULL
