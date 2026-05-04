@@ -100,6 +100,31 @@ func TestWriteActivateSQL(t *testing.T) {
 	assertContains(t, sql, "monitor_active = 1")
 }
 
+func TestWriteVerifySQLV2UsesStableFreshnessCutoff(t *testing.T) {
+	var out bytes.Buffer
+	plan := Plan{
+		Action: OperationVerify,
+		Config: Config{
+			Schema:      SchemaV2,
+			BlogIDStart: 100,
+			Count:       10,
+			URLPattern:  "http://site-%d.example.test/",
+		},
+		FreshSinceMinutes: 7,
+	}
+	if err := WriteSQL(&out, plan); err != nil {
+		t.Fatalf("WriteSQL: %v", err)
+	}
+	sql := out.String()
+	assertContains(t, sql, "SET @uptime_bench_now := UTC_TIMESTAMP();")
+	assertContains(t, sql, "SET @uptime_bench_freshness_cutoff := @uptime_bench_now - INTERVAL 7 MINUTE;")
+	assertContains(t, sql, "last_checked_at < @uptime_bench_freshness_cutoff")
+	assertContains(t, sql, "checked_at >= @uptime_bench_freshness_cutoff")
+	assertContains(t, sql, "TIMESTAMPDIFF(SECOND, last_checked_at, @uptime_bench_now)")
+	assertNotContains(t, sql, "last_checked_at < UTC_TIMESTAMP() - INTERVAL")
+	assertNotContains(t, sql, "checked_at >= UTC_TIMESTAMP() - INTERVAL")
+}
+
 func TestValidateRejectsBadURLPattern(t *testing.T) {
 	plan := Plan{
 		Action: OperationSeed,

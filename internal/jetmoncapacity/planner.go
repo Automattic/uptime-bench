@@ -360,14 +360,21 @@ ORDER BY bucket_no;
 	if c.Schema != SchemaV2 {
 		return
 	}
+
+	fmt.Fprintln(w, "-- Stable freshness reference for all v2 freshness checks.")
+	fmt.Fprintf(w, `SET @uptime_bench_now := UTC_TIMESTAMP();
+SET @uptime_bench_freshness_cutoff := @uptime_bench_now - INTERVAL %d MINUTE;
+`, freshSinceMinutes)
+	fmt.Fprintln(w)
+
 	fmt.Fprintln(w, "-- Active sites not checked within the freshness window.")
 	fmt.Fprintf(w, `SELECT
   COUNT(*) AS stale_active_sites
 FROM jetpack_monitor_sites
 WHERE blog_id BETWEEN %d AND %d
   AND monitor_active = 1
-  AND (last_checked_at IS NULL OR last_checked_at < UTC_TIMESTAMP() - INTERVAL %d MINUTE);
-`, c.BlogIDStart, c.BlogIDEnd(), freshSinceMinutes)
+  AND (last_checked_at IS NULL OR last_checked_at < @uptime_bench_freshness_cutoff);
+`, c.BlogIDStart, c.BlogIDEnd())
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "-- Open events remaining in the benchmark-owned range.")
@@ -384,13 +391,13 @@ WHERE blog_id BETWEEN %d AND %d
   COUNT(*) AS recent_check_history_rows
 FROM jetmon_check_history
 WHERE blog_id BETWEEN %d AND %d
-  AND checked_at >= UTC_TIMESTAMP() - INTERVAL %d MINUTE;
-`, c.BlogIDStart, c.BlogIDEnd(), freshSinceMinutes)
+  AND checked_at >= @uptime_bench_freshness_cutoff;
+`, c.BlogIDStart, c.BlogIDEnd())
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "-- Freshness lag percentiles for active checked rows in the benchmark-owned range.")
 	fmt.Fprintf(w, `WITH freshness AS (
-  SELECT TIMESTAMPDIFF(SECOND, last_checked_at, UTC_TIMESTAMP()) AS check_age_sec
+  SELECT TIMESTAMPDIFF(SECOND, last_checked_at, @uptime_bench_now) AS check_age_sec
   FROM jetpack_monitor_sites
   WHERE blog_id BETWEEN %d AND %d
     AND monitor_active = 1
@@ -418,13 +425,13 @@ FROM ranked;
 	fmt.Fprintf(w, `SELECT
   bucket_no,
   COUNT(*) AS active_sites,
-  SUM(CASE WHEN last_checked_at IS NULL OR last_checked_at < UTC_TIMESTAMP() - INTERVAL %d MINUTE THEN 1 ELSE 0 END) AS stale_active_sites
+  SUM(CASE WHEN last_checked_at IS NULL OR last_checked_at < @uptime_bench_freshness_cutoff THEN 1 ELSE 0 END) AS stale_active_sites
 FROM jetpack_monitor_sites
 WHERE blog_id BETWEEN %d AND %d
   AND monitor_active = 1
 GROUP BY bucket_no
 ORDER BY bucket_no;
-`, freshSinceMinutes, c.BlogIDStart, c.BlogIDEnd())
+`, c.BlogIDStart, c.BlogIDEnd())
 }
 
 func writeInsertBatchSQL(w io.Writer, c Config, offset, n int) error {
