@@ -100,7 +100,7 @@ func TestWriteActivateSQL(t *testing.T) {
 	assertContains(t, sql, "monitor_active = 1")
 }
 
-func TestWriteVerifySQLV2UsesStableFreshnessCutoff(t *testing.T) {
+func TestWriteVerifySQLV2UsesStableFreshnessSnapshot(t *testing.T) {
 	var out bytes.Buffer
 	plan := Plan{
 		Action: OperationVerify,
@@ -118,6 +118,10 @@ func TestWriteVerifySQLV2UsesStableFreshnessCutoff(t *testing.T) {
 	sql := out.String()
 	assertContains(t, sql, "SET @uptime_bench_now := UTC_TIMESTAMP();")
 	assertContains(t, sql, "SET @uptime_bench_freshness_cutoff := @uptime_bench_now - INTERVAL 7 MINUTE;")
+	assertContains(t, sql, "CREATE TEMPORARY TABLE uptime_bench_active_freshness AS")
+	assertContains(t, sql, "CASE\n    WHEN last_checked_at IS NULL OR last_checked_at < @uptime_bench_freshness_cutoff THEN 1")
+	assertContains(t, sql, "COALESCE(SUM(is_stale), 0) AS stale_active_sites")
+	assertContains(t, sql, "FROM uptime_bench_active_freshness")
 	assertContains(t, sql, "last_checked_at < @uptime_bench_freshness_cutoff")
 	assertContains(t, sql, "checked_at >= @uptime_bench_freshness_cutoff")
 	assertContains(t, sql, "TIMESTAMPDIFF(SECOND, last_checked_at, @uptime_bench_now)")

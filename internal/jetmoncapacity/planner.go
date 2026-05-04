@@ -367,14 +367,28 @@ SET @uptime_bench_freshness_cutoff := @uptime_bench_now - INTERVAL %d MINUTE;
 `, freshSinceMinutes)
 	fmt.Fprintln(w)
 
-	fmt.Fprintln(w, "-- Active sites not checked within the freshness window.")
-	fmt.Fprintf(w, `SELECT
-  COUNT(*) AS stale_active_sites
+	fmt.Fprintln(w, "-- Snapshot active v2 freshness rows so related freshness summaries use the same row state.")
+	fmt.Fprintf(w, `DROP TEMPORARY TABLE IF EXISTS uptime_bench_active_freshness;
+CREATE TEMPORARY TABLE uptime_bench_active_freshness AS
+SELECT
+  blog_id,
+  bucket_no,
+  last_checked_at,
+  TIMESTAMPDIFF(SECOND, last_checked_at, @uptime_bench_now) AS check_age_sec,
+  CASE
+    WHEN last_checked_at IS NULL OR last_checked_at < @uptime_bench_freshness_cutoff THEN 1
+    ELSE 0
+  END AS is_stale
 FROM jetpack_monitor_sites
 WHERE blog_id BETWEEN %d AND %d
-  AND monitor_active = 1
-  AND (last_checked_at IS NULL OR last_checked_at < @uptime_bench_freshness_cutoff);
+  AND monitor_active = 1;
 `, c.BlogIDStart, c.BlogIDEnd())
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "-- Active sites not checked within the freshness window.")
+	fmt.Fprintln(w, `SELECT
+  COALESCE(SUM(is_stale), 0) AS stale_active_sites
+FROM uptime_bench_active_freshness;`)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "-- Open events remaining in the benchmark-owned range.")
@@ -396,12 +410,10 @@ WHERE blog_id BETWEEN %d AND %d
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "-- Freshness lag percentiles for active checked rows in the benchmark-owned range.")
-	fmt.Fprintf(w, `WITH freshness AS (
-  SELECT TIMESTAMPDIFF(SECOND, last_checked_at, @uptime_bench_now) AS check_age_sec
-  FROM jetpack_monitor_sites
-  WHERE blog_id BETWEEN %d AND %d
-    AND monitor_active = 1
-    AND last_checked_at IS NOT NULL
+	fmt.Fprint(w, `WITH freshness AS (
+  SELECT check_age_sec
+  FROM uptime_bench_active_freshness
+  WHERE last_checked_at IS NOT NULL
 ),
 ranked AS (
   SELECT
@@ -418,20 +430,18 @@ SELECT
   MIN(CASE WHEN cumulative_rank >= 0.99 THEN check_age_sec END) AS p99_check_age_sec,
   MAX(check_age_sec) AS oldest_check_age_sec
 FROM ranked;
-`, c.BlogIDStart, c.BlogIDEnd())
+`)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "-- Stale active sites by scheduler bucket.")
-	fmt.Fprintf(w, `SELECT
+	fmt.Fprint(w, `SELECT
   bucket_no,
   COUNT(*) AS active_sites,
-  SUM(CASE WHEN last_checked_at IS NULL OR last_checked_at < @uptime_bench_freshness_cutoff THEN 1 ELSE 0 END) AS stale_active_sites
-FROM jetpack_monitor_sites
-WHERE blog_id BETWEEN %d AND %d
-  AND monitor_active = 1
+  COALESCE(SUM(is_stale), 0) AS stale_active_sites
+FROM uptime_bench_active_freshness
 GROUP BY bucket_no
 ORDER BY bucket_no;
-`, c.BlogIDStart, c.BlogIDEnd())
+`)
 }
 
 func writeInsertBatchSQL(w io.Writer, c Config, offset, n int) error {
