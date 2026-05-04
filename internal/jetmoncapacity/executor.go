@@ -3,12 +3,16 @@ package jetmoncapacity
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 )
+
+const transientStatementAttempts = 3
 
 // SQLExecutionResult records the outcome of executing rendered lifecycle SQL.
 type SQLExecutionResult struct {
@@ -53,30 +57,70 @@ func ExecuteSQL(ctx context.Context, dsn string, sqlText string) (SQLExecutionRe
 	for i, stmt := range statements {
 		keyword := statementKeyword(stmt)
 		item := SQLStatementResult{Index: i + 1, Keyword: keyword}
-		switch keyword {
-		case "SELECT", "SHOW", "WITH":
-			rows, err := conn.QueryContext(ctx, stmt)
-			if err != nil {
-				return result, fmt.Errorf("statement %d %s: %w", i+1, keyword, err)
-			}
-			columns, values, err := readRows(rows)
-			if err != nil {
-				return result, fmt.Errorf("statement %d %s: %w", i+1, keyword, err)
-			}
-			item.Columns = columns
-			item.Rows = values
-		default:
-			execResult, err := conn.ExecContext(ctx, stmt)
-			if err != nil {
-				return result, fmt.Errorf("statement %d %s: %w", i+1, keyword, err)
-			}
-			if affected, err := execResult.RowsAffected(); err == nil {
-				item.RowsAffected = &affected
+		for attempt := 1; ; attempt++ {
+			switch keyword {
+			case "SELECT", "SHOW", "WITH":
+				rows, err := conn.QueryContext(ctx, stmt)
+				if err == nil {
+					var columns []string
+					var values [][]string
+					columns, values, err = readRows(rows)
+					if err == nil {
+						item.Columns = columns
+						item.Rows = values
+					}
+				}
+				if err == nil {
+					goto statementDone
+				}
+				if !shouldRetryStatement(ctx, err, attempt) {
+					return result, fmt.Errorf("statement %d %s: %w", i+1, keyword, err)
+				}
+			default:
+				execResult, err := conn.ExecContext(ctx, stmt)
+				if err == nil {
+					if affected, rowsErr := execResult.RowsAffected(); rowsErr == nil {
+						item.RowsAffected = &affected
+					}
+					goto statementDone
+				}
+				if !shouldRetryStatement(ctx, err, attempt) {
+					return result, fmt.Errorf("statement %d %s: %w", i+1, keyword, err)
+				}
 			}
 		}
+	statementDone:
 		result.Statements = append(result.Statements, item)
 	}
 	return result, nil
+}
+
+func shouldRetryStatement(ctx context.Context, err error, attempt int) bool {
+	if attempt >= transientStatementAttempts || !isTransientMySQLError(err) {
+		return false
+	}
+	delay := time.Duration(attempt) * 250 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func isTransientMySQLError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	switch mysqlErr.Number {
+	case 1205, 1213:
+		return true
+	default:
+		return false
+	}
 }
 
 // SplitSQLStatements splits rendered lifecycle SQL into executable statements.

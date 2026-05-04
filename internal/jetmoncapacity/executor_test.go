@@ -1,6 +1,11 @@
 package jetmoncapacity
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+
+	mysql "github.com/go-sql-driver/mysql"
+)
 
 func TestSplitSQLStatementsPreservesQuotedSemicolon(t *testing.T) {
 	sql := `
@@ -51,5 +56,42 @@ func TestSplitSQLStatementsHandlesV2SeedPlan(t *testing.T) {
 	}
 	if got := statementKeyword(statements[len(statements)-1]); got != "COMMIT" {
 		t.Fatalf("last keyword = %q, want COMMIT", got)
+	}
+}
+
+func TestIsTransientMySQLError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "deadlock",
+			err:  &mysql.MySQLError{Number: 1213, Message: "deadlock"},
+			want: true,
+		},
+		{
+			name: "lock wait timeout",
+			err:  fmt.Errorf("wrapped: %w", &mysql.MySQLError{Number: 1205, Message: "lock wait timeout"}),
+			want: true,
+		},
+		{
+			name: "syntax error",
+			err:  &mysql.MySQLError{Number: 1064, Message: "syntax"},
+			want: false,
+		},
+		{
+			name: "plain error",
+			err:  fmt.Errorf("plain"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTransientMySQLError(tt.err); got != tt.want {
+				t.Fatalf("isTransientMySQLError() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
