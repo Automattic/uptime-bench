@@ -324,10 +324,28 @@ func writeActivateSQL(w io.Writer, c Config, activeCount int) {
 }
 
 func writeDeactivateSQL(w io.Writer, c Config) {
-	fmt.Fprintln(w, "START TRANSACTION;")
 	if c.Schema == SchemaV2 {
+		fmt.Fprintln(w, "START TRANSACTION;")
+		fmt.Fprintln(w, "-- Deactivate every benchmark-owned site row. Do this before closing events.")
+		writeSetRangeActiveSQL(w, c, c.BlogIDStart, c.BlogIDEnd(), false)
+		fmt.Fprintln(w, "COMMIT;")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "-- Allow in-flight checks fetched before deactivation to finish writing events.")
+		fmt.Fprintln(w, "DO SLEEP(5);")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "START TRANSACTION;")
 		writeCloseOpenEventsSQL(w, c, "capacity benchmark bulk deactivate")
+		fmt.Fprintln(w, "COMMIT;")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "-- Close any late events that landed during the first event cleanup pass.")
+		fmt.Fprintln(w, "DO SLEEP(2);")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "START TRANSACTION;")
+		writeCloseOpenEventsSQL(w, c, "capacity benchmark bulk deactivate late pass")
+		fmt.Fprintln(w, "COMMIT;")
+		return
 	}
+	fmt.Fprintln(w, "START TRANSACTION;")
 	fmt.Fprintln(w, "-- Deactivate every benchmark-owned site row.")
 	writeSetRangeActiveSQL(w, c, c.BlogIDStart, c.BlogIDEnd(), false)
 	fmt.Fprintln(w, "COMMIT;")
@@ -509,7 +527,7 @@ func writeSetRangeActiveSQL(w io.Writer, c Config, start, end int64, active bool
 }
 
 func writeCloseOpenEventsSQL(w io.Writer, c Config, note string) {
-	fmt.Fprintln(w, "-- Close stale open v2 events in the benchmark-owned range before resetting rows.")
+	fmt.Fprintln(w, "-- Close open v2 events in the benchmark-owned range.")
 	fmt.Fprintf(w, `DROP TEMPORARY TABLE IF EXISTS uptime_bench_capacity_events_to_close;
 CREATE TEMPORARY TABLE uptime_bench_capacity_events_to_close (
   id BIGINT UNSIGNED NOT NULL PRIMARY KEY

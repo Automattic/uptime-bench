@@ -117,6 +117,20 @@ func TestWriteDeactivateSQLV2ResetsSchedulerState(t *testing.T) {
 	}
 	sql := out.String()
 	assertContains(t, sql, "last_checked_at = NULL,\n       next_check_at = NULL,\n       last_alert_sent_at = NULL")
+	assertContains(t, sql, "-- Deactivate every benchmark-owned site row. Do this before closing events.")
+	assertContains(t, sql, "DO SLEEP(5);")
+	assertContains(t, sql, "DO SLEEP(2);")
+	if got := strings.Count(sql, "INSERT INTO jetmon_event_transitions"); got != 2 {
+		t.Fatalf("event close passes = %d, want 2", got)
+	}
+	deactivateIndex := strings.Index(sql, "UPDATE jetpack_monitor_sites")
+	closeIndex := strings.Index(sql, "INSERT INTO jetmon_event_transitions")
+	if deactivateIndex < 0 || closeIndex < 0 {
+		t.Fatalf("missing deactivate or close SQL")
+	}
+	if deactivateIndex > closeIndex {
+		t.Fatalf("deactivation must happen before event cleanup to avoid late open event races")
+	}
 }
 
 func TestWriteVerifySQLV2UsesStableFreshnessSnapshot(t *testing.T) {
