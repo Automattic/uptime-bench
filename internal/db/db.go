@@ -759,10 +759,10 @@ func (d *DB) CampaignReasonDetailRows(ctx context.Context, campaignRunIDs []stri
 		args[i] = id
 	}
 	query := `SELECT
-	        COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, ''),
-	        mr.service_id,
-	        COALESCE(mr.reason_code, ''),
-	        COALESCE(mr.retrieve_unknown_reason, ''),
+	        COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, '') AS failure_type,
+	        mr.service_id AS service_id,
+	        COALESCE(mr.reason_code, '') AS reason_code,
+	        COALESCE(mr.retrieve_unknown_reason, '') AS detail,
 	        COUNT(DISTINCT sr.id) AS runs
 	   FROM scenario_runs sr
 	   JOIN monitor_reports mr ON mr.run_id = sr.id
@@ -783,11 +783,11 @@ func (d *DB) CampaignReasonDetailRows(ctx context.Context, campaignRunIDs []stri
 	        COALESCE(mr.reason_code, ''),
 	        COALESCE(mr.retrieve_unknown_reason, '')
 	  ORDER BY
-	        COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sr.parameters, '$.campaign_failure_label')), ''), ft.failure_types, ''),
-	        mr.service_id,
-	        mr.reason_code,
+	        failure_type,
+	        service_id,
+	        reason_code,
 	        runs DESC,
-	        mr.retrieve_unknown_reason`
+	        detail`
 	rows, err := d.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: CampaignReasonDetailRows: %w", err)
