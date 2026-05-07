@@ -402,6 +402,43 @@ keyword_choices = ["uptime-bench-canary", "HACKED"]
 	}
 }
 
+func TestParse_FailureTypeFeatureMatrixHTTPChoices(t *testing.T) {
+	body := validHeader + `
+[[failure_types]]
+type                = "http_method_status"
+status_code_choices = [503]
+method_choices      = ["get", "HEAD"]
+
+[[failure_types]]
+type                    = "http_latency"
+delay_range             = { min = "5s", max = "10s" }
+response_time_threshold = "2s"
+
+[[failure_types]]
+type                 = "http_header_status"
+status_code_choices  = [503]
+header_name          = "X-Uptime-Bench"
+header_value_choices = ["feature-matrix"]
+`
+	c, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	byType := make(map[string]FailureType, len(c.FailureTypes))
+	for _, ft := range c.FailureTypes {
+		byType[ft.Type] = ft
+	}
+	if got := byType["http_method_status"].MethodChoices; len(got) != 2 || got[0] != "GET" || got[1] != "HEAD" {
+		t.Fatalf("http_method_status MethodChoices = %v", got)
+	}
+	if got := byType["http_latency"].Threshold; got != 2*time.Second {
+		t.Fatalf("http_latency Threshold = %v, want 2s", got)
+	}
+	if got := byType["http_header_status"]; got.HeaderName != "X-Uptime-Bench" || got.HeaderValueChoices[0] != "feature-matrix" {
+		t.Fatalf("http_header_status = %+v, want header choices", got)
+	}
+}
+
 func TestParse_RejectsInvalidHTTPChoices(t *testing.T) {
 	cases := []struct {
 		name       string

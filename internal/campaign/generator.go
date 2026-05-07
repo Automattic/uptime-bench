@@ -302,11 +302,23 @@ func pickFailureParams(r *rand.Rand, ft *FailureType) map[string]any {
 	if len(ft.StatusCodeChoices) > 0 {
 		p["status_code"] = ft.StatusCodeChoices[r.IntN(len(ft.StatusCodeChoices))]
 	}
+	if len(ft.MethodChoices) > 0 {
+		p["method"] = ft.MethodChoices[r.IntN(len(ft.MethodChoices))]
+	}
 	if len(ft.PhaseChoices) > 0 {
 		p["phase"] = ft.PhaseChoices[r.IntN(len(ft.PhaseChoices))]
 	}
 	if ft.DelayRange != nil {
 		p["delay"] = durationIn(r, ft.DelayRange.Min, ft.DelayRange.Max)
+	}
+	if ft.Threshold > 0 {
+		p["response_time_threshold"] = ft.Threshold
+	}
+	if ft.HeaderName != "" {
+		p["header_name"] = ft.HeaderName
+	}
+	if len(ft.HeaderValueChoices) > 0 {
+		p["header_value"] = ft.HeaderValueChoices[r.IntN(len(ft.HeaderValueChoices))]
 	}
 	content := ""
 	if len(ft.ContentChoices) > 0 {

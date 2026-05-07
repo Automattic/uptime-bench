@@ -73,6 +73,9 @@ func (d *Design) ToScenario(scenarioID string, monitors []string, checkFrequency
 	if err := applyHTTPBodyDefaults(sc, translated); err != nil {
 		return nil, fmt.Errorf("campaign: ToScenario: design %s: %w", d.ID, err)
 	}
+	if err := applyScenarioLevelParams(sc, translated); err != nil {
+		return nil, fmt.Errorf("campaign: ToScenario: design %s: %w", d.ID, err)
+	}
 
 	return sc, nil
 }
@@ -107,6 +110,18 @@ func failureFrom(failureType string, params map[string]any, offset, duration tim
 		}
 		f.StatusCode = code
 
+	case "http_method_status":
+		code, err := paramInt(params, "status_code")
+		if err != nil {
+			return f, fmt.Errorf("http_method_status: %w", err)
+		}
+		method, err := paramString(params, "method")
+		if err != nil {
+			return f, fmt.Errorf("http_method_status: %w", err)
+		}
+		f.StatusCode = code
+		f.Method = method
+
 	case "http_timeout":
 		phase, err := paramString(params, "phase")
 		if err != nil {
@@ -118,11 +133,55 @@ func failureFrom(failureType string, params map[string]any, offset, duration tim
 			return f, fmt.Errorf("http_timeout: %w", err)
 		}
 		f.Delay = delay
+		if method, ok, err := optionalParamString(params, "method"); err != nil {
+			return f, fmt.Errorf("http_timeout: %w", err)
+		} else if ok {
+			f.Method = method
+		}
+
+	case "http_latency":
+		delay, err := paramDuration(params, "delay")
+		if err != nil {
+			return f, fmt.Errorf("http_latency: %w", err)
+		}
+		f.Delay = delay
+		if method, ok, err := optionalParamString(params, "method"); err != nil {
+			return f, fmt.Errorf("http_latency: %w", err)
+		} else if ok {
+			f.Method = method
+		}
+
+	case "http_header_status":
+		code, err := paramInt(params, "status_code")
+		if err != nil {
+			return f, fmt.Errorf("http_header_status: %w", err)
+		}
+		headerName, err := paramString(params, "header_name")
+		if err != nil {
+			return f, fmt.Errorf("http_header_status: %w", err)
+		}
+		f.StatusCode = code
+		f.HeaderName = headerName
+		if headerValue, ok, err := optionalParamString(params, "header_value"); err != nil {
+			return f, fmt.Errorf("http_header_status: %w", err)
+		} else if ok {
+			f.HeaderValue = headerValue
+		}
+		if method, ok, err := optionalParamString(params, "method"); err != nil {
+			return f, fmt.Errorf("http_header_status: %w", err)
+		} else if ok {
+			f.Method = method
+		}
 
 	case "http_partial":
 		// truncate_after_bytes is optional in scenarios; leave nil if
 		// the campaign config doesn't specify it. Future enhancement:
 		// add truncate_after_bytes to FailureType.
+		if method, ok, err := optionalParamString(params, "method"); err != nil {
+			return f, fmt.Errorf("http_partial: %w", err)
+		} else if ok {
+			f.Method = method
+		}
 
 	case "http_redirect":
 		variant, err := paramString(params, "variant")
@@ -135,6 +194,11 @@ func failureFrom(failureType string, params map[string]any, offset, duration tim
 		} else if ok {
 			f.ChainLength = chainLength
 		}
+		if method, ok, err := optionalParamString(params, "method"); err != nil {
+			return f, fmt.Errorf("http_redirect: %w", err)
+		} else if ok {
+			f.Method = method
+		}
 
 	case "http_body":
 		content, err := paramString(params, "content")
@@ -142,6 +206,11 @@ func failureFrom(failureType string, params map[string]any, offset, duration tim
 			return f, fmt.Errorf("http_body: %w", err)
 		}
 		f.Content = content
+		if method, ok, err := optionalParamString(params, "method"); err != nil {
+			return f, fmt.Errorf("http_body: %w", err)
+		} else if ok {
+			f.Method = method
+		}
 
 	case "tcp_refused", "tcp_timeout":
 		// no type-specific params
@@ -291,6 +360,39 @@ func applyHTTPBodyDefaults(sc *scenario.Scenario, translated []translatedFailure
 	return nil
 }
 
+func applyScenarioLevelParams(sc *scenario.Scenario, translated []translatedFailure) error {
+	for _, tf := range translated {
+		if isDNSFailureType(tf.Failure.Type) {
+			sc.FreshHostname = true
+		}
+		if threshold, ok, err := optionalParamDuration(tf.Params, "response_time_threshold"); err != nil {
+			return fmt.Errorf("%s: %w", tf.Failure.Type, err)
+		} else if ok {
+			sc.ResponseTimeThreshold = threshold
+		}
+		if tf.Failure.Type == "http_header_status" && tf.Failure.HeaderName != "" {
+			if sc.RequestHeaders == nil {
+				sc.RequestHeaders = make(map[string]string)
+			}
+			value := tf.Failure.HeaderValue
+			if value == "" {
+				value = "uptime-bench-campaign"
+			}
+			sc.RequestHeaders[tf.Failure.HeaderName] = value
+		}
+	}
+	return nil
+}
+
+func isDNSFailureType(failureType string) bool {
+	switch failureType {
+	case "dns_nxdomain", "dns_servfail", "dns_timeout", "dns_cname_nxdomain", "dns_latency", "dns_ns_unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
 // paramInt extracts an int from the params map. Generator-side params
 // from pickFailureParams are always concrete int (e.g. status_code
 // chosen from []int), so type-assertion to int succeeds; a future
@@ -361,4 +463,12 @@ func paramDuration(params map[string]any, key string) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("param %q has type %T, want time.Duration or string", key, v)
 	}
+}
+
+func optionalParamDuration(params map[string]any, key string) (time.Duration, bool, error) {
+	if _, ok := params[key]; !ok {
+		return 0, false, nil
+	}
+	v, err := paramDuration(params, key)
+	return v, true, err
 }

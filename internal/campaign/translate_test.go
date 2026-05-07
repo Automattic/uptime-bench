@@ -438,3 +438,87 @@ func TestToScenario_DurationStringParam(t *testing.T) {
 		t.Errorf("Delay = %v, want 45s (parsed from string)", sc.Failures[0].Delay)
 	}
 }
+
+func TestToScenario_FeatureMatrixParams(t *testing.T) {
+	cases := []struct {
+		name        string
+		failureType string
+		params      map[string]any
+		assert      func(*testing.T, *scenario.Scenario)
+	}{
+		{
+			name:        "dns uses fresh hostname",
+			failureType: "dns_nxdomain",
+			params:      map[string]any{},
+			assert: func(t *testing.T, sc *scenario.Scenario) {
+				if !sc.FreshHostname {
+					t.Fatal("FreshHostname = false, want true for DNS campaign scenario")
+				}
+			},
+		},
+		{
+			name:        "method status",
+			failureType: "http_method_status",
+			params:      map[string]any{"status_code": 503, "method": "GET"},
+			assert: func(t *testing.T, sc *scenario.Scenario) {
+				f := sc.Failures[0]
+				if f.Type != "http_method_status" || f.StatusCode != 503 || f.Method != "GET" {
+					t.Fatalf("failure = %+v, want GET http_method_status 503", f)
+				}
+			},
+		},
+		{
+			name:        "latency threshold",
+			failureType: "http_latency",
+			params: map[string]any{
+				"delay":                   5 * time.Second,
+				"response_time_threshold": 2 * time.Second,
+			},
+			assert: func(t *testing.T, sc *scenario.Scenario) {
+				if sc.ResponseTimeThreshold != 2*time.Second {
+					t.Fatalf("ResponseTimeThreshold = %v, want 2s", sc.ResponseTimeThreshold)
+				}
+				if sc.Failures[0].Delay != 5*time.Second {
+					t.Fatalf("Delay = %v, want 5s", sc.Failures[0].Delay)
+				}
+			},
+		},
+		{
+			name:        "header status sets request header",
+			failureType: "http_header_status",
+			params: map[string]any{
+				"status_code":  503,
+				"header_name":  "X-Uptime-Bench",
+				"header_value": "feature-matrix",
+			},
+			assert: func(t *testing.T, sc *scenario.Scenario) {
+				if sc.RequestHeaders["X-Uptime-Bench"] != "feature-matrix" {
+					t.Fatalf("RequestHeaders = %+v, want X-Uptime-Bench=feature-matrix", sc.RequestHeaders)
+				}
+				f := sc.Failures[0]
+				if f.HeaderName != "X-Uptime-Bench" || f.HeaderValue != "feature-matrix" {
+					t.Fatalf("failure = %+v, want matching header params", f)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Design{
+				ID:          "d-feature",
+				Cell:        Cell{FailureType: tc.failureType, DurationBucket: "brief", HostPattern: HostPatternSingle},
+				Targets:     []string{"probe-a"},
+				FailureType: tc.failureType,
+				Duration:    time.Minute,
+				Params:      tc.params,
+				Seed:        9,
+			}
+			sc, err := d.ToScenario("c-1-r-0", []string{"jetmon-v2"}, time.Minute, 30*time.Second)
+			if err != nil {
+				t.Fatalf("ToScenario: %v", err)
+			}
+			tc.assert(t, sc)
+		})
+	}
+}

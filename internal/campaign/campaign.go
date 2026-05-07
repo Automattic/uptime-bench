@@ -10,6 +10,7 @@ package campaign
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -96,10 +97,14 @@ type FailureType struct {
 	Type string
 
 	// HTTP failure parameters
-	StatusCodeChoices []int
-	PhaseChoices      []string
-	DelayRange        *DurationRange
-	ContentChoices    []string
+	StatusCodeChoices  []int
+	MethodChoices      []string
+	PhaseChoices       []string
+	DelayRange         *DurationRange
+	Threshold          time.Duration
+	HeaderName         string
+	HeaderValueChoices []string
+	ContentChoices     []string
 
 	// KeywordChoices is the pool the generator samples *only* when the
 	// chosen content is keyword_injected — i.e. the foreign string the
@@ -212,16 +217,20 @@ type rawHighDiscrimTier struct {
 }
 
 type rawFailureType struct {
-	Type                 string          `toml:"type"`
-	StatusCodeChoices    []int           `toml:"status_code_choices"`
-	PhaseChoices         []string        `toml:"phase_choices"`
-	DelayRange           *rawDurationRng `toml:"delay_range"`
-	ContentChoices       []string        `toml:"content_choices"`
-	KeywordChoices       []string        `toml:"keyword_choices"`
-	DaysExpiredChoices   []int           `toml:"days_expired_choices"`
-	DaysRemainingChoices []int           `toml:"days_remaining_choices"`
-	VariantChoices       []string        `toml:"variant_choices"`
-	ReasonChoices        []string        `toml:"reason_choices"`
+	Type                  string          `toml:"type"`
+	StatusCodeChoices     []int           `toml:"status_code_choices"`
+	MethodChoices         []string        `toml:"method_choices"`
+	PhaseChoices          []string        `toml:"phase_choices"`
+	DelayRange            *rawDurationRng `toml:"delay_range"`
+	ResponseTimeThreshold string          `toml:"response_time_threshold"`
+	HeaderName            string          `toml:"header_name"`
+	HeaderValueChoices    []string        `toml:"header_value_choices"`
+	ContentChoices        []string        `toml:"content_choices"`
+	KeywordChoices        []string        `toml:"keyword_choices"`
+	DaysExpiredChoices    []int           `toml:"days_expired_choices"`
+	DaysRemainingChoices  []int           `toml:"days_remaining_choices"`
+	VariantChoices        []string        `toml:"variant_choices"`
+	ReasonChoices         []string        `toml:"reason_choices"`
 }
 
 type rawDurationRng struct {
@@ -390,7 +399,10 @@ func validateFailureTypes(rfs []rawFailureType, c *Campaign) error {
 		ft := FailureType{
 			Type:                 rf.Type,
 			StatusCodeChoices:    rf.StatusCodeChoices,
+			MethodChoices:        normalizeMethodChoices(rf.MethodChoices),
 			PhaseChoices:         rf.PhaseChoices,
+			HeaderName:           rf.HeaderName,
+			HeaderValueChoices:   rf.HeaderValueChoices,
 			ContentChoices:       rf.ContentChoices,
 			KeywordChoices:       rf.KeywordChoices,
 			DaysExpiredChoices:   rf.DaysExpiredChoices,
@@ -401,6 +413,11 @@ func validateFailureTypes(rfs []rawFailureType, c *Campaign) error {
 		for _, code := range rf.StatusCodeChoices {
 			if code < 100 || code > 599 {
 				return fmt.Errorf("campaign: failure_types[%d] (%s): status_code_choices contains invalid code %d", i, rf.Type, code)
+			}
+		}
+		for _, method := range ft.MethodChoices {
+			if !validHTTPMethod(method) {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): method_choices contains invalid method %q", i, rf.Type, method)
 			}
 		}
 		for _, days := range rf.DaysExpiredChoices {
@@ -448,9 +465,76 @@ func validateFailureTypes(rfs []rawFailureType, c *Campaign) error {
 			}
 			ft.DelayRange = dr
 		}
+		if rf.ResponseTimeThreshold != "" {
+			threshold, err := parseDuration(fmt.Sprintf("failure_types[%d].response_time_threshold", i), rf.ResponseTimeThreshold, true)
+			if err != nil {
+				return err
+			}
+			if threshold <= 0 {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): response_time_threshold must be positive", i, rf.Type)
+			}
+			ft.Threshold = threshold
+		}
+		if rf.Type == "http_latency" && ft.Threshold == 0 {
+			return fmt.Errorf("campaign: failure_types[%d] (%s): response_time_threshold is required for http_latency", i, rf.Type)
+		}
+		switch rf.Type {
+		case "http_method_status":
+			if len(rf.StatusCodeChoices) == 0 {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): status_code_choices is required for http_method_status", i, rf.Type)
+			}
+			if len(ft.MethodChoices) == 0 {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): method_choices is required for http_method_status", i, rf.Type)
+			}
+		case "http_timeout":
+			if len(rf.PhaseChoices) == 0 {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): phase_choices is required for http_timeout", i, rf.Type)
+			}
+			if ft.DelayRange == nil {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): delay_range is required for http_timeout", i, rf.Type)
+			}
+		case "http_latency":
+			if ft.DelayRange == nil {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): delay_range is required for http_latency", i, rf.Type)
+			}
+		case "http_redirect":
+			if len(rf.VariantChoices) == 0 {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): variant_choices is required for http_redirect", i, rf.Type)
+			}
+		}
+		if rf.Type == "http_header_status" {
+			if len(rf.StatusCodeChoices) == 0 {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): status_code_choices is required for http_header_status", i, rf.Type)
+			}
+			if ft.HeaderName == "" {
+				return fmt.Errorf("campaign: failure_types[%d] (%s): header_name is required for http_header_status", i, rf.Type)
+			}
+			for _, value := range ft.HeaderValueChoices {
+				if value == "" {
+					return fmt.Errorf("campaign: failure_types[%d] (%s): header_value_choices must not contain empty strings", i, rf.Type)
+				}
+			}
+		}
 		c.FailureTypes = append(c.FailureTypes, ft)
 	}
 	return nil
+}
+
+func normalizeMethodChoices(methods []string) []string {
+	out := make([]string, 0, len(methods))
+	for _, method := range methods {
+		out = append(out, strings.ToUpper(strings.TrimSpace(method)))
+	}
+	return out
+}
+
+func validHTTPMethod(method string) bool {
+	switch method {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS":
+		return true
+	default:
+		return false
+	}
 }
 
 // The variant/content/reason allowlists below duplicate the switches
