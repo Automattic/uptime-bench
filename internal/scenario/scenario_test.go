@@ -115,6 +115,29 @@ type = "tls_deprecated"
 	}
 }
 
+func TestParseFreshHostname(t *testing.T) {
+	data := []byte(`
+id              = "dns-fresh"
+version         = "1"
+target          = "t"
+monitors        = ["m"]
+fresh_hostname  = true
+check_frequency = "60s"
+grace_period    = "60s"
+duration        = "60s"
+
+[[failures]]
+type = "dns_nxdomain"
+`)
+	sc, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !sc.FreshHostname {
+		t.Fatal("FreshHostname = false, want true")
+	}
+}
+
 // TestValidateFailureType_RejectsBadInput covers the existing validation
 // errors so the refactor doesn't accidentally weaken them.
 func TestValidateFailureType_RejectsBadInput(t *testing.T) {

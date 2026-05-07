@@ -17,6 +17,7 @@ type Scenario struct {
 	Target         string
 	Monitors       []string
 	MonitorKind    string
+	FreshHostname  bool
 	CheckFrequency time.Duration
 	GracePeriod    time.Duration
 	Duration       time.Duration
@@ -122,6 +123,7 @@ type raw struct {
 	Target                string            `toml:"target"`
 	Monitors              []string          `toml:"monitors"`
 	MonitorKind           string            `toml:"monitor_kind"`
+	FreshHostname         bool              `toml:"fresh_hostname"`
 	CheckFrequency        string            `toml:"check_frequency"`
 	GracePeriod           string            `toml:"grace_period"`
 	Duration              string            `toml:"duration"`
@@ -221,6 +223,7 @@ func validate(r raw) (*Scenario, error) {
 		Target:                r.Target,
 		Monitors:              r.Monitors,
 		MonitorKind:           monitorKind,
+		FreshHostname:         r.FreshHostname,
 		CheckFrequency:        checkFreq,
 		GracePeriod:           gracePeriod,
 		Duration:              duration,

@@ -409,6 +409,12 @@ const (
 	// Never counted as a false negative; queryable as the support matrix.
 	ReasonCapabilityMismatch = "capability_mismatch"
 
+	// ReasonFailureNotObservable: the harness activated the requested
+	// failure, but a preflight probe could not observe that failure on the
+	// controlled fleet surface. The run is a setup/exposure problem, not a
+	// service detection miss.
+	ReasonFailureNotObservable = "failure_not_observable"
+
 	// ReasonMaintenanceSuppressed: failure was active and the monitor
 	// returned no alerts, but a maintenance window covered the failure
 	// period. Correct behaviour, not a false negative. Written by the

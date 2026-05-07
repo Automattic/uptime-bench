@@ -188,6 +188,9 @@ Reports must keep these categories separate:
   clean up that service. It is provider/control-plane reliability evidence, not
   target detection evidence.
 - `unknown` means no trustworthy service outcome was available.
+- `failure_not_observable` means the target/DNS preflight could not confirm
+  that the intended failure was actually visible to the controlled fleet
+  surface. Treat it as setup/exposure failure evidence, not a service miss.
 - `maintenance_suppressed`, `cooldown_suppressed`, and `cooldown_uncertain`
   must not be folded into false negatives.
 - TLS advisory scenarios must distinguish advisory detection from hard outage

@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"errors"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -672,6 +674,267 @@ func TestMonitorTargetURLUsesConfiguredNonRootPathAndScenarioToken(t *testing.T)
 	if !strings.Contains(got, "?ub=") {
 		t.Fatalf("monitorTargetURL = %q, want per-scenario query token", got)
 	}
+}
+
+func TestMonitorTargetURLRunTokenVariesByRun(t *testing.T) {
+	sc := &scenario.Scenario{
+		ID:       "sample-http-503",
+		Target:   "bench",
+		Failures: []scenario.Failure{{Type: "http_status"}},
+	}
+	endpoint := targetEndpoint{host: "bench-a.example", path: "/"}
+
+	first := monitorTargetURLForRun(sc, endpoint, "run-1")
+	second := monitorTargetURLForRun(sc, endpoint, "run-2")
+	if first == second {
+		t.Fatalf("monitor URL token should vary by run, got %q twice", first)
+	}
+	if !strings.Contains(first, "?ub=") || !strings.Contains(second, "?ub=") {
+		t.Fatalf("monitor URLs should include ub token, got %q and %q", first, second)
+	}
+}
+
+func TestTargetEndpointForRunFreshHostnameUsesGeneratedSites(t *testing.T) {
+	target := fleet.Target{
+		ID:      "bench",
+		Address: "192.0.2.1",
+		GeneratedSites: []fleet.GeneratedSiteRange{{
+			ID:          "load",
+			HostPattern: "site-%07d.load.example",
+			Start:       100,
+			Count:       50,
+			Paths:       []string{"/", "/health"},
+		}},
+	}
+	sc := &scenario.Scenario{ID: "dns-nxdomain", FreshHostname: true}
+
+	endpoint, err := targetEndpointForRun(sc, target, "run-1", 42)
+	if err != nil {
+		t.Fatalf("targetEndpointForRun: %v", err)
+	}
+	if !strings.HasPrefix(endpoint.host, "site-") || !strings.HasSuffix(endpoint.host, ".load.example") {
+		t.Fatalf("host = %q, want generated load hostname", endpoint.host)
+	}
+	if endpoint.path != "/health" {
+		t.Fatalf("path = %q, want non-root generated path", endpoint.path)
+	}
+
+	seenDifferent := false
+	for i := 2; i < 20; i++ {
+		next, err := targetEndpointForRun(sc, target, "run-"+strconv.Itoa(i), 42)
+		if err != nil {
+			t.Fatalf("targetEndpointForRun run-%d: %v", i, err)
+		}
+		if next.host != endpoint.host {
+			seenDifferent = true
+			break
+		}
+	}
+	if !seenDifferent {
+		t.Fatalf("fresh hostname selection did not vary across sampled run IDs; first host %q", endpoint.host)
+	}
+}
+
+func TestTargetEndpointForRunFreshHostnameRequiresGeneratedSites(t *testing.T) {
+	_, err := targetEndpointForRun(&scenario.Scenario{ID: "dns", FreshHostname: true}, gateTestTarget(), "run-1", 1)
+	if err == nil {
+		t.Fatal("targetEndpointForRun returned nil error without generated_sites")
+	}
+	if !strings.Contains(err.Error(), "fresh_hostname") {
+		t.Fatalf("error = %q, want fresh_hostname detail", err)
+	}
+}
+
+func TestControlMembersForFailureRoutesDNSToNameservers(t *testing.T) {
+	fl := &fleet.Config{
+		Nameservers: []fleet.Nameserver{
+			{ID: "ns-1", Address: "192.0.2.10", ControlPort: 9100, DNSPort: 53},
+			{ID: "ns-2", Address: "192.0.2.11", ControlPort: 9100, DNSPort: 53},
+		},
+	}
+	target := gateTestTarget()
+
+	members, err := controlMembersForFailure(fl, target, scenario.Failure{Type: "dns_nxdomain", Rate: 1}, 99)
+	if err != nil {
+		t.Fatalf("controlMembersForFailure: %v", err)
+	}
+	if len(members) != 2 || members[0].Kind != "dns" || members[1].Kind != "dns" {
+		t.Fatalf("members = %+v, want both DNS nameservers", members)
+	}
+	if members[0].ID != "ns-1" || members[1].ID != "ns-2" {
+		t.Fatalf("member IDs = %+v, want fleet nameserver order", controlMemberIDs(members))
+	}
+}
+
+func TestControlMembersForFailureDNSRequiresNameservers(t *testing.T) {
+	_, err := controlMembersForFailure(&fleet.Config{}, gateTestTarget(), scenario.Failure{Type: "dns_nxdomain", Rate: 1}, 99)
+	if err == nil {
+		t.Fatal("controlMembersForFailure returned nil error without nameservers")
+	}
+	if !strings.Contains(err.Error(), "requires at least one configured nameserver") {
+		t.Fatalf("error = %q, want nameserver requirement", err)
+	}
+}
+
+func TestControlMembersForFailureRoutesHTTPToTarget(t *testing.T) {
+	fl := &fleet.Config{}
+	target := gateTestTarget()
+
+	members, err := controlMembersForFailure(fl, target, scenario.Failure{Type: "http_status", Rate: 1}, 99)
+	if err != nil {
+		t.Fatalf("controlMembersForFailure: %v", err)
+	}
+	if len(members) != 1 || members[0].Kind != "target" || members[0].ID != "bench" {
+		t.Fatalf("members = %+v, want target control member", members)
+	}
+}
+
+func TestControlMembersForFailureDNSNSUnavailableSelectsStableSubset(t *testing.T) {
+	fl := &fleet.Config{
+		Nameservers: []fleet.Nameserver{
+			{ID: "ns-1", Address: "192.0.2.10", ControlPort: 9100, DNSPort: 53},
+			{ID: "ns-2", Address: "192.0.2.11", ControlPort: 9100, DNSPort: 53},
+		},
+	}
+	f := scenario.Failure{Type: "dns_ns_unavailable", Rate: 0.5}
+
+	first, err := controlMembersForFailure(fl, gateTestTarget(), f, 123)
+	if err != nil {
+		t.Fatalf("controlMembersForFailure: %v", err)
+	}
+	second, err := controlMembersForFailure(fl, gateTestTarget(), f, 123)
+	if err != nil {
+		t.Fatalf("controlMembersForFailure second: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("selected members = %+v / %+v, want one nameserver for rate=0.5", first, second)
+	}
+	if first[0].ID != second[0].ID {
+		t.Fatalf("selection not stable: %+v then %+v", first, second)
+	}
+}
+
+func TestCheckDNSFailureExposureNXDOMAIN(t *testing.T) {
+	member, closeServer := startFakeDNSServer(t, func(query []byte) []byte {
+		return dnsTestErrorResponse(t, query, 3)
+	})
+	defer closeServer()
+
+	exposure := checkDNSFailureExposure(context.Background(),
+		scenario.Failure{Type: "dns_nxdomain", Rate: 1},
+		"bench-a.example",
+		[]controlMember{member},
+		time.Second,
+	)
+	if !exposure.Observable {
+		t.Fatalf("exposure = %+v, want observable NXDOMAIN", exposure)
+	}
+	if len(exposure.Checks) != 1 || exposure.Checks[0].RCode != 3 {
+		t.Fatalf("checks = %+v, want one RCODE 3 check", exposure.Checks)
+	}
+}
+
+func TestCheckDNSFailureExposureMismatch(t *testing.T) {
+	member, closeServer := startFakeDNSServer(t, func(query []byte) []byte {
+		return dnsTestErrorResponse(t, query, 0)
+	})
+	defer closeServer()
+
+	exposure := checkDNSFailureExposure(context.Background(),
+		scenario.Failure{Type: "dns_nxdomain", Rate: 1},
+		"bench-a.example",
+		[]controlMember{member},
+		time.Second,
+	)
+	if exposure.Observable {
+		t.Fatalf("exposure = %+v, want non-observable for healthy response", exposure)
+	}
+	if !strings.Contains(exposure.Reason, "did not match") {
+		t.Fatalf("reason = %q, want mismatch detail", exposure.Reason)
+	}
+}
+
+func TestLogFailureNotObservableWritesStructuredUnknownRows(t *testing.T) {
+	rec := &fakeRecorder{}
+	a := &recordingAdapter{id: "svc"}
+	logFailureNotObservable(context.Background(), rec, "run-1", []provisioned{{a: a}}, scenario.Failure{Type: "dns_nxdomain"}, dnsExposureResult{
+		Host:        "bench-a.example",
+		FailureType: "dns_nxdomain",
+		Observable:  false,
+		Reason:      "mismatch",
+	})
+
+	if len(rec.monitorReportRows) != 1 {
+		t.Fatalf("monitor report rows = %d, want 1", len(rec.monitorReportRows))
+	}
+	row := rec.monitorReportRows[0]
+	if row.RetrieveStatus != string(adapter.RetrieveUnknown) {
+		t.Fatalf("RetrieveStatus = %q, want unknown", row.RetrieveStatus)
+	}
+	if row.ReasonCode != adapter.ReasonFailureNotObservable {
+		t.Fatalf("ReasonCode = %q, want %q", row.ReasonCode, adapter.ReasonFailureNotObservable)
+	}
+}
+
+func startFakeDNSServer(t *testing.T, response func([]byte) []byte) (controlMember, func()) {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 1500)
+		for {
+			n, addr, err := conn.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			query := append([]byte(nil), buf[:n]...)
+			if resp := response(query); resp != nil {
+				_, _ = conn.WriteTo(resp, addr)
+			}
+		}
+	}()
+
+	host, portText, err := net.SplitHostPort(conn.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("Atoi port: %v", err)
+	}
+	member := controlMember{
+		ID:      "ns-test",
+		Kind:    "dns",
+		Address: host,
+		DNSPort: port,
+	}
+	closeFn := func() {
+		_ = conn.Close()
+		<-done
+	}
+	return member, closeFn
+}
+
+func dnsTestErrorResponse(t *testing.T, query []byte, rcode byte) []byte {
+	t.Helper()
+	qEnd, ok := skipDNSName(query, 12)
+	if !ok || qEnd+4 > len(query) {
+		t.Fatalf("malformed test query")
+	}
+	qEnd += 4
+	resp := []byte{
+		query[0], query[1],
+		0x84, rcode & 0x0F,
+		0x00, 0x01, // QDCOUNT
+		0x00, 0x00, // ANCOUNT
+		0x00, 0x00, // NSCOUNT
+		0x00, 0x00, // ARCOUNT
+	}
+	return append(resp, query[12:qEnd]...)
 }
 
 func TestStableScenarioIndexNeverReturnsNegative(t *testing.T) {

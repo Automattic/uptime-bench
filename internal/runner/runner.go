@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -94,23 +93,26 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	if err != nil {
 		return "", fmt.Errorf("runner: %w", err)
 	}
-	endpoint := targetEndpointForScenario(sc, target)
+	endpoint, err := targetEndpointForRun(sc, target, runID, seed)
+	if err != nil {
+		return "", fmt.Errorf("runner: %w", err)
+	}
 
 	token, err := readFleetToken(fl)
 	if err != nil {
 		return "", fmt.Errorf("runner: %w", err)
 	}
-	targetClient := control.NewClient(
-		fmt.Sprintf("http://%s:%d", target.Address, target.ControlPort),
-		token, &http.Client{Timeout: fl.Control.Timeout},
-	)
+	monitorURL := monitorTargetURLForRun(sc, endpoint, runID)
 
 	params := map[string]any{
 		"check_frequency": sc.CheckFrequency.String(),
 		"grace_period":    sc.GracePeriod.String(),
 		"duration":        sc.Duration.String(),
 		"failures":        len(sc.Failures),
-		"monitor_url":     monitorTargetURLForEndpoint(sc, endpoint),
+		"monitor_url":     monitorURL,
+	}
+	if sc.FreshHostname {
+		params["fresh_hostname"] = true
 	}
 	for k, v := range o.parameters {
 		params[k] = v
@@ -235,6 +237,28 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 				log.Printf("runner: warning: failure %s has regions %v but no matching probe_ranges found in services.toml", f.Type, f.Regions)
 			}
 			host, path := targetHostPathForFailure(endpoint, f)
+			members, err := controlMembersForFailure(fl, target, f, seed)
+			if err != nil {
+				log.Printf("runner: select control members for %s: %v", f.Type, err)
+				if isDNSFailureType(f.Type) {
+					exposure := dnsExposureResult{
+						Host:        endpoint.host,
+						FailureType: f.Type,
+						Observable:  false,
+						Reason:      err.Error(),
+					}
+					fp["dns_exposure"] = exposure
+					if err := logEvent(ctx, database, runID, sc.Target, "setup_exposure_failure", f.Type, fp); err != nil {
+						resolutionReason = "ground_truth_log_failure"
+						return runID, err
+					}
+					logFailureNotObservable(ctx, database, runID, handles, f, exposure)
+					resolutionReason = "setup_exposure_failure"
+					return runID, nil
+				}
+				resolutionReason = "adapter_error"
+				return runID, fmt.Errorf("runner: select control members for %s: %w", f.Type, err)
+			}
 			req := control.ActivateRequest{
 				RunID: runID,
 				Seed:  seed,
@@ -248,10 +272,38 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 					SourceCIDRs: sourceCIDRs,
 				},
 			}
-			if err := targetClient.Activate(ctx, req); err != nil {
+			if f.Type == "dns_ns_unavailable" {
+				// For nameserver-availability scenarios, rate chooses the
+				// fraction of DNS members to affect. Once a member is selected,
+				// every query to that member should see the configured mode.
+				req.Failure.Rate = 1.0
+			}
+			if err := activateFailure(ctx, members, token, fl.Control.Timeout, req); err != nil {
 				log.Printf("runner: activate %s: %v", f.Type, err)
 				resolutionReason = "adapter_error"
 				return runID, fmt.Errorf("runner: activate %s: %w", f.Type, err)
+			}
+			fp["control_members"] = controlMemberIDs(members)
+			if isDNSFailureType(f.Type) {
+				exposure := checkDNSFailureExposure(ctx, f, endpoint.host, members, fl.Control.Timeout)
+				fp["dns_exposure"] = exposure
+				if !exposure.Observable {
+					if err := deactivateFailure(ctx, members, token, fl.Control.Timeout, control.DeactivateRequest{
+						RunID:       runID,
+						FailureType: f.Type,
+						Host:        host,
+						Path:        path,
+					}); err != nil {
+						log.Printf("runner: deactivate %s after exposure failure: %v", f.Type, err)
+					}
+					if err := logEvent(ctx, database, runID, sc.Target, "setup_exposure_failure", f.Type, fp); err != nil {
+						resolutionReason = "ground_truth_log_failure"
+						return runID, err
+					}
+					logFailureNotObservable(ctx, database, runID, handles, f, exposure)
+					resolutionReason = "setup_exposure_failure"
+					return runID, nil
+				}
 			}
 			if err := logEvent(ctx, database, runID, sc.Target, "failure_start", f.Type, fp); err != nil {
 				resolutionReason = "ground_truth_log_failure"
@@ -263,13 +315,19 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			}
 		} else {
 			host, path := targetHostPathForFailure(endpoint, f)
+			members, err := controlMembersForFailure(fl, target, f, seed)
+			if err != nil {
+				log.Printf("runner: select control members for deactivate %s: %v", f.Type, err)
+				resolutionReason = "adapter_error"
+				return runID, fmt.Errorf("runner: select control members for deactivate %s: %w", f.Type, err)
+			}
 			req := control.DeactivateRequest{
 				RunID:       runID,
 				FailureType: f.Type,
 				Host:        host,
 				Path:        path,
 			}
-			if err := targetClient.Deactivate(ctx, req); err != nil {
+			if err := deactivateFailure(ctx, members, token, fl.Control.Timeout, req); err != nil {
 				log.Printf("runner: deactivate %s: %v", f.Type, err)
 			}
 			if err := logEvent(ctx, database, runID, sc.Target, "failure_end", f.Type, nil); err != nil {
@@ -535,7 +593,7 @@ func provisionAdapters(
 			continue
 		}
 
-		tgt := adapter.Target{ID: sc.Target, URL: monitorTargetURLForEndpoint(sc, endpoint)}
+		tgt := adapter.Target{ID: sc.Target, URL: monitorTargetURLForRun(sc, endpoint, runID)}
 		cfg := adapter.ProvisionConfig{
 			CheckFrequency:        sc.CheckFrequency,
 			MonitorKind:           sc.MonitorKind,
@@ -573,6 +631,10 @@ func monitorTargetURL(sc *scenario.Scenario, target fleet.Target) string {
 }
 
 func monitorTargetURLForEndpoint(sc *scenario.Scenario, endpoint targetEndpoint) string {
+	return monitorTargetURLForRun(sc, endpoint, "")
+}
+
+func monitorTargetURLForRun(sc *scenario.Scenario, endpoint targetEndpoint, runID string) string {
 	// Use the first site's hostname so adapters register against the
 	// domain name rather than the infrastructure address. Monitoring
 	// services check by domain, not by IP.
@@ -585,13 +647,17 @@ func monitorTargetURLForEndpoint(sc *scenario.Scenario, endpoint targetEndpoint)
 		Host:   endpoint.host,
 		Path:   endpoint.path,
 	}
-	if token := monitorURLToken(sc); token != "" {
+	if token := monitorURLToken(sc, runID); token != "" {
 		u.RawQuery = "ub=" + token
 	}
 	return u.String()
 }
 
 func targetEndpointForScenario(sc *scenario.Scenario, target fleet.Target) targetEndpoint {
+	endpoint, err := targetEndpointForRun(sc, target, "", 0)
+	if err == nil {
+		return endpoint
+	}
 	if len(target.Sites) == 0 {
 		return targetEndpoint{host: target.Address}
 	}
@@ -600,6 +666,29 @@ func targetEndpointForScenario(sc *scenario.Scenario, target fleet.Target) targe
 		host: site.Host,
 		path: selectMonitorPath(sc, site.Paths),
 	}
+}
+
+func targetEndpointForRun(sc *scenario.Scenario, target fleet.Target, runID string, seed int64) (targetEndpoint, error) {
+	if sc != nil && sc.FreshHostname {
+		if len(target.GeneratedSites) == 0 {
+			return targetEndpoint{}, fmt.Errorf("scenario %q requested fresh_hostname but target %q has no generated_sites", sc.ID, target.ID)
+		}
+		rangeIndex := stableRunIndex(sc, runID, seed, "generated-range", len(target.GeneratedSites))
+		generated := target.GeneratedSites[rangeIndex]
+		siteIndex := generated.Start + stableRunIndex(sc, runID, seed, "generated-host", generated.Count)
+		return targetEndpoint{
+			host: fmt.Sprintf(generated.HostPattern, siteIndex),
+			path: selectMonitorPath(sc, generated.Paths),
+		}, nil
+	}
+	if len(target.Sites) == 0 {
+		return targetEndpoint{host: target.Address}, nil
+	}
+	site := target.Sites[0]
+	return targetEndpoint{
+		host: site.Host,
+		path: selectMonitorPath(sc, site.Paths),
+	}, nil
 }
 
 func selectMonitorPath(sc *scenario.Scenario, paths []string) string {
@@ -661,11 +750,30 @@ func stableScenarioIndex(sc *scenario.Scenario, n int) int {
 	return int(value % uint64(n))
 }
 
-func monitorURLToken(sc *scenario.Scenario) string {
+func stableRunIndex(sc *scenario.Scenario, runID string, seed int64, salt string, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	scID := ""
+	if sc != nil {
+		scID = sc.ID
+	}
+	key := fmt.Sprintf("%s\x00%s\x00%d\x00%s", scID, runID, seed, salt)
+	sum := sha256.Sum256([]byte(key))
+	value := uint64(sum[0])<<56 | uint64(sum[1])<<48 | uint64(sum[2])<<40 | uint64(sum[3])<<32 |
+		uint64(sum[4])<<24 | uint64(sum[5])<<16 | uint64(sum[6])<<8 | uint64(sum[7])
+	return int(value % uint64(n))
+}
+
+func monitorURLToken(sc *scenario.Scenario, runID string) string {
 	if sc == nil || strings.TrimSpace(sc.ID) == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(sc.ID))
+	key := sc.ID
+	if runID != "" {
+		key += "\x00" + runID
+	}
+	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:4])
 }
 

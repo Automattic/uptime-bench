@@ -260,10 +260,15 @@ Adapter-surface improvements started:
 - Jetmon v2 now receives custom request headers from scenario config through its adapter.
 - `services.example.toml` documents the optional `http_method` setting for Better Uptime and Datadog Synthetics.
 - Scenario parsing, adapter capabilities, and runner capability gating now understand native `monitor_kind` values (`http`, `dns`, `tcp`, `ssl_certificate`, `heartbeat`), custom `request_headers`, and `response_time_threshold`.
+- DNS scenario execution now targets DNS control members directly, supports
+  `fresh_hostname = true` for generated per-run hostnames, and records
+  `failure_not_observable` unknown rows when authoritative preflight probes
+  cannot see the injected DNS failure.
 
 Feature gaps to model next:
 
 - **Native DNS/TCP/SSL monitor adapter paths.** The schema/gating layer is implemented, but every current adapter still provisions HTTP monitors unless explicitly extended. This is deferred because each provider uses a different request and result schema for native DNS, TCP/port, and SSL/certificate monitors; enabling those paths without stale cleanup and classification tests would produce misleading comparisons.
+- **DNS resolver-exposure artifacts.** Authoritative DNS preflight is implemented. A later reporting pass should also capture service-host resolver checks when available, raw Jetmon v2 DNS event metadata/transitions, and `dns.*` StatsD metrics so DNS failures can be separated into "not injected", "not recursively observable", and "observable but missed by the service" buckets.
 - **Dedicated certificate and domain-expiry products.** Current TLS scenarios test HTTPS probe behavior. Native SSL/certificate monitor kinds should come next after one provider adapter is wired through `monitor_kind = "ssl_certificate"`. Domain-expiry monitors remain deferred because reliable simulation requires registrar/RDAP behavior rather than only target TLS behavior.
 - **Heartbeat/push checks.** `monitor_kind = "heartbeat"` is reserved, but no adapter provisions heartbeat monitors yet. The intended first implementation is harness-owned heartbeat sending: adapter provisions a heartbeat endpoint, the harness sends check-ins during healthy periods, and `heartbeat_stopped` pauses those check-ins. This is deferred until the first adapter exposes heartbeat creation and stale cleanup.
 - **Header/auth-sensitive checks beyond custom headers.** Custom request-header support is implemented for Datadog and Jetmon v2. Authentication flows and user-agent divergence remain deferred because they need clearer cross-provider request-shape controls and target fixtures beyond a single deterministic header.

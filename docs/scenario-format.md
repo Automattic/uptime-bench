@@ -18,6 +18,7 @@ All duration fields use Go's `time.ParseDuration` format: a number followed by a
 | `target` | string | yes | — | ID of the target endpoint to inject failures against. |
 | `monitors` | array of strings | yes | — | Service instance IDs to evaluate, matching the `id` fields in `services.toml` (e.g. `["jetmon-v1", "pingdom"]`). Only enabled services are used; disabled services with a matching ID are skipped. |
 | `monitor_kind` | string | no | `"http"` | Native monitor kind requested from the adapter. Supported schema values are `"http"`, `"dns"`, `"tcp"`, `"ssl_certificate"`, and `"heartbeat"`. Adapters that cannot provision the requested kind are skipped with `reason_code = "capability_mismatch"`. |
+| `fresh_hostname` | boolean | no | `false` | When true, the runner provisions the monitor against one hostname from the target's `[[targets.generated_sites]]` range for this run. This is useful for DNS failure scenarios because recursive resolvers may cache the healthy static hostname from earlier runs. The exact chosen URL is recorded in the run parameters. |
 | `check_frequency` | duration string | yes | — | Check interval configured for all monitors during this run. |
 | `grace_period` | duration string | yes | — | Time allowed after failure injection ends for monitors to resolve the incident. |
 | `duration` | duration string | yes | — | How long failure injection is active. All `[[failures]]` blocks run for this duration. |
@@ -265,6 +266,19 @@ rate = 0.50
 ---
 
 ## DNS failure types
+
+DNS failures are activated through the fleet's DNS control members, not through
+the target HTTP control member. Before scoring a DNS run, the runner probes the
+selected authoritative nameservers directly and records
+`setup_exposure_failure` plus per-service `reason_code =
+"failure_not_observable"` rows if the intended DNS failure is not visible. This
+prevents setup or resolver-exposure problems from being miscounted as service
+false negatives.
+
+For monitor-facing DNS comparisons, prefer `fresh_hostname = true` on targets
+that define `[[targets.generated_sites]]`. Fresh per-run hostnames avoid
+positive-cache carry-over from earlier healthy checks and make recursive
+resolver behavior easier to interpret.
 
 ### `dns_nxdomain`
 

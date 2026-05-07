@@ -40,7 +40,7 @@ Ground-truth events record what the target fleet actually did. Written by the sc
 | `id` | identifier | Stable, deterministic — see Identity below. |
 | `run_id` | FK | The scenario run this event belongs to. |
 | `target_id` | FK | Which target endpoint was affected. |
-| `event_type` | enum | `failure_start`, `failure_end`, `run_start`, `run_end`, `maintenance_start`, `maintenance_end` |
+| `event_type` | enum | `failure_start`, `failure_end`, `run_start`, `run_end`, `maintenance_start`, `maintenance_end`, `setup_exposure_failure` |
 | `failure_mode` | string | What kind of failure was injected (e.g., `http_5xx`, `dns_nxdomain`, `tcp_timeout`). |
 | `failure_params` | JSON | Injection parameters: rate, region, status code, duration, etc. |
 | `timestamp` | timestamp | When this event occurred. |
@@ -64,6 +64,20 @@ Monitor report events record what each monitoring service under test reported. W
 | `reported_at` | timestamp | When the service recorded this event (service's own clock, if available). |
 | `retrieved_at` | timestamp | When the adapter retrieved this event from the service's API. |
 | `metadata` | JSON | Adapter-specific fields: HTTP code reported, probe location, alert channel, etc. |
+
+Structured `reason_code` values identify rows that are operationally invalid
+for service behavior scoring:
+
+- `adapter_error` — uptime-bench could not provision, retrieve, or clean up the
+  service reliably.
+- `capability_mismatch` — the service was skipped because its adapter declares
+  that it does not support the scenario capability.
+- `failure_not_observable` — the harness could not verify that the injected
+  failure was visible on the controlled fleet surface. The row is recorded as
+  `retrieve_status = "unknown"` so it is not counted as a service miss.
+- `maintenance_suppressed`, `cooldown_suppressed`, `cooldown_uncertain`, and
+  `cooldown_reset_failed` — inter-run or vendor-side suppression states that
+  must remain separate from detection failures.
 
 ---
 
@@ -115,6 +129,7 @@ Every scenario run records why it ended. This affects whether results are usable
 - `aborted` — run was interrupted before completion (operator action or harness error).
 - `target_independent_failure` — the target failed in a way not caused by the scenario's own injection (e.g., underlying infrastructure issue).
 - `adapter_error` — one or more adapters failed to provision or retrieve data, potentially corrupting results for those services.
+- `setup_exposure_failure` — the harness activated a failure, but its preflight probe could not observe the intended failure mode on the controlled fleet surface. Per-service rows should use `reason_code = "failure_not_observable"`.
 - `cleanup_error` — detection and retrieval completed, but one or more adapters failed to deprovision after retries. Monitor reports from the run may still be valid, but the leaked provider state must be investigated before relying on later runs.
 
 ---
