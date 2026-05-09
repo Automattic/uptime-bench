@@ -190,6 +190,13 @@ count, average, p50, p95, max, and last value.
 | `process_open_fds` | count | `namedprocess_namegroup_open_filedesc` |
 | `scrape_up` | state | `up` |
 
+When `[network_buckets] enabled=true`, the capacity runner also installs an
+uptime-bench-owned nftables table on the selected Jetmon hosts immediately
+before the timed window and snapshots named counters at the end of the window.
+These counters split host traffic into coarse buckets such as target HTTP,
+MySQL, DNS, monitoring scrape traffic, API/bridge traffic, SSH, and derived
+other traffic. The rules are counter-only and keep the default packet verdict.
+
 Deploy the Docker stats exporter to a Jetmon host with:
 
 ```sh
@@ -217,11 +224,18 @@ The intended capacity sequence is:
 2. Reset both Jetmon systems to a clean benchmark-owned site set.
 3. Activate the same batch of synthetic URLs in both services.
 4. Record exact UTC start and end timestamps.
-5. Collect Prometheus summaries for that window.
-6. Record Jetmon health signals: missed checks, lag, API errors, service errors,
+5. Reset the target-side capacity observer, when enabled, immediately before
+   the window.
+6. Reset per-host network bucket counters, when enabled, immediately before the
+   window.
+7. Apply deterministic target-side replay failures, when configured, inside the
+   active window.
+8. Snapshot target observer, network buckets, DB health, and Prometheus metrics
+   for the exact window.
+9. Record Jetmon health signals: missed checks, lag, API errors, service errors,
    and active monitor counts.
-7. Remove or deactivate benchmark sites.
-8. Increase the batch size until stop thresholds are reached.
+10. Remove or deactivate benchmark sites.
+11. Increase the batch size until stop thresholds are reached.
 
 Initial batch sizes live in `configs/capacity/jetmon.example.toml`.
 
@@ -268,6 +282,112 @@ Live capacity runs refuse a mismatch such as
 `url_pattern = "http://site-%07d.load.example.com/"`. This catches the class of
 failure where Jetmon is seeded with URLs that the generated DNS fleet is not
 serving.
+
+The optional `[target_observer]` block makes the target count generated-host
+requests during each timed capacity window. This is the v1-safe freshness signal:
+it observes whether Jetmon v1 actually requests the active target sites without
+altering Jetmon v1 code or relying on a v1 schema feature that does not exist.
+
+```toml
+[target_observer]
+enabled = true
+target_control_url = "http://target-01.example.com:9000"
+token_file = "/run/secrets/uptime-bench-control-token"
+timeout = "5s"
+# Defaults to 2x each service lifecycle check_interval when omitted.
+# stale_after = "2m"
+# Strict by default: any never-seen or stale target fails the batch.
+max_never_seen_sites = 0
+max_stale_sites = 0
+# Optional throughput ratio thresholds. Leave 0 to record without failing.
+# min catches under-checking; max catches over-checking. Use both for
+# apples-to-apples cadence comparisons where a service should neither lag nor
+# run at a materially shorter interval than configured.
+min_expected_request_ratio = 0
+max_expected_request_ratio = 0
+```
+
+When enabled, each batch writes `target-observer-reset.json` and
+`target-observer-window.json`. The window artifact reports observed sites,
+never-seen sites, stale sites, total requests, method counts, request rate,
+per-site request distribution, last-seen age distribution, and the ratio between
+observed requests and the minimum expected checks for the elapsed window.
+Capacity suites treat any target-observer threshold failure as a failed batch
+and stop recommendation. Set `max_never_seen_sites = -1` or
+`max_stale_sites = -1` only for exploratory runs where incomplete target
+coverage should be recorded but not used as a pass/fail condition. For fair
+resource comparisons, set `min_expected_request_ratio` and
+`max_expected_request_ratio` to a narrow enough band to catch both missed
+cadence and accidental over-checking, for example `0.80` to `1.25` for a
+30-minute 5-minute-cadence run.
+
+The optional `[capacity_replay]` block applies deterministic target-side
+failures during the capacity window. This gives the capacity suite an
+application-level signal in addition to freshness and resource metrics: the
+monitors should keep processing the fleet while also recording the injected
+downtime and recovery.
+
+```toml
+[capacity_replay]
+enabled = true
+target_control_url = "http://target-01.example.com:9000"
+token_file = "/run/secrets/uptime-bench-control-token"
+timeout = "5s"
+seed = 8675309
+
+  [[capacity_replay.events]]
+  id = "http-503-sample"
+  offset = "3m"
+  duration = "7m"
+  type = "http_status"
+  status_code = 503
+  sample_count = 25
+```
+
+Replay host samples are selected from each enabled service's own generated
+target range, so simultaneous v1/v2 comparisons can inject equivalent failures
+without both services using the same hostnames. Each batch writes
+`capacity-replay-plan.json` and `capacity-replay-run.json`.
+
+The optional `[replay_detection]` block correlates those replay windows against
+service event history before benchmark cleanup changes service state. Jetmon v2
+is read through the configured benchmark database DSN. Jetmon v1 is read through
+Jetmon Bridge's persistent `/events` endpoint, so the bridge must have
+persistent history enabled.
+
+```toml
+[replay_detection]
+enabled = true
+timeout = "15s"
+v1_bridge_url = "http://jetmon-v1.example.com:7400"
+v1_token_file = "/run/secrets/jetmon-v1-bridge-token"
+window_padding = "30s"
+fail_on_check_interval_mismatch = false
+```
+
+When enabled, each batch writes `capacity-replay-detection.json` with per-service
+pass/fail status, per-host raw event rows, down/recovery counts, late-down
+counts, pre-existing unhealthy sample counts, min/mean/max detection latency,
+and any check-interval metadata found in raw service events. Hosts that already
+had a Down/Seems Down event overlapping the replay activation are classified as
+pre-existing contamination instead of ordinary missing injected failures. Set
+`fail_on_check_interval_mismatch = true` for strict comparison runs; the batch
+then fails if event metadata reports a normal runtime interval that differs from
+the lifecycle interval uptime-bench seeded. The next-check interval is reported
+separately because Jetmon v2 intentionally schedules failed checks for a shorter
+retry interval, commonly 60 seconds, even when the normal interval is 5 minutes.
+A replay-detection failure is a stop recommendation even if the
+capacity/freshness checks otherwise pass, because it means the service processed
+the load without accurately recording the scripted outage/recovery, the sample
+was too noisy for a clean replay conclusion, or the service was not running at
+the intended cadence.
+
+Every live activation now reapplies the configured lifecycle `check_interval`
+to the benchmark-owned rows before the timed window starts. The runner also
+checks the active-row interval distribution immediately after activation and
+records it in `run.json`, `summary.txt`, `capacity.json`, and `capacity.md`.
+If any active benchmark row has a different `check_interval` than the normalized
+test plan, the batch fails before the timed window and cleanup runs.
 
 Before adding generated hosts to Jetmon, stress the target path directly:
 
@@ -650,11 +770,16 @@ same reports parent and need separate resume state.
 
 The runner writes a `summary.txt` operator summary, a `run.json` machine-readable
 manifest, generated SQL files, execution results, target preflight samples,
-exact UTC window timestamps, and `prometheus-window.json` when Prometheus capture is enabled. For
+target-observer snapshots when enabled, capacity replay artifacts when enabled,
+replay-detection artifacts when enabled, network bucket snapshots when enabled,
+exact UTC window timestamps, and `prometheus-window.json` when Prometheus
+capture is enabled. For
 `run-suite`, the suite directory also gets `capacity.md` and `capacity.json`.
 Those files roll up each batch's pass/fail state, DB health, missed-check
 threshold status, freshness throughput margin, thresholds, target preflight
-status, Prometheus highlights, last clean batch, and first problem batch while
+status, target-observer coverage, replay operation results, replay-detection
+event-history correlation, network bucket traffic, Prometheus highlights, last
+clean batch, and first problem batch while
 preserving the per-batch Prometheus summaries in JSON. The manifest also
 includes lifecycle, Prometheus, health, and cleanup statuses; per-service DB
 health snapshots; freshness lag details; threshold pass/fail/not-measured
@@ -671,14 +796,18 @@ pattern, and performs DNS/HTTP GET checks from each configured
 default source is `runner`; additional source names require a source-aware
 checker implementation so the checks can run from service or Veriflier hosts.
 If this target preflight fails, the runner deactivates the benchmark rows and
-refuses to start the clock. After a passing preflight, it
-captures a DB health snapshot at the recorded end time, deactivates the
-benchmark rows, then captures Prometheus for the exact `[window_start,
-window_end]` range. A Prometheus capture failure is recorded as
-`prometheus_status=fail`, but DB health and cleanup still run so missed-check
-thresholds are not hidden by monitoring failures. If the process receives
-SIGINT or SIGTERM during a batch, it uses a short fresh cleanup context to
-deactivate rows before returning.
+refuses to start the clock. After a passing preflight, it resets the target
+observer when `[target_observer] enabled=true`, resets network buckets when
+`[network_buckets] enabled=true`, starts the clock, applies deterministic replay
+failures when `[capacity_replay] enabled=true`, correlates replayed downtime and
+recovery against service event history when `[replay_detection] enabled=true`,
+snapshots the observer and network buckets at the recorded end time, captures a
+DB health snapshot, deactivates the benchmark rows, then captures Prometheus for
+the exact `[window_start, window_end]` range. A Prometheus capture failure is
+recorded as `prometheus_status=fail`, but DB health and cleanup still run so
+missed-check thresholds are not hidden by monitoring failures. If the process
+receives SIGINT or SIGTERM during a batch, it uses a short fresh cleanup context
+to deactivate rows before returning.
 
 `uptime-bench-jetmon-capacity-run -apply` also creates a local active-run lock
 for the command duration. The default path is

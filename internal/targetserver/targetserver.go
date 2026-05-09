@@ -180,7 +180,8 @@ func applyGeoFailure(conn net.Conn, spec control.FailureSpec) {
 // VirtualHostHandler is the HTTP handler running on the internal port.
 // It routes by Host header and applies configured HTTP-level failures.
 type VirtualHostHandler struct {
-	Registry *control.FailureRegistry
+	Registry         *control.FailureRegistry
+	CapacityObserver *CapacityObserver
 }
 
 func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -189,6 +190,9 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		host = hostOnly
 	}
 	path := r.URL.Path
+	if h.CapacityObserver != nil {
+		h.CapacityObserver.Record(host, r.Method, time.Now().UTC())
+	}
 
 	if spec, ok := h.Registry.Lookup("http_method_status", host, path); ok {
 		method, _ := spec.Params["method"].(string)

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadRunConfigNormalizesServiceLifecycles(t *testing.T) {
@@ -173,6 +174,66 @@ func TestRunConfigDefaultsAndDedupesTargetPreflightSources(t *testing.T) {
 	}
 }
 
+func TestRunConfigNormalizesReplayDetectionDefaults(t *testing.T) {
+	cfg := validCapacityConfigForTest()
+	cfg.CapacityReplay = CapacityReplayConfig{
+		Enabled:          true,
+		TargetControlURL: "http://target.example.test:9000",
+		Events: []CapacityReplayEvent{{
+			ID:       "http-503-sample",
+			Offset:   "3m",
+			Duration: "7m",
+		}},
+	}
+	cfg.ReplayDetection = ReplayDetectionConfig{Enabled: true}
+	cfg.JetmonV1.BridgeURL = "http://jetmon-v1.example.test:7400"
+
+	got := cfg.Normalize()
+	if got.ReplayDetection.V1BridgeURL != cfg.JetmonV1.BridgeURL {
+		t.Fatalf("v1 bridge url = %q, want %q", got.ReplayDetection.V1BridgeURL, cfg.JetmonV1.BridgeURL)
+	}
+	if got.ReplayDetection.Timeout != "15s" {
+		t.Fatalf("timeout = %q, want 15s", got.ReplayDetection.Timeout)
+	}
+	if got.ReplayDetection.WindowPadding != "30s" {
+		t.Fatalf("window padding = %q, want 30s", got.ReplayDetection.WindowPadding)
+	}
+	if timeout, err := got.ReplayDetectionTimeout(); err != nil || timeout != 15*time.Second {
+		t.Fatalf("ReplayDetectionTimeout = %v, %v; want 15s", timeout, err)
+	}
+	if padding, err := got.ReplayDetectionWindowPadding(); err != nil || padding != 30*time.Second {
+		t.Fatalf("ReplayDetectionWindowPadding = %v, %v; want 30s", padding, err)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestRunConfigRejectsReplayDetectionWithoutReplay(t *testing.T) {
+	cfg := validCapacityConfigForTest()
+	cfg.ReplayDetection = ReplayDetectionConfig{Enabled: true}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "replay_detection.enabled requires capacity_replay.enabled=true") {
+		t.Fatalf("Validate error = %v, want replay detection dependency error", err)
+	}
+}
+
+func TestRunConfigRejectsInvalidExpectedRequestRatioRange(t *testing.T) {
+	cfg := validCapacityConfigForTest()
+	cfg.TargetObserver = TargetObserverConfig{
+		Enabled:                 true,
+		TargetControlURL:        "http://target.example.test:9000",
+		MinExpectedRequestRatio: 1.2,
+		MaxExpectedRequestRatio: 1.0,
+	}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "max_expected_request_ratio") {
+		t.Fatalf("Validate error = %v, want max ratio validation error", err)
+	}
+}
+
 func TestServiceLifecyclesRejectsUnknownService(t *testing.T) {
 	cfg := RunConfig{
 		Targets: TargetConfig{URLPattern: "http://site-%d.example.test/", Count: 10},
@@ -295,5 +356,27 @@ func TestServiceLifecyclesRejectsLooseDSNFilePermissions(t *testing.T) {
 	}
 	if _, err := cfg.ServiceLifecycles([]string{"jetmon-v1"}); err == nil {
 		t.Fatal("ServiceLifecycles succeeded, want dsn_file permission error")
+	}
+}
+
+func validCapacityConfigForTest() RunConfig {
+	return RunConfig{
+		ID: "capacity-test",
+		Targets: TargetConfig{
+			URLPattern: "http://site-%07d.example.test/",
+			Count:      100,
+		},
+		Checks:  ChecksConfig{Interval: "1m"},
+		Batches: BatchesConfig{Sizes: []int{10}, Duration: "5m", Cooldown: "1m"},
+		JetmonV1: ServiceConfig{Lifecycle: LifecycleConfig{
+			Schema:      SchemaV1,
+			BlogIDStart: 100,
+			Count:       100,
+		}},
+		JetmonV2: ServiceConfig{Lifecycle: LifecycleConfig{
+			Schema:      SchemaV2,
+			BlogIDStart: 200,
+			Count:       100,
+		}},
 	}
 }

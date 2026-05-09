@@ -17,6 +17,7 @@ import (
 
 	"github.com/Automattic/uptime-bench/internal/capacitybench"
 	"github.com/Automattic/uptime-bench/internal/reportdir"
+	"github.com/Automattic/uptime-bench/internal/targetserver"
 )
 
 // RunOptions describes one capacity runner invocation.
@@ -40,11 +41,13 @@ type RunOptions struct {
 
 // Runner executes guarded Jetmon capacity lifecycle runs.
 type Runner struct {
-	Executor   SQLExecutor
-	Collector  PrometheusCollector
-	URLChecker TargetURLChecker
-	Clock      Clock
-	Sleeper    Sleeper
+	Executor       SQLExecutor
+	Collector      PrometheusCollector
+	URLChecker     TargetURLChecker
+	ObserverClient TargetObserverClient
+	NetworkBuckets NetworkBucketCollector
+	Clock          Clock
+	Sleeper        Sleeper
 }
 
 // SQLExecutor executes rendered SQL against a service DB.
@@ -121,45 +124,57 @@ func (realSleeper) Sleep(ctx context.Context, duration time.Duration) error {
 
 // RunManifest is the operator-facing artifact for one invocation or batch.
 type RunManifest struct {
-	ID               string              `json:"id"`
-	Mode             string              `json:"mode"`
-	Apply            bool                `json:"apply"`
-	ForceReseed      bool                `json:"force_reseed,omitempty"`
-	ConfigPath       string              `json:"config_path"`
-	OutDir           string              `json:"out_dir"`
-	ActiveCount      int                 `json:"active_count,omitempty"`
-	BatchCount       int                 `json:"batch_count,omitempty"`
-	TotalBatchCount  int                 `json:"total_batch_count,omitempty"`
-	BatchSizes       []int               `json:"batch_sizes,omitempty"`
-	SuiteStartCount  int                 `json:"suite_start_count,omitempty"`
-	SuiteStartSource string              `json:"suite_start_source,omitempty"`
-	SuiteStatePath   string              `json:"suite_state_path,omitempty"`
-	BatchDuration    string              `json:"batch_duration,omitempty"`
-	Cooldown         string              `json:"cooldown,omitempty"`
-	EstimatedRuntime string              `json:"estimated_runtime,omitempty"`
-	PrometheusURL    string              `json:"prometheus_url,omitempty"`
-	Instances        []string            `json:"instances,omitempty"`
-	Target           TargetManifest      `json:"target,omitempty"`
-	CreatedAt        time.Time           `json:"created_at"`
-	WindowStart      *time.Time          `json:"window_start,omitempty"`
-	WindowEnd        *time.Time          `json:"window_end,omitempty"`
-	DeactivatedAt    *time.Time          `json:"deactivated_at,omitempty"`
-	LifecycleStatus  string              `json:"lifecycle_status,omitempty"`
-	HealthStatus     string              `json:"health_status,omitempty"`
-	PrometheusStatus string              `json:"prometheus_status,omitempty"`
-	PrometheusError  string              `json:"prometheus_error,omitempty"`
-	CleanupStatus    string              `json:"cleanup_status,omitempty"`
-	CleanupError     string              `json:"cleanup_error,omitempty"`
-	Services         []ServiceManifest   `json:"services"`
-	Artifacts        []Artifact          `json:"artifacts"`
-	Executions       []ExecutionManifest `json:"executions,omitempty"`
-	Health           []ServiceHealth     `json:"health,omitempty"`
-	Thresholds       []ThresholdFinding  `json:"thresholds,omitempty"`
-	TargetPreflights []TargetPreflight   `json:"target_preflights,omitempty"`
-	StopRecommended  bool                `json:"stop_recommended,omitempty"`
-	StopReason       string              `json:"stop_reason,omitempty"`
-	Error            string              `json:"error,omitempty"`
-	Notes            []string            `json:"notes,omitempty"`
+	ID                    string                                `json:"id"`
+	Mode                  string                                `json:"mode"`
+	Apply                 bool                                  `json:"apply"`
+	ForceReseed           bool                                  `json:"force_reseed,omitempty"`
+	ConfigPath            string                                `json:"config_path"`
+	OutDir                string                                `json:"out_dir"`
+	ActiveCount           int                                   `json:"active_count,omitempty"`
+	BatchCount            int                                   `json:"batch_count,omitempty"`
+	TotalBatchCount       int                                   `json:"total_batch_count,omitempty"`
+	BatchSizes            []int                                 `json:"batch_sizes,omitempty"`
+	SuiteStartCount       int                                   `json:"suite_start_count,omitempty"`
+	SuiteStartSource      string                                `json:"suite_start_source,omitempty"`
+	SuiteStatePath        string                                `json:"suite_state_path,omitempty"`
+	BatchDuration         string                                `json:"batch_duration,omitempty"`
+	Cooldown              string                                `json:"cooldown,omitempty"`
+	EstimatedRuntime      string                                `json:"estimated_runtime,omitempty"`
+	PrometheusURL         string                                `json:"prometheus_url,omitempty"`
+	Instances             []string                              `json:"instances,omitempty"`
+	Target                TargetManifest                        `json:"target,omitempty"`
+	CreatedAt             time.Time                             `json:"created_at"`
+	WindowStart           *time.Time                            `json:"window_start,omitempty"`
+	WindowEnd             *time.Time                            `json:"window_end,omitempty"`
+	DeactivatedAt         *time.Time                            `json:"deactivated_at,omitempty"`
+	LifecycleStatus       string                                `json:"lifecycle_status,omitempty"`
+	HealthStatus          string                                `json:"health_status,omitempty"`
+	PrometheusStatus      string                                `json:"prometheus_status,omitempty"`
+	PrometheusError       string                                `json:"prometheus_error,omitempty"`
+	TargetObserverStatus  string                                `json:"target_observer_status,omitempty"`
+	TargetObserverError   string                                `json:"target_observer_error,omitempty"`
+	CapacityReplayStatus  string                                `json:"capacity_replay_status,omitempty"`
+	CapacityReplayError   string                                `json:"capacity_replay_error,omitempty"`
+	ReplayDetectionStatus string                                `json:"replay_detection_status,omitempty"`
+	ReplayDetectionError  string                                `json:"replay_detection_error,omitempty"`
+	NetworkBucketStatus   string                                `json:"network_bucket_status,omitempty"`
+	NetworkBucketError    string                                `json:"network_bucket_error,omitempty"`
+	CleanupStatus         string                                `json:"cleanup_status,omitempty"`
+	CleanupError          string                                `json:"cleanup_error,omitempty"`
+	Services              []ServiceManifest                     `json:"services"`
+	Artifacts             []Artifact                            `json:"artifacts"`
+	Executions            []ExecutionManifest                   `json:"executions,omitempty"`
+	Health                []ServiceHealth                       `json:"health,omitempty"`
+	Thresholds            []ThresholdFinding                    `json:"thresholds,omitempty"`
+	TargetPreflights      []TargetPreflight                     `json:"target_preflights,omitempty"`
+	TargetObservations    []targetserver.CapacityObserveSummary `json:"target_observations,omitempty"`
+	CapacityReplays       []CapacityReplayRun                   `json:"capacity_replays,omitempty"`
+	ReplayDetections      []ReplayDetectionRun                  `json:"replay_detections,omitempty"`
+	NetworkBuckets        []NetworkBucketHostSnapshot           `json:"network_buckets,omitempty"`
+	StopRecommended       bool                                  `json:"stop_recommended,omitempty"`
+	StopReason            string                                `json:"stop_reason,omitempty"`
+	Error                 string                                `json:"error,omitempty"`
+	Notes                 []string                              `json:"notes,omitempty"`
 }
 
 // SuiteState is the persisted resume hint for subsequent run-suite invocations.
@@ -210,28 +225,30 @@ type ExecutionManifest struct {
 
 // ServiceHealth is a compact DB-derived health snapshot.
 type ServiceHealth struct {
-	Service                string            `json:"service"`
-	Action                 string            `json:"action"`
-	Status                 string            `json:"status"`
-	Reason                 string            `json:"reason,omitempty"`
-	BenchmarkSites         *int64            `json:"benchmark_sites,omitempty"`
-	ActiveSites            *int64            `json:"active_sites,omitempty"`
-	ExpectedActiveSites    *int64            `json:"expected_active_sites,omitempty"`
-	StaleActiveSites       *int64            `json:"stale_active_sites,omitempty"`
-	MissedCheckPercent     *float64          `json:"missed_check_percent,omitempty"`
-	OpenEvents             *int64            `json:"open_events,omitempty"`
-	RecentCheckHistoryRows *int64            `json:"recent_check_history_rows,omitempty"`
-	RecentChecksPerMinute  *float64          `json:"recent_checks_per_minute,omitempty"`
-	FreshnessWindowMinutes int               `json:"freshness_window_minutes,omitempty"`
-	FreshnessSamples       *int64            `json:"freshness_samples,omitempty"`
-	FreshestCheckAgeSec    *float64          `json:"freshest_check_age_sec,omitempty"`
-	AverageCheckAgeSec     *float64          `json:"average_check_age_sec,omitempty"`
-	P50CheckAgeSec         *float64          `json:"p50_check_age_sec,omitempty"`
-	P95CheckAgeSec         *float64          `json:"p95_check_age_sec,omitempty"`
-	P99CheckAgeSec         *float64          `json:"p99_check_age_sec,omitempty"`
-	OldestCheckAgeSec      *float64          `json:"oldest_check_age_sec,omitempty"`
-	StaleBuckets           []BucketFreshness `json:"stale_buckets,omitempty"`
-	FreshnessMeasured      bool              `json:"freshness_measured"`
+	Service                    string             `json:"service"`
+	Action                     string             `json:"action"`
+	Status                     string             `json:"status"`
+	Reason                     string             `json:"reason,omitempty"`
+	BenchmarkSites             *int64             `json:"benchmark_sites,omitempty"`
+	ActiveSites                *int64             `json:"active_sites,omitempty"`
+	ExpectedActiveSites        *int64             `json:"expected_active_sites,omitempty"`
+	StaleActiveSites           *int64             `json:"stale_active_sites,omitempty"`
+	MissedCheckPercent         *float64           `json:"missed_check_percent,omitempty"`
+	OpenEvents                 *int64             `json:"open_events,omitempty"`
+	RecentCheckHistoryRows     *int64             `json:"recent_check_history_rows,omitempty"`
+	RecentChecksPerMinute      *float64           `json:"recent_checks_per_minute,omitempty"`
+	FreshnessWindowMinutes     int                `json:"freshness_window_minutes,omitempty"`
+	FreshnessSamples           *int64             `json:"freshness_samples,omitempty"`
+	FreshestCheckAgeSec        *float64           `json:"freshest_check_age_sec,omitempty"`
+	AverageCheckAgeSec         *float64           `json:"average_check_age_sec,omitempty"`
+	P50CheckAgeSec             *float64           `json:"p50_check_age_sec,omitempty"`
+	P95CheckAgeSec             *float64           `json:"p95_check_age_sec,omitempty"`
+	P99CheckAgeSec             *float64           `json:"p99_check_age_sec,omitempty"`
+	OldestCheckAgeSec          *float64           `json:"oldest_check_age_sec,omitempty"`
+	StaleBuckets               []BucketFreshness  `json:"stale_buckets,omitempty"`
+	CheckIntervals             []CheckIntervalRow `json:"check_intervals,omitempty"`
+	CheckIntervalMismatchSites *int64             `json:"check_interval_mismatch_sites,omitempty"`
+	FreshnessMeasured          bool               `json:"freshness_measured"`
 }
 
 // BucketFreshness summarizes stale rows in one scheduler bucket.
@@ -240,6 +257,12 @@ type BucketFreshness struct {
 	ActiveSites      int64   `json:"active_sites"`
 	StaleActiveSites int64   `json:"stale_active_sites"`
 	StalePercent     float64 `json:"stale_percent"`
+}
+
+// CheckIntervalRow describes active-row check interval distribution.
+type CheckIntervalRow struct {
+	CheckIntervalMinutes int   `json:"check_interval_minutes"`
+	ActiveSites          int64 `json:"active_sites"`
 }
 
 // ThresholdFinding records one pass/fail/not-measured threshold check.
@@ -411,6 +434,12 @@ func (r Runner) withDefaults() Runner {
 	}
 	if r.URLChecker == nil {
 		r.URLChecker = defaultTargetURLChecker{}
+	}
+	if r.ObserverClient == nil {
+		r.ObserverClient = DefaultTargetObserverClient{}
+	}
+	if r.NetworkBuckets == nil {
+		r.NetworkBuckets = DefaultNetworkBucketCollector{}
 	}
 	if r.Clock == nil {
 		r.Clock = realClock{}
@@ -617,9 +646,24 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 		m.LifecycleStatus = "fail"
 		return err
 	}
+	if err := r.resetTargetObserver(ctx, dir, services, cfg, activeCount, m); err != nil {
+		m.LifecycleStatus = "fail"
+		return err
+	}
+	if err := r.resetNetworkBuckets(ctx, dir, services, cfg, m); err != nil {
+		m.LifecycleStatus = "fail"
+		return err
+	}
 
 	start := r.Clock.Now().UTC()
 	m.WindowStart = &start
+	replayHandle, err := r.startCapacityReplay(ctx, dir, services, cfg, activeCount, duration, m)
+	if err != nil {
+		m.CapacityReplayStatus = "fail"
+		m.CapacityReplayError = err.Error()
+		m.LifecycleStatus = "fail"
+		return err
+	}
 	if err := WriteManifest(dir, *m); err != nil {
 		m.LifecycleStatus = "fail"
 		return fmt.Errorf("write activation manifest: %w", err)
@@ -630,6 +674,26 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 	}
 	end := r.Clock.Now().UTC()
 	m.WindowEnd = &end
+	if err := r.finishCapacityReplay(ctx, dir, replayHandle, m); err != nil {
+		m.CapacityReplayStatus = "fail"
+		m.CapacityReplayError = err.Error()
+		m.Notes = append(m.Notes, "Capacity replay failed: "+err.Error())
+	}
+	if err := r.collectReplayDetections(ctx, dir, services, cfg, m); err != nil {
+		m.ReplayDetectionStatus = "fail"
+		m.ReplayDetectionError = err.Error()
+		m.Notes = append(m.Notes, "Replay detection correlation failed: "+err.Error())
+	}
+	if err := r.snapshotTargetObserver(ctx, dir, cfg, m); err != nil {
+		m.TargetObserverStatus = "fail"
+		m.TargetObserverError = err.Error()
+		m.Notes = append(m.Notes, "Target observer snapshot failed: "+err.Error())
+	}
+	if err := r.snapshotNetworkBuckets(ctx, dir, services, cfg, m); err != nil {
+		m.NetworkBucketStatus = "fail"
+		m.NetworkBucketError = err.Error()
+		m.Notes = append(m.Notes, "Network bucket snapshot failed: "+err.Error())
+	}
 
 	if err := r.verifyServices(ctx, dir, services, "window-end-verify", true, activeCount, m); err != nil {
 		m.LifecycleStatus = "fail"
@@ -810,6 +874,12 @@ func (r Runner) activateServices(ctx context.Context, dir string, services []Ser
 				cancel()
 				return nil, err
 			}
+			if err := r.verifyActiveCheckInterval(ctx, service, activeCount, m); err != nil {
+				cleanupCtx, cancel := cleanupContext()
+				_ = r.applyAction(cleanupCtx, dir, cleanupCandidates, OperationDeactivate, "partial-activation-cleanup", 0, true, false, m)
+				cancel()
+				return nil, err
+			}
 		}
 	}
 	return cleanupCandidates, nil
@@ -906,6 +976,53 @@ func (r Runner) verifyActiveCount(ctx context.Context, service ServiceLifecycle,
 	return nil
 }
 
+func (r Runner) verifyActiveCheckInterval(ctx context.Context, service ServiceLifecycle, expectedActive int, m *RunManifest) error {
+	sqlText, err := RenderActiveCheckIntervalSQL(service.Config)
+	if err != nil {
+		return fmt.Errorf("render %s active check-interval verification: %w", service.ID, err)
+	}
+	result, err := r.execServiceSQL(ctx, service, sqlText)
+	if err != nil {
+		return fmt.Errorf("verify %s active check interval: %w", service.ID, err)
+	}
+	m.Executions = append(m.Executions, ExecutionManifest{Service: service.ID, Action: "active-check-interval-verify", Result: result})
+	rows := checkIntervalRows(result)
+	expectedInterval := service.Config.CheckIntervalMinutes
+	var total, mismatched int64
+	for _, row := range rows {
+		total += row.ActiveSites
+		if row.CheckIntervalMinutes != expectedInterval {
+			mismatched += row.ActiveSites
+		}
+	}
+	status := "pass"
+	reason := ""
+	if total != int64(expectedActive) {
+		status = "fail"
+		reason = fmt.Sprintf("active interval rows=%d, want %d", total, expectedActive)
+	} else if mismatched > 0 {
+		status = "fail"
+		reason = fmt.Sprintf("%d active sites have check_interval different from %dm", mismatched, expectedInterval)
+	}
+	expected := int64(expectedActive)
+	health := ServiceHealth{
+		Service:                    service.ID,
+		Action:                     "active-check-interval-verify",
+		Status:                     status,
+		Reason:                     reason,
+		ActiveSites:                &total,
+		ExpectedActiveSites:        &expected,
+		CheckIntervals:             rows,
+		CheckIntervalMismatchSites: &mismatched,
+		FreshnessMeasured:          false,
+	}
+	m.Health = append(m.Health, health)
+	if status != "pass" {
+		return fmt.Errorf("%s active check interval verification failed: %s", service.ID, reason)
+	}
+	return nil
+}
+
 func (r Runner) assertSeedSafe(ctx context.Context, service ServiceLifecycle, force bool, m *RunManifest) error {
 	sqlText, err := RenderSeedSafetySQL(service.Config)
 	if err != nil {
@@ -959,6 +1076,272 @@ func (r Runner) collectBaseline(ctx context.Context, dir string, cfg RunConfig, 
 
 func (r Runner) collectPrometheus(ctx context.Context, dir string, cfg RunConfig, promURL string, start, end time.Time, m *RunManifest) error {
 	return r.collectPrometheusTo(ctx, filepath.Join(dir, "prometheus-window.json"), cfg, promURL, start, end, m)
+}
+
+func (r Runner) resetTargetObserver(ctx context.Context, dir string, services []ServiceLifecycle, cfg RunConfig, activeCount int, m *RunManifest) error {
+	cfg = cfg.Normalize()
+	if !cfg.TargetObserver.Enabled {
+		return nil
+	}
+	timeout, err := cfg.TargetObserverTimeout()
+	if err != nil {
+		m.TargetObserverStatus = "preflight_failed"
+		m.TargetObserverError = err.Error()
+		return err
+	}
+	token, err := resolveTargetObserverToken(cfg.TargetObserver)
+	if err != nil {
+		m.TargetObserverStatus = "preflight_failed"
+		m.TargetObserverError = err.Error()
+		return err
+	}
+	checkInterval, err := cfg.CheckIntervalDuration()
+	if err != nil {
+		m.TargetObserverStatus = "preflight_failed"
+		m.TargetObserverError = err.Error()
+		return err
+	}
+	staleAfter, err := cfg.TargetObserverStaleAfter()
+	if err != nil {
+		m.TargetObserverStatus = "preflight_failed"
+		m.TargetObserverError = err.Error()
+		return err
+	}
+	req := targetserver.CapacityObserveResetRequest{
+		RunID:                capacityObserverRunID(m),
+		ActiveCount:          activeCount,
+		CheckIntervalSeconds: int(checkInterval / time.Second),
+		Services:             make([]targetserver.CapacityObserveService, 0, len(services)),
+	}
+	if staleAfter > 0 {
+		req.StaleAfterSeconds = int(staleAfter / time.Second)
+	}
+	for _, service := range services {
+		serviceStaleAfterSeconds := service.Config.CheckIntervalMinutes * 2 * 60
+		if staleAfter > 0 {
+			serviceStaleAfterSeconds = int(staleAfter / time.Second)
+		}
+		req.Services = append(req.Services, targetserver.CapacityObserveService{
+			ID:                   service.ID,
+			HostPattern:          cfg.Targets.HostPattern,
+			URLStart:             service.Config.URLNumberStart,
+			Count:                activeCount,
+			CheckIntervalSeconds: service.Config.CheckIntervalMinutes * 60,
+			StaleAfterSeconds:    serviceStaleAfterSeconds,
+		})
+	}
+	summary, err := r.ObserverClient.Reset(ctx, cfg.TargetObserver.TargetControlURL, token, req, timeout)
+	if err != nil {
+		m.TargetObserverStatus = "preflight_failed"
+		m.TargetObserverError = err.Error()
+		return fmt.Errorf("target observer reset: %w", err)
+	}
+	m.TargetObservations = append(m.TargetObservations, summary)
+	m.TargetObserverStatus = "running"
+	m.TargetObserverError = ""
+	return writeTargetObserverArtifact(dir, "target-observer-reset.json", summary, m)
+}
+
+func (r Runner) snapshotTargetObserver(ctx context.Context, dir string, cfg RunConfig, m *RunManifest) error {
+	cfg = cfg.Normalize()
+	if !cfg.TargetObserver.Enabled {
+		return nil
+	}
+	timeout, err := cfg.TargetObserverTimeout()
+	if err != nil {
+		return err
+	}
+	token, err := resolveTargetObserverToken(cfg.TargetObserver)
+	if err != nil {
+		return err
+	}
+	summary, err := r.ObserverClient.Summary(ctx, cfg.TargetObserver.TargetControlURL, token, timeout)
+	if err != nil {
+		return fmt.Errorf("target observer summary: %w", err)
+	}
+	m.TargetObservations = append(m.TargetObservations, summary)
+	findings := EvaluateTargetObserverThresholds(summary, cfg.TargetObserver)
+	m.Thresholds = append(m.Thresholds, findings...)
+	if finding := firstFailedThreshold(findings); finding != nil {
+		m.TargetObserverStatus = "fail"
+		m.TargetObserverError = formatThresholdFailure(*finding)
+		m.Notes = append(m.Notes, "Target observer threshold failed: "+m.TargetObserverError)
+	} else {
+		m.TargetObserverStatus = "pass"
+		m.TargetObserverError = ""
+	}
+	return writeTargetObserverArtifact(dir, "target-observer-window.json", summary, m)
+}
+
+// EvaluateTargetObserverThresholds converts target-side black-box observation
+// gaps into normal capacity threshold findings. Defaults are intentionally
+// strict: any never-seen or stale generated target means the batch was not
+// clean. Set the corresponding max value to -1 to disable a check.
+func EvaluateTargetObserverThresholds(summary targetserver.CapacityObserveSummary, cfg TargetObserverConfig) []ThresholdFinding {
+	if !cfg.Enabled {
+		return nil
+	}
+	var findings []ThresholdFinding
+	for _, service := range summary.Services {
+		series := service.ID
+		if series == "" {
+			series = service.HostPattern
+		}
+		if cfg.MaxNeverSeenSites >= 0 {
+			status := "pass"
+			reason := ""
+			if service.NeverSeenSites > cfg.MaxNeverSeenSites {
+				status = "fail"
+				reason = fmt.Sprintf("%d target sites were never observed; limit is %d", service.NeverSeenSites, cfg.MaxNeverSeenSites)
+			}
+			findings = append(findings, ThresholdFinding{
+				Name:   "target_observer_never_seen_sites",
+				Status: status,
+				Series: series,
+				Value:  float64(service.NeverSeenSites),
+				Limit:  float64(cfg.MaxNeverSeenSites),
+				Reason: reason,
+			})
+		}
+		if cfg.MaxStaleSites >= 0 {
+			status := "pass"
+			reason := ""
+			if service.StaleSites > cfg.MaxStaleSites {
+				status = "fail"
+				reason = fmt.Sprintf("%d target sites were stale or never observed; limit is %d", service.StaleSites, cfg.MaxStaleSites)
+			}
+			findings = append(findings, ThresholdFinding{
+				Name:   "target_observer_stale_sites",
+				Status: status,
+				Series: series,
+				Value:  float64(service.StaleSites),
+				Limit:  float64(cfg.MaxStaleSites),
+				Reason: reason,
+			})
+		}
+		if cfg.MinExpectedRequestRatio > 0 {
+			status := "pass"
+			reason := ""
+			if service.ExpectedRequestRatio < cfg.MinExpectedRequestRatio {
+				status = "fail"
+				reason = fmt.Sprintf("expected request ratio %.4f is below %.4f", service.ExpectedRequestRatio, cfg.MinExpectedRequestRatio)
+			}
+			findings = append(findings, ThresholdFinding{
+				Name:   "target_observer_expected_request_ratio",
+				Status: status,
+				Series: series,
+				Value:  service.ExpectedRequestRatio,
+				Limit:  cfg.MinExpectedRequestRatio,
+				Reason: reason,
+			})
+		}
+		if cfg.MaxExpectedRequestRatio > 0 {
+			status := "pass"
+			reason := ""
+			if service.ExpectedRequestRatio > cfg.MaxExpectedRequestRatio {
+				status = "fail"
+				reason = fmt.Sprintf("expected request ratio %.4f is above %.4f", service.ExpectedRequestRatio, cfg.MaxExpectedRequestRatio)
+			}
+			findings = append(findings, ThresholdFinding{
+				Name:   "target_observer_expected_request_ratio_max",
+				Status: status,
+				Series: series,
+				Value:  service.ExpectedRequestRatio,
+				Limit:  cfg.MaxExpectedRequestRatio,
+				Reason: reason,
+			})
+		}
+	}
+	return findings
+}
+
+func firstFailedThreshold(findings []ThresholdFinding) *ThresholdFinding {
+	for i := range findings {
+		if findings[i].Status == "fail" {
+			return &findings[i]
+		}
+	}
+	return nil
+}
+
+func formatThresholdFailure(f ThresholdFinding) string {
+	if f.Reason != "" {
+		if f.Series != "" {
+			return fmt.Sprintf("%s for %s: %s", f.Name, f.Series, f.Reason)
+		}
+		return fmt.Sprintf("%s: %s", f.Name, f.Reason)
+	}
+	if f.Series != "" {
+		return fmt.Sprintf("%s exceeded threshold for %s", f.Name, f.Series)
+	}
+	return f.Name + " exceeded threshold"
+}
+
+func writeTargetObserverArtifact(dir, name string, summary targetserver.CapacityObserveSummary, m *RunManifest) error {
+	data, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal target observer summary: %w", err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	recordArtifactOnce(m, Artifact{Action: strings.TrimSuffix(name, ".json"), Path: path})
+	return nil
+}
+
+func (r Runner) resetNetworkBuckets(ctx context.Context, dir string, services []ServiceLifecycle, cfg RunConfig, m *RunManifest) error {
+	cfg = cfg.Normalize()
+	if !cfg.NetworkBuckets.Enabled {
+		return nil
+	}
+	snapshots, err := r.NetworkBuckets.Reset(ctx, cfg.NetworkBuckets, services)
+	if len(snapshots) > 0 {
+		m.NetworkBuckets = append(m.NetworkBuckets, snapshots...)
+		if writeErr := writeNetworkBucketArtifact(dir, "network-buckets-reset.json", snapshots, m); writeErr != nil && err == nil {
+			err = writeErr
+		}
+	}
+	if err != nil {
+		m.NetworkBucketStatus = "preflight_failed"
+		m.NetworkBucketError = err.Error()
+		return fmt.Errorf("network bucket reset: %w", err)
+	}
+	m.NetworkBucketStatus = "running"
+	m.NetworkBucketError = ""
+	return nil
+}
+
+func (r Runner) snapshotNetworkBuckets(ctx context.Context, dir string, services []ServiceLifecycle, cfg RunConfig, m *RunManifest) error {
+	cfg = cfg.Normalize()
+	if !cfg.NetworkBuckets.Enabled {
+		return nil
+	}
+	snapshots, err := r.NetworkBuckets.Snapshot(ctx, cfg.NetworkBuckets, services)
+	if len(snapshots) > 0 {
+		m.NetworkBuckets = append(m.NetworkBuckets, snapshots...)
+		if writeErr := writeNetworkBucketArtifact(dir, "network-buckets-window.json", snapshots, m); writeErr != nil && err == nil {
+			err = writeErr
+		}
+	}
+	if err != nil {
+		m.NetworkBucketStatus = "fail"
+		m.NetworkBucketError = err.Error()
+		return fmt.Errorf("network bucket snapshot: %w", err)
+	}
+	m.NetworkBucketStatus = "pass"
+	m.NetworkBucketError = ""
+	return nil
+}
+
+func capacityObserverRunID(m *RunManifest) string {
+	if m == nil {
+		return ""
+	}
+	if m.OutDir != "" {
+		return filepath.Base(m.OutDir)
+	}
+	return m.ID
 }
 
 func (r Runner) preflightPrometheus(ctx context.Context, cfg RunConfig, promURL string, m *RunManifest) error {
@@ -1117,6 +1500,30 @@ func WriteSummary(dir string, m RunManifest) error {
 	if m.PrometheusError != "" {
 		fmt.Fprintf(&b, "Prometheus Error: %s\n", m.PrometheusError)
 	}
+	if m.TargetObserverStatus != "" {
+		fmt.Fprintf(&b, "Target Observer Status: %s\n", m.TargetObserverStatus)
+	}
+	if m.TargetObserverError != "" {
+		fmt.Fprintf(&b, "Target Observer Error: %s\n", m.TargetObserverError)
+	}
+	if m.CapacityReplayStatus != "" {
+		fmt.Fprintf(&b, "Capacity Replay Status: %s\n", m.CapacityReplayStatus)
+	}
+	if m.CapacityReplayError != "" {
+		fmt.Fprintf(&b, "Capacity Replay Error: %s\n", m.CapacityReplayError)
+	}
+	if m.ReplayDetectionStatus != "" {
+		fmt.Fprintf(&b, "Replay Detection Status: %s\n", m.ReplayDetectionStatus)
+	}
+	if m.ReplayDetectionError != "" {
+		fmt.Fprintf(&b, "Replay Detection Error: %s\n", m.ReplayDetectionError)
+	}
+	if m.NetworkBucketStatus != "" {
+		fmt.Fprintf(&b, "Network Bucket Status: %s\n", m.NetworkBucketStatus)
+	}
+	if m.NetworkBucketError != "" {
+		fmt.Fprintf(&b, "Network Bucket Error: %s\n", m.NetworkBucketError)
+	}
 	if m.Target.HostPattern != "" || m.Target.URLPattern != "" {
 		fmt.Fprintf(&b, "Target Host Pattern: %s\n", m.Target.HostPattern)
 		fmt.Fprintf(&b, "Target URL Pattern: %s\n", m.Target.URLPattern)
@@ -1161,6 +1568,102 @@ func WriteSummary(dir string, m RunManifest) error {
 				formatFloatPtr(h.OldestCheckAgeSec),
 				h.Reason,
 			)
+		}
+		_ = tw.Flush()
+	}
+	if rows := healthCheckIntervalRows(m.Health); len(rows) > 0 {
+		fmt.Fprintln(&b, "\nCheck Interval Distribution:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SERVICE\tACTION\tCHECK_INTERVAL_MIN\tACTIVE")
+		for _, row := range rows {
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\n", row.Service, row.Action, row.CheckIntervalMinutes, row.ActiveSites)
+		}
+		_ = tw.Flush()
+	}
+	if latest := latestTargetObservation(m.TargetObservations); latest != nil && len(latest.Services) > 0 {
+		fmt.Fprintln(&b, "\nTarget Observer:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SERVICE\tEXPECTED\tOBSERVED\tNEVER_SEEN\tSTALE\tCOVERAGE_%\tREQUESTS\tREQ/S\tREQ/SITE_MEAN\tEXPECTED_RATIO\tP95_AGE_SEC\tMAX_AGE_SEC")
+		for _, service := range latest.Services {
+			fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%.2f\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+				service.ID,
+				service.ExpectedSites,
+				service.ObservedSites,
+				service.NeverSeenSites,
+				service.StaleSites,
+				service.CoveragePercent,
+				service.TotalRequests,
+				service.RequestsPerSecond,
+				service.RequestsPerSiteMean,
+				service.ExpectedRequestRatio,
+				service.LastSeenAgeSecondsP95,
+				service.LastSeenAgeSecondsMax,
+			)
+		}
+		_ = tw.Flush()
+	}
+	if latestReplay := latestCapacityReplay(m.CapacityReplays); latestReplay != nil {
+		fmt.Fprintln(&b, "\nCapacity Replay:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "EVENT\tTYPE\tHOSTS\tACTIVATE_ERRORS\tDEACTIVATE_ERRORS\tERROR")
+		for _, event := range latestReplay.Events {
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%s\n",
+				event.ID,
+				capacityReplayEventType(latestReplay.Plan, event.ID),
+				len(event.Hosts),
+				event.ActivateFailures,
+				event.DeactivateFailures,
+				firstCapacityReplayHostError(event),
+			)
+		}
+		_ = tw.Flush()
+	}
+	if latestDetection := latestReplayDetection(m.ReplayDetections); latestDetection != nil {
+		fmt.Fprintln(&b, "\nReplay Detection:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "EVENT\tSERVICE\tSTATUS\tHOSTS\tELIGIBLE\tDOWN\tRECOVERY\tLATE_DOWN\tPREEXISTING\tEXPECTED_INTERVAL\tNORMAL_INTERVAL\tNEXT_INTERVAL\tINTERVAL_MISMATCHES\tDOWN_MIN\tDOWN_MEAN\tDOWN_MAX\tRECOVERY_MIN\tRECOVERY_MEAN\tRECOVERY_MAX\tERROR")
+		for _, event := range latestDetection.Events {
+			for _, service := range event.Services {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					event.ID,
+					service.Service,
+					service.Status,
+					service.Hosts,
+					service.EligibleHosts,
+					service.DownDetected,
+					service.RecoveryDetected,
+					service.LateDownDetected,
+					service.PreexistingDownOverlappedFailure,
+					formatSeconds(service.ExpectedCheckIntervalSec),
+					formatIntRange(service.NormalCheckIntervalMinSec, service.NormalCheckIntervalMaxSec),
+					formatIntRange(service.NextCheckIntervalMinSec, service.NextCheckIntervalMaxSec),
+					service.CheckIntervalMismatchEvents,
+					formatFloatPtr(service.DownLatencyMinSec),
+					formatFloatPtr(service.DownLatencyMeanSec),
+					formatFloatPtr(service.DownLatencyMaxSec),
+					formatFloatPtr(service.RecoveryLatencyMinSec),
+					formatFloatPtr(service.RecoveryLatencyMeanSec),
+					formatFloatPtr(service.RecoveryLatencyMaxSec),
+					service.Error,
+				)
+			}
+		}
+		_ = tw.Flush()
+	}
+	if snapshots := latestNetworkBucketSnapshots(m.NetworkBuckets); len(snapshots) > 0 {
+		fmt.Fprintln(&b, "\nNetwork Buckets:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "HOST\tBUCKET\tDIRECTION\tBYTES\tPACKETS")
+		for _, snapshot := range snapshots {
+			for _, counter := range snapshot.Counters {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\n",
+					snapshot.ID,
+					counter.Bucket,
+					counter.Direction,
+					counter.Bytes,
+					counter.Packets,
+				)
+			}
 		}
 		_ = tw.Flush()
 	}
@@ -1290,6 +1793,21 @@ func serviceHealthFromVerify(service ServiceLifecycle, action string, result SQL
 		if health.ActiveSites != nil && *health.ActiveSites != expected {
 			health.Status = "fail"
 			health.Reason = fmt.Sprintf("active_sites=%d, want %d", *health.ActiveSites, expected)
+		}
+	}
+	health.CheckIntervals = checkIntervalRows(result)
+	if len(health.CheckIntervals) > 0 {
+		expectedInterval := service.Config.CheckIntervalMinutes
+		var mismatched int64
+		for _, row := range health.CheckIntervals {
+			if row.CheckIntervalMinutes != expectedInterval {
+				mismatched += row.ActiveSites
+			}
+		}
+		health.CheckIntervalMismatchSites = &mismatched
+		if mismatched > 0 {
+			health.Status = "fail"
+			health.Reason = appendReason(health.Reason, fmt.Sprintf("%d active sites have check_interval different from %dm", mismatched, expectedInterval))
 		}
 	}
 	if service.Config.Schema != SchemaV2 {
@@ -1446,9 +1964,14 @@ func setStopRecommendation(m *RunManifest) {
 	for _, finding := range m.Thresholds {
 		if finding.Status == "fail" {
 			m.StopRecommended = true
-			m.StopReason = fmt.Sprintf("%s exceeded threshold for %s", finding.Name, finding.Series)
+			m.StopReason = formatThresholdFailure(finding)
 			return
 		}
+	}
+	if m.ReplayDetectionStatus == "fail" {
+		m.StopRecommended = true
+		m.StopReason = firstNonEmpty(m.ReplayDetectionError, "replay detection failed")
+		return
 	}
 }
 
@@ -1601,6 +2124,34 @@ func bucketFreshnessRows(result SQLExecutionResult) []BucketFreshness {
 	return rows
 }
 
+func checkIntervalRows(result SQLExecutionResult) []CheckIntervalRow {
+	stmt, ok := statementWithColumns(result, "check_interval", "active_sites")
+	if !ok {
+		return nil
+	}
+	intervalIdx := columnIndex(stmt.Columns, "check_interval")
+	activeIdx := columnIndex(stmt.Columns, "active_sites")
+	var rows []CheckIntervalRow
+	for _, row := range stmt.Rows {
+		if intervalIdx >= len(row) || activeIdx >= len(row) {
+			continue
+		}
+		interval, err := strconv.Atoi(row[intervalIdx])
+		if err != nil {
+			continue
+		}
+		active, err := strconv.ParseInt(row[activeIdx], 10, 64)
+		if err != nil {
+			continue
+		}
+		rows = append(rows, CheckIntervalRow{
+			CheckIntervalMinutes: interval,
+			ActiveSites:          active,
+		})
+	}
+	return rows
+}
+
 func statementWithColumns(result SQLExecutionResult, columns ...string) (SQLStatementResult, bool) {
 	for _, stmt := range result.Statements {
 		matches := true
@@ -1663,6 +2214,99 @@ func countBucketRows(health []ServiceHealth) int {
 	return count
 }
 
+type healthCheckIntervalRow struct {
+	Service              string
+	Action               string
+	CheckIntervalMinutes int
+	ActiveSites          int64
+}
+
+func healthCheckIntervalRows(health []ServiceHealth) []healthCheckIntervalRow {
+	var rows []healthCheckIntervalRow
+	for _, h := range health {
+		for _, interval := range h.CheckIntervals {
+			rows = append(rows, healthCheckIntervalRow{
+				Service:              h.Service,
+				Action:               h.Action,
+				CheckIntervalMinutes: interval.CheckIntervalMinutes,
+				ActiveSites:          interval.ActiveSites,
+			})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Service != rows[j].Service {
+			return rows[i].Service < rows[j].Service
+		}
+		if rows[i].Action != rows[j].Action {
+			return rows[i].Action < rows[j].Action
+		}
+		return rows[i].CheckIntervalMinutes < rows[j].CheckIntervalMinutes
+	})
+	return rows
+}
+
+func latestTargetObservation(observations []targetserver.CapacityObserveSummary) *targetserver.CapacityObserveSummary {
+	for i := len(observations) - 1; i >= 0; i-- {
+		if len(observations[i].Services) == 0 {
+			continue
+		}
+		return &observations[i]
+	}
+	return nil
+}
+
+func latestCapacityReplay(replays []CapacityReplayRun) *CapacityReplayRun {
+	for i := len(replays) - 1; i >= 0; i-- {
+		if len(replays[i].Events) == 0 {
+			continue
+		}
+		return &replays[i]
+	}
+	return nil
+}
+
+func latestReplayDetection(detections []ReplayDetectionRun) *ReplayDetectionRun {
+	for i := len(detections) - 1; i >= 0; i-- {
+		if len(detections[i].Events) == 0 {
+			continue
+		}
+		return &detections[i]
+	}
+	return nil
+}
+
+func latestNetworkBucketSnapshots(snapshots []NetworkBucketHostSnapshot) []NetworkBucketHostSnapshot {
+	var out []NetworkBucketHostSnapshot
+	for _, snapshot := range snapshots {
+		if len(snapshot.Counters) == 0 {
+			continue
+		}
+		out = append(out, snapshot)
+	}
+	return out
+}
+
+func capacityReplayEventType(plan CapacityReplayPlan, id string) string {
+	for _, event := range plan.Events {
+		if event.ID == id {
+			return event.Type
+		}
+	}
+	return ""
+}
+
+func firstCapacityReplayHostError(event CapacityReplayEventResult) string {
+	for _, host := range event.Hosts {
+		if host.ActivateError != "" {
+			return host.ActivateError
+		}
+		if host.DeactivateError != "" {
+			return host.DeactivateError
+		}
+	}
+	return ""
+}
+
 func appendReason(existing, extra string) string {
 	if existing == "" {
 		return extra
@@ -1700,6 +2344,33 @@ func formatFloatPtr(value *float64) string {
 		return "-"
 	}
 	return fmt.Sprintf("%.2f", *value)
+}
+
+func formatSeconds(value int) string {
+	if value <= 0 {
+		return "-"
+	}
+	return strconv.Itoa(value) + "s"
+}
+
+func formatIntRange(min, max *int) string {
+	if min == nil && max == nil {
+		return "-"
+	}
+	if min == nil {
+		return strconv.Itoa(*max)
+	}
+	if max == nil || *min == *max {
+		return strconv.Itoa(*min)
+	}
+	return fmt.Sprintf("%d-%d", *min, *max)
+}
+
+func formatLatencyRange(min, mean, max *float64) string {
+	if min == nil && mean == nil && max == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%s/%s/%s", formatFloatPtr(min), formatFloatPtr(mean), formatFloatPtr(max))
 }
 
 func formatThresholdValue(value float64, status string) string {

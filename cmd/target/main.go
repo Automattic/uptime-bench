@@ -48,8 +48,12 @@ func main() {
 	}
 
 	registry := control.NewRegistry()
+	capacityObserver := targetserver.NewCapacityObserver()
 
-	dataHandler := &targetserver.VirtualHostHandler{Registry: registry}
+	dataHandler := &targetserver.VirtualHostHandler{
+		Registry:         registry,
+		CapacityObserver: capacityObserver,
+	}
 
 	// Internal HTTP data server. Listens on a localhost port that the TCP
 	// proxy forwards survivors to. Offsetting the public port by 10000
@@ -136,6 +140,7 @@ func main() {
 	controlSrv := control.NewServer(*memberID, token, registry)
 	controlMux := http.NewServeMux()
 	controlSrv.RegisterRoutes(controlMux)
+	targetserver.RegisterCapacityObserverHandlers(controlMux, capacityObserver)
 	if certLibController != nil {
 		targetserver.RegisterCertLibraryConfigHandler(controlMux, certLibController)
 	}

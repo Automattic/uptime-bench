@@ -26,6 +26,89 @@ check_sources = ["runner"]
 # generated target namespace. Live apply runs should leave HTTP checks enabled.
 skip_http = false
 
+[target_observer]
+# Enables target-side black-box request counting during each capacity window.
+# This is especially useful for Jetmon v1, where DB verify cannot measure
+# scheduler freshness without changing the service under test.
+enabled = true
+target_control_url = "http://target.example.com:9000"
+token_file = "/run/secrets/uptime-bench-control-token"
+timeout = "5s"
+# Defaults to 2x each service lifecycle check_interval when omitted.
+# stale_after = "2m"
+# Strict by default: any never-seen or stale target fails the batch. Use -1 to
+# disable a check for exploratory runs.
+max_never_seen_sites = 0
+max_stale_sites = 0
+# Optional throughput ratio thresholds. Leave 0 to record without failing.
+# min catches services that under-check; max catches services that over-check,
+# which matters for apples-to-apples cadence comparisons.
+min_expected_request_ratio = 0
+max_expected_request_ratio = 0
+
+[capacity_replay]
+# Applies deterministic target-side failures during capacity windows so a
+# capacity run can prove that monitors still detect and recover from real
+# outages while resource metrics are being captured. The target-control token
+# defaults to target_observer.token_file when omitted.
+enabled = false
+target_control_url = "http://target.example.com:9000"
+token_file = "/run/secrets/uptime-bench-control-token"
+timeout = "5s"
+seed = 8675309
+
+  [[capacity_replay.events]]
+  id = "http-503-sample"
+  offset = "2m"
+  duration = "2m"
+  type = "http_status"
+  status_code = 503
+  sample_count = 25
+
+[replay_detection]
+# Correlates replayed downtime/recovery windows against service event history.
+# Jetmon v2 is read through its benchmark DSN. Jetmon v1 requires the bridge's
+# /events endpoint with persistent history enabled.
+enabled = false
+timeout = "15s"
+v1_bridge_url = "http://jetmon-v1.example.com:7400"
+v1_token_file = "/run/secrets/jetmon-v1-bridge-token"
+window_padding = "30s"
+# When true, replay detection fails if event metadata reports a check interval
+# different from the lifecycle interval configured by uptime-bench.
+fail_on_check_interval_mismatch = false
+
+[network_buckets]
+# Installs an uptime-bench-owned nftables table on each selected service host
+# before the capacity window and snapshots counter-only traffic buckets at the
+# end of the window. The rules do not change packet verdicts.
+enabled = false
+ssh_config = "/home/jetmon/.ssh/config"
+table = "uptime_bench_net_buckets"
+timeout = "10s"
+
+  [[network_buckets.hosts]]
+  id = "jetmon-v1"
+  instance = "jetmon-v1.example.com"
+  ssh_host = "jetmon-v1.example.com"
+  target_ip = "192.0.2.10"
+  mysql_ip = "192.0.2.20"
+  mysql_port = 3306
+  monitoring_ip = "192.0.2.30"
+  bridge_api_port = 7400
+  peer_port = 7800
+
+  [[network_buckets.hosts]]
+  id = "jetmon-v2"
+  instance = "jetmon-v2.example.com"
+  ssh_host = "jetmon-v2.example.com"
+  target_ip = "192.0.2.10"
+  mysql_ip = "192.0.2.21"
+  mysql_port = 3306
+  monitoring_ip = "192.0.2.30"
+  api_port = 8090
+  peer_port = 7800
+
 [checks]
 interval = "1m"
 

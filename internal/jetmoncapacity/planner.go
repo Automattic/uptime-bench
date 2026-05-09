@@ -226,6 +226,23 @@ WHERE blog_id BETWEEN %d AND %d
 `, c.BlogIDStart, c.BlogIDEnd()), nil
 }
 
+// RenderActiveCheckIntervalSQL renders active-row check interval distribution.
+func RenderActiveCheckIntervalSQL(c Config) (string, error) {
+	c = c.Normalize()
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`SELECT
+  check_interval,
+  COUNT(*) AS active_sites
+FROM jetpack_monitor_sites
+WHERE blog_id BETWEEN %d AND %d
+  AND monitor_active = 1
+GROUP BY check_interval
+ORDER BY check_interval;
+`, c.BlogIDStart, c.BlogIDEnd()), nil
+}
+
 // RenderActiveURLSamplesSQL renders a query that returns exact activated
 // monitor_url samples before a timed capacity window starts.
 func RenderActiveURLSamplesSQL(c Config, activeCount int) (string, error) {
@@ -370,8 +387,20 @@ WHERE blog_id BETWEEN %d AND %d;
   SUM(CASE WHEN monitor_active = 1 THEN 1 ELSE 0 END) AS active_sites
 FROM jetpack_monitor_sites
 WHERE blog_id BETWEEN %d AND %d
-GROUP BY bucket_no
-ORDER BY bucket_no;
+ GROUP BY bucket_no
+ ORDER BY bucket_no;
+`, c.BlogIDStart, c.BlogIDEnd())
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "-- Active check interval distribution.")
+	fmt.Fprintf(w, `SELECT
+  check_interval,
+  COUNT(*) AS active_sites
+FROM jetpack_monitor_sites
+WHERE blog_id BETWEEN %d AND %d
+  AND monitor_active = 1
+GROUP BY check_interval
+ORDER BY check_interval;
 `, c.BlogIDStart, c.BlogIDEnd())
 	fmt.Fprintln(w)
 
@@ -509,21 +538,23 @@ func writeSetRangeActiveSQL(w io.Writer, c Config, start, end int64, active bool
    SET monitor_active = %d,
        site_status = 1,
        last_status_change = UTC_TIMESTAMP(),
+       check_interval = %d,
        last_checked_at = NULL,
        next_check_at = NULL,
        last_alert_sent_at = NULL,
        maintenance_start = NULL,
        maintenance_end = NULL
  WHERE blog_id BETWEEN %d AND %d;
-`, activeValue, start, end)
+`, activeValue, c.CheckIntervalMinutes, start, end)
 		return
 	}
 	fmt.Fprintf(w, `UPDATE jetpack_monitor_sites
    SET monitor_active = %d,
        site_status = 1,
-       last_status_change = UTC_TIMESTAMP()
+       last_status_change = UTC_TIMESTAMP(),
+       check_interval = %d
  WHERE blog_id BETWEEN %d AND %d;
-`, activeValue, start, end)
+`, activeValue, c.CheckIntervalMinutes, start, end)
 }
 
 func writeCloseOpenEventsSQL(w io.Writer, c Config, note string) {

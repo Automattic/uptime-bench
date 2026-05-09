@@ -84,10 +84,11 @@ func TestWriteActivateSQL(t *testing.T) {
 	plan := Plan{
 		Action: OperationActivate,
 		Config: Config{
-			Schema:      SchemaV2,
-			BlogIDStart: 100,
-			Count:       10,
-			URLPattern:  "http://site-%d.example.test/",
+			Schema:               SchemaV2,
+			BlogIDStart:          100,
+			Count:                10,
+			URLPattern:           "http://site-%d.example.test/",
+			CheckIntervalMinutes: 5,
 		},
 		ActiveCount: 3,
 	}
@@ -98,7 +99,22 @@ func TestWriteActivateSQL(t *testing.T) {
 	assertContains(t, sql, "WHERE blog_id BETWEEN 100 AND 109;")
 	assertContains(t, sql, "WHERE blog_id BETWEEN 100 AND 102;")
 	assertContains(t, sql, "monitor_active = 1")
+	assertContains(t, sql, "check_interval = 5")
 	assertContains(t, sql, "last_checked_at = NULL,\n       next_check_at = NULL,\n       last_alert_sent_at = NULL")
+}
+
+func TestRenderActiveCheckIntervalSQL(t *testing.T) {
+	sql, err := RenderActiveCheckIntervalSQL(Config{
+		Schema:      SchemaV2,
+		BlogIDStart: 100,
+		Count:       10,
+		URLPattern:  "http://site-%d.example.test/",
+	})
+	if err != nil {
+		t.Fatalf("RenderActiveCheckIntervalSQL: %v", err)
+	}
+	assertContains(t, sql, "SELECT\n  check_interval,\n  COUNT(*) AS active_sites")
+	assertContains(t, sql, "GROUP BY check_interval")
 }
 
 func TestWriteDeactivateSQLV2ResetsSchedulerState(t *testing.T) {

@@ -18,6 +18,10 @@ type RunConfig struct {
 	Window          WindowConfig          `toml:"window"`
 	Targets         TargetConfig          `toml:"targets"`
 	TargetPreflight TargetPreflightConfig `toml:"target_preflight"`
+	TargetObserver  TargetObserverConfig  `toml:"target_observer"`
+	CapacityReplay  CapacityReplayConfig  `toml:"capacity_replay"`
+	ReplayDetection ReplayDetectionConfig `toml:"replay_detection"`
+	NetworkBuckets  NetworkBucketsConfig  `toml:"network_buckets"`
 	Checks          ChecksConfig          `toml:"checks"`
 	Batches         BatchesConfig         `toml:"batches"`
 	JetmonV1        ServiceConfig         `toml:"jetmon_v1"`
@@ -48,6 +52,90 @@ type TargetPreflightConfig struct {
 	Timeout        string   `toml:"timeout"`
 	ExpectedStatus int      `toml:"expected_status"`
 	CheckSources   []string `toml:"check_sources"`
+}
+
+// TargetObserverConfig controls target-side black-box traffic observation for
+// capacity windows.
+type TargetObserverConfig struct {
+	Enabled                 bool    `toml:"enabled"`
+	TargetControlURL        string  `toml:"target_control_url"`
+	TokenEnv                string  `toml:"token_env"`
+	TokenFile               string  `toml:"token_file"`
+	Timeout                 string  `toml:"timeout"`
+	StaleAfter              string  `toml:"stale_after"`
+	MaxNeverSeenSites       int     `toml:"max_never_seen_sites"`
+	MaxStaleSites           int     `toml:"max_stale_sites"`
+	MinExpectedRequestRatio float64 `toml:"min_expected_request_ratio"`
+	MaxExpectedRequestRatio float64 `toml:"max_expected_request_ratio"`
+}
+
+// CapacityReplayConfig controls deterministic target failures during capacity
+// windows. It is intentionally target-side only: the Jetmon services under test
+// only observe normal downtime/recovery behavior.
+type CapacityReplayConfig struct {
+	Enabled          bool                  `toml:"enabled"`
+	TargetControlURL string                `toml:"target_control_url"`
+	TokenEnv         string                `toml:"token_env"`
+	TokenFile        string                `toml:"token_file"`
+	Timeout          string                `toml:"timeout"`
+	Seed             int64                 `toml:"seed"`
+	Events           []CapacityReplayEvent `toml:"events"`
+}
+
+// CapacityReplayEvent describes one deterministic failure window to apply to a
+// generated host sample.
+type CapacityReplayEvent struct {
+	ID          string  `toml:"id"`
+	Offset      string  `toml:"offset"`
+	Duration    string  `toml:"duration"`
+	Type        string  `toml:"type"`
+	StatusCode  int     `toml:"status_code"`
+	Rate        float64 `toml:"rate"`
+	Path        string  `toml:"path"`
+	Method      string  `toml:"method"`
+	HostStart   int64   `toml:"host_start"`
+	HostCount   int     `toml:"host_count"`
+	SampleCount int     `toml:"sample_count"`
+	Seed        int64   `toml:"seed"`
+}
+
+// ReplayDetectionConfig controls event-history correlation for capacity replay
+// windows. It reads provider/service event history after the replay window and
+// before benchmark cleanup changes service state.
+type ReplayDetectionConfig struct {
+	Enabled                     bool   `toml:"enabled"`
+	Timeout                     string `toml:"timeout"`
+	V1BridgeURL                 string `toml:"v1_bridge_url"`
+	V1TokenEnv                  string `toml:"v1_token_env"`
+	V1TokenFile                 string `toml:"v1_token_file"`
+	WindowPadding               string `toml:"window_padding"`
+	FailOnCheckIntervalMismatch bool   `toml:"fail_on_check_interval_mismatch"`
+}
+
+// NetworkBucketsConfig controls per-host counter snapshots that split network
+// traffic into coarse operational buckets such as target HTTP, MySQL, DNS, and
+// monitoring scrape traffic.
+type NetworkBucketsConfig struct {
+	Enabled   bool                      `toml:"enabled"`
+	SSHConfig string                    `toml:"ssh_config"`
+	Table     string                    `toml:"table"`
+	Timeout   string                    `toml:"timeout"`
+	Hosts     []NetworkBucketHostConfig `toml:"hosts"`
+}
+
+// NetworkBucketHostConfig describes one service host where nftables counters
+// should be installed and captured.
+type NetworkBucketHostConfig struct {
+	ID            string `toml:"id"`
+	Instance      string `toml:"instance"`
+	SSHHost       string `toml:"ssh_host"`
+	TargetIP      string `toml:"target_ip"`
+	MySQLIP       string `toml:"mysql_ip"`
+	MySQLPort     int    `toml:"mysql_port"`
+	MonitoringIP  string `toml:"monitoring_ip"`
+	BridgeAPIPort int    `toml:"bridge_api_port"`
+	APIPort       int    `toml:"api_port"`
+	PeerPort      int    `toml:"peer_port"`
 }
 
 // ChecksConfig describes the monitor check cadence.
@@ -153,6 +241,44 @@ func (c RunConfig) Normalize() RunConfig {
 		c.TargetPreflight.ExpectedStatus = http.StatusOK
 	}
 	c.TargetPreflight.CheckSources = normalizeCheckSources(c.TargetPreflight.CheckSources)
+	c.TargetObserver.TargetControlURL = strings.TrimRight(strings.TrimSpace(c.TargetObserver.TargetControlURL), "/")
+	c.TargetObserver.TokenEnv = strings.TrimSpace(c.TargetObserver.TokenEnv)
+	c.TargetObserver.TokenFile = strings.TrimSpace(c.TargetObserver.TokenFile)
+	if c.TargetObserver.Timeout == "" {
+		c.TargetObserver.Timeout = "5s"
+	}
+	c.CapacityReplay.TargetControlURL = strings.TrimRight(strings.TrimSpace(firstNonEmpty(c.CapacityReplay.TargetControlURL, c.TargetObserver.TargetControlURL)), "/")
+	c.CapacityReplay.TokenEnv = strings.TrimSpace(firstNonEmpty(c.CapacityReplay.TokenEnv, c.TargetObserver.TokenEnv))
+	c.CapacityReplay.TokenFile = strings.TrimSpace(firstNonEmpty(c.CapacityReplay.TokenFile, c.TargetObserver.TokenFile))
+	if c.CapacityReplay.Timeout == "" {
+		c.CapacityReplay.Timeout = firstNonEmpty(c.TargetObserver.Timeout, "5s")
+	}
+	if c.CapacityReplay.Seed == 0 {
+		c.CapacityReplay.Seed = 8675309
+	}
+	for i := range c.CapacityReplay.Events {
+		c.CapacityReplay.Events[i] = normalizeCapacityReplayEvent(c.CapacityReplay.Events[i], i)
+	}
+	c.ReplayDetection.V1BridgeURL = strings.TrimRight(strings.TrimSpace(firstNonEmpty(c.ReplayDetection.V1BridgeURL, c.JetmonV1.BridgeURL)), "/")
+	c.ReplayDetection.V1TokenEnv = strings.TrimSpace(c.ReplayDetection.V1TokenEnv)
+	c.ReplayDetection.V1TokenFile = strings.TrimSpace(c.ReplayDetection.V1TokenFile)
+	if c.ReplayDetection.Timeout == "" {
+		c.ReplayDetection.Timeout = "15s"
+	}
+	if c.ReplayDetection.WindowPadding == "" {
+		c.ReplayDetection.WindowPadding = "30s"
+	}
+	c.NetworkBuckets.SSHConfig = strings.TrimSpace(c.NetworkBuckets.SSHConfig)
+	c.NetworkBuckets.Table = strings.TrimSpace(c.NetworkBuckets.Table)
+	if c.NetworkBuckets.Table == "" {
+		c.NetworkBuckets.Table = "uptime_bench_net_buckets"
+	}
+	if c.NetworkBuckets.Timeout == "" {
+		c.NetworkBuckets.Timeout = "10s"
+	}
+	for i := range c.NetworkBuckets.Hosts {
+		c.NetworkBuckets.Hosts[i] = normalizeNetworkBucketHost(c.NetworkBuckets.Hosts[i])
+	}
 	if c.Checks.Interval == "" {
 		c.Checks.Interval = "1m"
 	}
@@ -200,6 +326,50 @@ func normalizeCheckSources(sources []string) []string {
 	return out
 }
 
+func normalizeCapacityReplayEvent(event CapacityReplayEvent, index int) CapacityReplayEvent {
+	event.ID = strings.TrimSpace(event.ID)
+	if event.ID == "" {
+		event.ID = fmt.Sprintf("event-%02d", index+1)
+	}
+	event.Offset = strings.TrimSpace(event.Offset)
+	if event.Offset == "" {
+		event.Offset = "2m"
+	}
+	event.Duration = strings.TrimSpace(event.Duration)
+	if event.Duration == "" {
+		event.Duration = "2m"
+	}
+	event.Type = strings.TrimSpace(event.Type)
+	if event.Type == "" {
+		event.Type = "http_status"
+	}
+	event.Path = strings.TrimSpace(event.Path)
+	event.Method = strings.ToUpper(strings.TrimSpace(event.Method))
+	if event.Rate == 0 {
+		event.Rate = 1
+	}
+	if event.StatusCode == 0 && event.Type == "http_status" {
+		event.StatusCode = http.StatusServiceUnavailable
+	}
+	return event
+}
+
+func normalizeNetworkBucketHost(host NetworkBucketHostConfig) NetworkBucketHostConfig {
+	host.ID = strings.TrimSpace(host.ID)
+	host.Instance = strings.TrimSpace(host.Instance)
+	host.SSHHost = strings.TrimSpace(host.SSHHost)
+	if host.SSHHost == "" {
+		host.SSHHost = host.Instance
+	}
+	host.TargetIP = strings.TrimSpace(host.TargetIP)
+	host.MySQLIP = strings.TrimSpace(host.MySQLIP)
+	host.MonitoringIP = strings.TrimSpace(host.MonitoringIP)
+	if host.MySQLPort == 0 {
+		host.MySQLPort = 3306
+	}
+	return host
+}
+
 // Validate checks the run config without requiring live DB credentials.
 func (c RunConfig) Validate() error {
 	c = c.Normalize()
@@ -214,6 +384,92 @@ func (c RunConfig) Validate() error {
 	}
 	if _, err := c.TargetPreflightTimeout(); err != nil {
 		return err
+	}
+	if _, err := c.TargetObserverTimeout(); err != nil {
+		return err
+	}
+	if _, err := c.TargetObserverStaleAfter(); err != nil {
+		return err
+	}
+	if c.TargetObserver.Enabled {
+		if strings.TrimSpace(c.TargetObserver.TargetControlURL) == "" {
+			return fmt.Errorf("target_observer.target_control_url is required when target_observer.enabled=true")
+		}
+		if c.TargetObserver.MaxNeverSeenSites < -1 {
+			return fmt.Errorf("target_observer.max_never_seen_sites must be -1 or greater")
+		}
+		if c.TargetObserver.MaxStaleSites < -1 {
+			return fmt.Errorf("target_observer.max_stale_sites must be -1 or greater")
+		}
+		if c.TargetObserver.MinExpectedRequestRatio < 0 {
+			return fmt.Errorf("target_observer.min_expected_request_ratio must be non-negative")
+		}
+		if c.TargetObserver.MaxExpectedRequestRatio < 0 {
+			return fmt.Errorf("target_observer.max_expected_request_ratio must be non-negative")
+		}
+		if c.TargetObserver.MinExpectedRequestRatio > 0 &&
+			c.TargetObserver.MaxExpectedRequestRatio > 0 &&
+			c.TargetObserver.MaxExpectedRequestRatio < c.TargetObserver.MinExpectedRequestRatio {
+			return fmt.Errorf("target_observer.max_expected_request_ratio must be greater than or equal to min_expected_request_ratio")
+		}
+	}
+	if _, err := c.CapacityReplayTimeout(); err != nil {
+		return err
+	}
+	if _, err := c.ReplayDetectionTimeout(); err != nil {
+		return err
+	}
+	if _, err := c.ReplayDetectionWindowPadding(); err != nil {
+		return err
+	}
+	if c.CapacityReplay.Enabled {
+		if strings.TrimSpace(c.CapacityReplay.TargetControlURL) == "" {
+			return fmt.Errorf("capacity_replay.target_control_url is required when capacity_replay.enabled=true")
+		}
+		if len(c.CapacityReplay.Events) == 0 {
+			return fmt.Errorf("capacity_replay.events must contain at least one event when capacity_replay.enabled=true")
+		}
+		for i, event := range c.CapacityReplay.Events {
+			if _, err := capacityReplayEventOffset(event, i); err != nil {
+				return err
+			}
+			if _, err := capacityReplayEventDuration(event, i); err != nil {
+				return err
+			}
+			if event.Rate <= 0 || event.Rate > 1 {
+				return fmt.Errorf("capacity_replay.events[%d].rate must be in (0,1]", i)
+			}
+			if event.SampleCount < 0 {
+				return fmt.Errorf("capacity_replay.events[%d].sample_count must be non-negative", i)
+			}
+			if event.HostCount < 0 {
+				return fmt.Errorf("capacity_replay.events[%d].host_count must be non-negative", i)
+			}
+			if event.StatusCode < 0 || event.StatusCode > 999 {
+				return fmt.Errorf("capacity_replay.events[%d].status_code must be between 0 and 999", i)
+			}
+		}
+	}
+	if c.ReplayDetection.Enabled {
+		if !c.CapacityReplay.Enabled {
+			return fmt.Errorf("replay_detection.enabled requires capacity_replay.enabled=true")
+		}
+	}
+	if _, err := c.NetworkBucketsTimeout(); err != nil {
+		return err
+	}
+	if c.NetworkBuckets.Enabled {
+		if len(c.NetworkBuckets.Hosts) == 0 {
+			return fmt.Errorf("network_buckets.hosts must contain at least one host when network_buckets.enabled=true")
+		}
+		for i, host := range c.NetworkBuckets.Hosts {
+			if strings.TrimSpace(host.ID) == "" {
+				return fmt.Errorf("network_buckets.hosts[%d].id is required", i)
+			}
+			if strings.TrimSpace(host.SSHHost) == "" {
+				return fmt.Errorf("network_buckets.hosts[%d].ssh_host is required", i)
+			}
+		}
 	}
 	if _, err := c.BatchDuration(); err != nil {
 		return err
@@ -272,6 +528,56 @@ func (c RunConfig) BaselineDuration() (time.Duration, error) {
 // TargetPreflightTimeout returns the per-URL timeout for activated-target checks.
 func (c RunConfig) TargetPreflightTimeout() (time.Duration, error) {
 	return parseDuration("target_preflight.timeout", c.Normalize().TargetPreflight.Timeout)
+}
+
+// CheckIntervalDuration returns the configured monitor check interval.
+func (c RunConfig) CheckIntervalDuration() (time.Duration, error) {
+	return parseDuration("checks.interval", c.Normalize().Checks.Interval)
+}
+
+// TargetObserverTimeout returns the HTTP timeout for target-observer control
+// calls.
+func (c RunConfig) TargetObserverTimeout() (time.Duration, error) {
+	return parseDuration("target_observer.timeout", c.Normalize().TargetObserver.Timeout)
+}
+
+// TargetObserverStaleAfter returns the observer staleness threshold. A zero
+// duration means the target should use its default of two check intervals.
+func (c RunConfig) TargetObserverStaleAfter() (time.Duration, error) {
+	raw := strings.TrimSpace(c.Normalize().TargetObserver.StaleAfter)
+	if raw == "" {
+		return 0, nil
+	}
+	return parseDuration("target_observer.stale_after", raw)
+}
+
+// CapacityReplayTimeout returns the HTTP timeout for target control calls.
+func (c RunConfig) CapacityReplayTimeout() (time.Duration, error) {
+	return parseDuration("capacity_replay.timeout", c.Normalize().CapacityReplay.Timeout)
+}
+
+// ReplayDetectionTimeout returns the timeout for event-history retrieval.
+func (c RunConfig) ReplayDetectionTimeout() (time.Duration, error) {
+	return parseDuration("replay_detection.timeout", c.Normalize().ReplayDetection.Timeout)
+}
+
+// ReplayDetectionWindowPadding returns the extra time included around replay
+// event query windows.
+func (c RunConfig) ReplayDetectionWindowPadding() (time.Duration, error) {
+	return parseDuration("replay_detection.window_padding", c.Normalize().ReplayDetection.WindowPadding)
+}
+
+// NetworkBucketsTimeout returns the per-host SSH/nft command timeout.
+func (c RunConfig) NetworkBucketsTimeout() (time.Duration, error) {
+	return parseDuration("network_buckets.timeout", c.Normalize().NetworkBuckets.Timeout)
+}
+
+func capacityReplayEventOffset(event CapacityReplayEvent, index int) (time.Duration, error) {
+	return parseDuration(fmt.Sprintf("capacity_replay.events[%d].offset", index), event.Offset)
+}
+
+func capacityReplayEventDuration(event CapacityReplayEvent, index int) (time.Duration, error) {
+	return parseDuration(fmt.Sprintf("capacity_replay.events[%d].duration", index), event.Duration)
 }
 
 // ServiceLifecycles returns normalized lifecycle plans for selected services.

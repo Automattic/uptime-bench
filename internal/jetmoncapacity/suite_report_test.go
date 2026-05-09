@@ -56,6 +56,10 @@ func TestBuildSuiteReportTracksCleanAndProblemBatches(t *testing.T) {
 				MissedCheckPercent:     float64Ptr(20),
 				RecentChecksPerMinute:  float64Ptr(3),
 				FreshnessWindowMinutes: 5,
+				CheckIntervals: []CheckIntervalRow{{
+					CheckIntervalMinutes: 1,
+					ActiveSites:          20,
+				}},
 			}},
 			Thresholds: []ThresholdFinding{{
 				Name:   "missed_check_percent",
@@ -64,6 +68,37 @@ func TestBuildSuiteReportTracksCleanAndProblemBatches(t *testing.T) {
 				Value:  20,
 				Limit:  5,
 				Reason: "above allowed limit",
+			}},
+			ReplayDetectionStatus: "fail",
+			ReplayDetectionError:  "interval mismatch",
+			ReplayDetections: []ReplayDetectionRun{{
+				Status: "fail",
+				Events: []ReplayDetectionEvent{{
+					ID: "http-503-sample",
+					Services: []ReplayDetectionServiceSummary{{
+						Service:                          "jetmon-v2",
+						Status:                           "fail",
+						Hosts:                            2,
+						EligibleHosts:                    1,
+						DownDetected:                     1,
+						RecoveryDetected:                 1,
+						LateDownDetected:                 1,
+						PreexistingDownOverlappedFailure: 1,
+						ExpectedCheckIntervalSec:         300,
+						NormalCheckIntervalMinSec:        intPtr(60),
+						NormalCheckIntervalMaxSec:        intPtr(60),
+						NextCheckIntervalMinSec:          intPtr(60),
+						NextCheckIntervalMaxSec:          intPtr(60),
+						CheckIntervalMismatchEvents:      1,
+						DownLatencyMinSec:                float64Ptr(30),
+						DownLatencyMeanSec:               float64Ptr(45),
+						DownLatencyMaxSec:                float64Ptr(60),
+						RecoveryLatencyMinSec:            float64Ptr(10),
+						RecoveryLatencyMeanSec:           float64Ptr(20),
+						RecoveryLatencyMaxSec:            float64Ptr(30),
+						Error:                            "interval mismatch",
+					}},
+				}},
 			}},
 		},
 	}
@@ -88,6 +123,9 @@ func TestBuildSuiteReportTracksCleanAndProblemBatches(t *testing.T) {
 	if len(report.Batches[1].ThroughputMargins) != 1 {
 		t.Fatalf("throughput margins missing: %+v", report.Batches[1])
 	}
+	if len(report.Batches[1].ReplayDetections) != 1 {
+		t.Fatalf("replay detections missing: %+v", report.Batches[1])
+	}
 	margin := report.Batches[1].ThroughputMargins[0]
 	if margin.Status != "fail" || margin.RequiredChecksPerMinute == nil || *margin.RequiredChecksPerMinute != 4 {
 		t.Fatalf("throughput margin = %+v, want fail with required/min 4", margin)
@@ -95,8 +133,12 @@ func TestBuildSuiteReportTracksCleanAndProblemBatches(t *testing.T) {
 	md := formatSuiteReportMarkdown(report)
 	for _, want := range []string{
 		"## Throughput Margin",
+		"## Check Interval Distribution",
+		"## Replay Detection",
+		"| 20 | jetmon-v2 | window-end-verify | 1 | 20 |",
 		"| 20 | jetmon-v2 | pass | fail | 20 | 4 | 20.00 | 3.00",
 		"| 20 | jetmon-v2 | fail | 20 | 5 | 4.00 | 3.00 | -1.00 | -25.00 | - |",
+		"| 20 | http-503-sample | jetmon-v2 | fail | 2 | 1 | 1 | 1 | 1 | 1 | 300s | 60 | 60 | 1 | 30.00/45.00/60.00 | 10.00/20.00/30.00 | interval mismatch |",
 	} {
 		if !strings.Contains(md, want) {
 			t.Fatalf("markdown missing %q:\n%s", want, md)
@@ -121,7 +163,7 @@ func TestFormatSuiteReportMarkdownHandlesNoBatches(t *testing.T) {
 		"# Jetmon Capacity Suite Report",
 		"- Last clean batch: `none`",
 		"- First problem batch: `none`",
-		"| 0 | none | not recorded | - | - | - | - | false | no completed batches |",
+		"| 0 | none | not recorded | - | - | - | - | - | - | - | - | false | no completed batches |",
 		"operator stopped \\| no completed batch",
 	} {
 		if !strings.Contains(md, want) {
@@ -170,6 +212,10 @@ func TestSuitePrometheusRowsFiltersAndSortsHighlights(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 {
+	return &v
+}
+
+func intPtr(v int) *int {
 	return &v
 }
 

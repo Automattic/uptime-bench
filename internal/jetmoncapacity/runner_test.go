@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/capacitybench"
+	"github.com/Automattic/uptime-bench/internal/targetserver"
 )
 
 func TestRunBatchCleansUpPartialActivation(t *testing.T) {
@@ -159,6 +160,106 @@ func TestRunBatchContinuesWhenPrometheusCaptureFails(t *testing.T) {
 	}
 }
 
+func TestRunBatchCapturesTargetObserverWindow(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, withTargetObserver("http://target-control.test:9000"))
+	outDir := filepath.Join(t.TempDir(), "out")
+	observer := &fakeTargetObserverClient{}
+	manifest, err := (Runner{
+		Executor:       &fakeSQLExecutor{activeByDSN: map[string]int64{}},
+		Clock:          fixedClock{},
+		Sleeper:        noSleep{},
+		ObserverClient: observer,
+		Collector: fakeCollector{
+			report: scrapeUpReport("jetmon-v1", "jetmon-v2"),
+		},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:  cfgPath,
+		Mode:        "run-batch",
+		ActiveCount: 10,
+		OutDir:      outDir,
+		Apply:       true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if observer.resetCalls != 1 || observer.summaryCalls != 1 {
+		t.Fatalf("observer calls reset/summary = %d/%d, want 1/1", observer.resetCalls, observer.summaryCalls)
+	}
+	if observer.lastReset.ActiveCount != 10 || len(observer.lastReset.Services) != 2 {
+		t.Fatalf("reset request = %#v, want active count 10 and two services", observer.lastReset)
+	}
+	if manifest.TargetObserverStatus != "pass" {
+		t.Fatalf("TargetObserverStatus = %q, want pass", manifest.TargetObserverStatus)
+	}
+	if len(manifest.TargetObservations) != 2 {
+		t.Fatalf("TargetObservations = %d, want reset + window", len(manifest.TargetObservations))
+	}
+	for _, name := range []string{"target-observer-reset.json", "target-observer-window.json"} {
+		if _, err := os.Stat(filepath.Join(outDir, name)); err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(outDir, "summary.txt"))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if !strings.Contains(string(data), "Target Observer:") {
+		t.Fatalf("summary missing target observer section:\n%s", string(data))
+	}
+}
+
+func TestRunBatchFailsOnTargetObserverGaps(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, withTargetObserver("http://target-control.test:9000"))
+	outDir := filepath.Join(t.TempDir(), "out")
+	observer := &fakeTargetObserverClient{
+		summary: targetserver.CapacityObserveSummary{
+			Active:         true,
+			RunID:          "batch-10",
+			SnapshotAt:     time.Unix(1_700_000_060, 0).UTC(),
+			ElapsedSeconds: 60,
+			ActiveCount:    10,
+			Services: []targetserver.CapacityObserveServiceSummary{{
+				ID:                  "jetmon-v1",
+				ExpectedSites:       10,
+				ObservedSites:       9,
+				NeverSeenSites:      1,
+				StaleSites:          1,
+				CoveragePercent:     90,
+				TotalRequests:       9,
+				RequestsPerSecond:   0.15,
+				RequestsPerSiteMean: 0.9,
+			}},
+		},
+	}
+	manifest, err := (Runner{
+		Executor:       &fakeSQLExecutor{activeByDSN: map[string]int64{}},
+		Clock:          fixedClock{},
+		Sleeper:        noSleep{},
+		ObserverClient: observer,
+		Collector: fakeCollector{
+			report: scrapeUpReport("jetmon-v1", "jetmon-v2"),
+		},
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:  cfgPath,
+		Mode:        "run-batch",
+		ActiveCount: 10,
+		OutDir:      outDir,
+		Apply:       true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if manifest.TargetObserverStatus != "fail" {
+		t.Fatalf("TargetObserverStatus = %q, want fail", manifest.TargetObserverStatus)
+	}
+	if !manifest.StopRecommended || !strings.Contains(manifest.StopReason, "target_observer_never_seen_sites") {
+		t.Fatalf("stop recommendation = %t %q, want never-seen stop", manifest.StopRecommended, manifest.StopReason)
+	}
+	if got := suiteBatchStatus(manifest); got != "fail" {
+		t.Fatalf("suiteBatchStatus = %q, want fail", got)
+	}
+}
+
 func TestRunBatchPreflightRejectsExamplePrometheusForApply(t *testing.T) {
 	cfgPath := writeRunnerConfig(t, withPrometheus("http://prometheus.example.com:9090", []string{"jetmon-v1.example.com", "jetmon-v2.example.com"}))
 	exec := &fakeSQLExecutor{activeByDSN: map[string]int64{}}
@@ -182,6 +283,33 @@ func TestRunBatchPreflightRejectsExamplePrometheusForApply(t *testing.T) {
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("SQL ran despite Prometheus preflight failure: %#v", exec.calls)
+	}
+}
+
+func TestEvaluateTargetObserverThresholdsFailsOverCheckRatio(t *testing.T) {
+	findings := EvaluateTargetObserverThresholds(targetserver.CapacityObserveSummary{
+		Services: []targetserver.CapacityObserveServiceSummary{{
+			ID:                   "jetmon-v2",
+			ExpectedRequestRatio: 2.31,
+		}},
+	}, TargetObserverConfig{
+		Enabled:                 true,
+		MinExpectedRequestRatio: 0.8,
+		MaxExpectedRequestRatio: 1.25,
+	})
+
+	var maxFinding *ThresholdFinding
+	for i := range findings {
+		if findings[i].Name == "target_observer_expected_request_ratio_max" {
+			maxFinding = &findings[i]
+			break
+		}
+	}
+	if maxFinding == nil {
+		t.Fatalf("max expected request ratio finding missing: %+v", findings)
+	}
+	if maxFinding.Status != "fail" || !strings.Contains(maxFinding.Reason, "above") {
+		t.Fatalf("max finding = %+v, want fail above limit", *maxFinding)
 	}
 }
 
@@ -449,10 +577,11 @@ func TestPlannedReportDuration(t *testing.T) {
 }
 
 func TestServiceHealthIncludesFreshnessDetails(t *testing.T) {
-	service := ServiceLifecycle{ID: "jetmon-v2", Config: Config{Schema: SchemaV2}}
+	service := ServiceLifecycle{ID: "jetmon-v2", Config: Config{Schema: SchemaV2, CheckIntervalMinutes: 1}}
 	result := SQLExecutionResult{
 		Statements: []SQLStatementResult{
 			{Columns: []string{"benchmark_sites", "active_sites"}, Rows: [][]string{{"100", "10"}}},
+			{Columns: []string{"check_interval", "active_sites"}, Rows: [][]string{{"1", "10"}}},
 			{Columns: []string{"stale_active_sites"}, Rows: [][]string{{"2"}}},
 			{Columns: []string{"recent_check_history_rows"}, Rows: [][]string{{"25"}}},
 			{Columns: []string{"freshness_samples", "freshest_check_age_sec", "average_check_age_sec", "p50_check_age_sec", "p95_check_age_sec", "p99_check_age_sec", "oldest_check_age_sec"}, Rows: [][]string{{"8", "1", "12.5", "9", "30", "42", "60"}}},
@@ -471,6 +600,25 @@ func TestServiceHealthIncludesFreshnessDetails(t *testing.T) {
 	}
 	if len(health.StaleBuckets) != 2 || health.StaleBuckets[0].StalePercent != 20 {
 		t.Fatalf("StaleBuckets = %#v, want two 20%% buckets", health.StaleBuckets)
+	}
+}
+
+func TestServiceHealthFailsCheckIntervalMismatch(t *testing.T) {
+	service := ServiceLifecycle{ID: "jetmon-v2", Config: Config{Schema: SchemaV2, CheckIntervalMinutes: 5}}
+	result := SQLExecutionResult{Statements: []SQLStatementResult{
+		{Columns: []string{"benchmark_sites", "active_sites"}, Rows: [][]string{{"100", "10"}}},
+		{Columns: []string{"check_interval", "active_sites"}, Rows: [][]string{{"1", "3"}, {"5", "7"}}},
+	}}
+
+	health := serviceHealthFromVerify(service, "active-check-interval-verify", result, 10)
+	if health.Status != "fail" {
+		t.Fatalf("Status = %q, want fail", health.Status)
+	}
+	if health.CheckIntervalMismatchSites == nil || *health.CheckIntervalMismatchSites != 3 {
+		t.Fatalf("CheckIntervalMismatchSites = %v, want 3", health.CheckIntervalMismatchSites)
+	}
+	if !strings.Contains(health.Reason, "different from 5m") {
+		t.Fatalf("Reason = %q, want interval mismatch", health.Reason)
 	}
 }
 
@@ -986,12 +1134,19 @@ type runnerConfigOption func(*runnerConfigSpec)
 type runnerConfigSpec struct {
 	prometheusURL string
 	instances     []string
+	observerURL   string
 }
 
 func withPrometheus(prometheusURL string, instances []string) runnerConfigOption {
 	return func(spec *runnerConfigSpec) {
 		spec.prometheusURL = prometheusURL
 		spec.instances = append([]string(nil), instances...)
+	}
+}
+
+func withTargetObserver(url string) runnerConfigOption {
+	return func(spec *runnerConfigSpec) {
+		spec.observerURL = url
 	}
 }
 
@@ -1022,17 +1177,29 @@ func writeRunnerConfig(t *testing.T, opts ...runnerConfigOption) string {
 		}
 		promConfig += "]\n"
 	}
+	var observerConfig string
+	if spec.observerURL != "" {
+		t.Setenv("CONTROL_TOKEN", "target-token")
+		observerConfig = `
+[target_observer]
+enabled = true
+target_control_url = ` + strconv.Quote(spec.observerURL) + `
+timeout = "1s"
+`
+	}
 	path := filepath.Join(t.TempDir(), "capacity.toml")
 	content := `
 id = "capacity-test"
 ` + promConfig + `
 
 [targets]
+host_pattern = "site-%07d.load.example.test"
 url_pattern = "http://site-%07d.load.example.test/"
 count = 100
 
 [target_preflight]
 skip_http = true
+` + observerConfig + `
 
 [checks]
 interval = "1m"
@@ -1078,6 +1245,7 @@ type fakeSQLExecutor struct {
 	activeByDSN         map[string]int64
 	staleByDSN          map[string]int64
 	historyByDSN        map[string]int64
+	checkIntervalByDSN  map[string]int
 	failActivateDSN     string
 	badSampleURLDSN     string
 	activeURLSampleRows int
@@ -1126,6 +1294,52 @@ func (c *sequenceURLChecker) CheckURL(context.Context, string, string, time.Dura
 	return c.responses[index]
 }
 
+type fakeTargetObserverClient struct {
+	resetCalls   int
+	summaryCalls int
+	lastReset    targetserver.CapacityObserveResetRequest
+	summary      targetserver.CapacityObserveSummary
+}
+
+func (c *fakeTargetObserverClient) Reset(ctx context.Context, baseURL, token string, req targetserver.CapacityObserveResetRequest, timeout time.Duration) (targetserver.CapacityObserveSummary, error) {
+	c.resetCalls++
+	c.lastReset = req
+	return targetserver.CapacityObserveSummary{
+		Active:      true,
+		RunID:       req.RunID,
+		StartedAt:   time.Unix(1_700_000_000, 0).UTC(),
+		SnapshotAt:  time.Unix(1_700_000_000, 0).UTC(),
+		ActiveCount: req.ActiveCount,
+		Services: []targetserver.CapacityObserveServiceSummary{{
+			ID:            req.Services[0].ID,
+			ExpectedSites: req.ActiveCount,
+		}},
+	}, nil
+}
+
+func (c *fakeTargetObserverClient) Summary(ctx context.Context, baseURL, token string, timeout time.Duration) (targetserver.CapacityObserveSummary, error) {
+	c.summaryCalls++
+	if len(c.summary.Services) > 0 {
+		return c.summary, nil
+	}
+	return targetserver.CapacityObserveSummary{
+		Active:         true,
+		RunID:          "batch-10",
+		SnapshotAt:     time.Unix(1_700_000_060, 0).UTC(),
+		ElapsedSeconds: 60,
+		ActiveCount:    10,
+		Services: []targetserver.CapacityObserveServiceSummary{{
+			ID:                  "jetmon-v1",
+			ExpectedSites:       10,
+			ObservedSites:       10,
+			CoveragePercent:     100,
+			TotalRequests:       10,
+			RequestsPerSecond:   0.16,
+			RequestsPerSiteMean: 1,
+		}},
+	}, nil
+}
+
 func (e *fakeSQLExecutor) ExecuteSQL(ctx context.Context, dsn string, sqlText string) (SQLExecutionResult, error) {
 	e.calls = append(e.calls, fakeSQLCall{dsn: dsn, sql: sqlText})
 	switch {
@@ -1149,6 +1363,12 @@ func (e *fakeSQLExecutor) ExecuteSQL(ctx context.Context, dsn string, sqlText st
 			e.activeByDSN[dsn] = 0
 		}
 		return SQLExecutionResult{StatementCount: 1}, nil
+	case strings.Contains(sqlText, "check_interval") && strings.Contains(sqlText, "GROUP BY check_interval") && !strings.Contains(sqlText, "benchmark_sites"):
+		interval := e.checkIntervalByDSN[dsn]
+		if interval == 0 {
+			interval = 1
+		}
+		return singleRowResult([]string{"check_interval", "active_sites"}, []string{intString(int64(interval)), intString(e.activeByDSN[dsn])}), nil
 	case strings.Contains(sqlText, "COUNT(*) AS active_sites") && !strings.Contains(sqlText, "benchmark_sites"):
 		return singleRowResult([]string{"active_sites"}, []string{intString(e.activeByDSN[dsn])}), nil
 	case strings.Contains(sqlText, "COUNT(*) AS benchmark_sites"):
@@ -1159,15 +1379,16 @@ func (e *fakeSQLExecutor) ExecuteSQL(ctx context.Context, dsn string, sqlText st
 		}
 		history := e.historyByDSN[dsn]
 		return SQLExecutionResult{
-			StatementCount: 7,
+			StatementCount: 8,
 			Statements: []SQLStatementResult{
 				{Index: 1, Keyword: "SELECT", Columns: []string{"benchmark_sites", "active_sites"}, Rows: [][]string{{"100", intString(active)}}},
 				{Index: 2, Keyword: "SELECT", Columns: []string{"bucket_no", "benchmark_sites", "active_sites"}, Rows: [][]string{{"10", "100", intString(active)}}},
-				{Index: 3, Keyword: "SELECT", Columns: []string{"stale_active_sites"}, Rows: [][]string{{intString(stale)}}},
-				{Index: 4, Keyword: "SELECT", Columns: []string{"open_events"}, Rows: [][]string{{"0"}}},
-				{Index: 5, Keyword: "SELECT", Columns: []string{"recent_check_history_rows"}, Rows: [][]string{{intString(history)}}},
-				{Index: 6, Keyword: "SELECT", Columns: []string{"freshness_samples", "freshest_check_age_sec", "average_check_age_sec", "p50_check_age_sec", "p95_check_age_sec", "p99_check_age_sec", "oldest_check_age_sec"}, Rows: [][]string{{intString(active - stale), "1", "10.5", "10", "20", "30", "40"}}},
-				{Index: 7, Keyword: "SELECT", Columns: []string{"bucket_no", "active_sites", "stale_active_sites"}, Rows: [][]string{{"10", intString(active), intString(stale)}}},
+				{Index: 3, Keyword: "SELECT", Columns: []string{"check_interval", "active_sites"}, Rows: [][]string{{"1", intString(active)}}},
+				{Index: 4, Keyword: "SELECT", Columns: []string{"stale_active_sites"}, Rows: [][]string{{intString(stale)}}},
+				{Index: 5, Keyword: "SELECT", Columns: []string{"open_events"}, Rows: [][]string{{"0"}}},
+				{Index: 6, Keyword: "SELECT", Columns: []string{"recent_check_history_rows"}, Rows: [][]string{{intString(history)}}},
+				{Index: 7, Keyword: "SELECT", Columns: []string{"freshness_samples", "freshest_check_age_sec", "average_check_age_sec", "p50_check_age_sec", "p95_check_age_sec", "p99_check_age_sec", "oldest_check_age_sec"}, Rows: [][]string{{intString(active - stale), "1", "10.5", "10", "20", "30", "40"}}},
+				{Index: 8, Keyword: "SELECT", Columns: []string{"bucket_no", "active_sites", "stale_active_sites"}, Rows: [][]string{{"10", intString(active), intString(stale)}}},
 			},
 		}, nil
 	default:
