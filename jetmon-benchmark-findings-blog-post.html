@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jetmon v2 vs. the uptime monitoring field: what the benchmark found</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #16202a;
+      --muted: #5d6975;
+      --line: #d9e1e8;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --pass: #176b3a;
+      --pass-bg: #e7f5ed;
+      --fail: #9b1c31;
+      --fail-bg: #fae8ec;
+      --mixed: #8b5a00;
+      --mixed-bg: #fff2cf;
+      --na: #4e5966;
+      --na-bg: #edf1f5;
+      --link: #155a9c;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #f7f9fb;
+      color: var(--ink);
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 48px 24px 72px;
+      background: var(--panel);
+      min-height: 100vh;
+      box-shadow: 0 0 0 1px rgba(20, 35, 50, 0.06);
+    }
+
+    header {
+      max-width: 850px;
+      margin-bottom: 40px;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0 0 18px;
+      font-size: clamp(2rem, 5vw, 4rem);
+      line-height: 1.04;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 44px 0 14px;
+      padding-top: 6px;
+      font-size: 1.7rem;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 26px 0 10px;
+      font-size: 1.18rem;
+      letter-spacing: 0;
+    }
+
+    p {
+      max-width: 850px;
+      margin: 0 0 16px;
+    }
+
+    a {
+      color: var(--link);
+    }
+
+    .lede {
+      color: #2b3b48;
+      font-size: 1.18rem;
+      line-height: 1.55;
+    }
+
+    .note {
+      max-width: 930px;
+      margin: 18px 0;
+      padding: 14px 16px;
+      border-left: 4px solid #6f8598;
+      background: var(--soft);
+      color: #344454;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin: 28px 0 36px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: #fbfcfd;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 1.9rem;
+      line-height: 1.1;
+      margin-bottom: 4px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      margin: 16px 0 30px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    table {
+      width: 100%;
+      min-width: 820px;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+
+    th, td {
+      padding: 10px 11px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #eef3f7;
+      color: #22313f;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    tbody tr:nth-child(even) td {
+      background: #fbfcfd;
+    }
+
+    tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    td.num, th.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .status {
+      display: inline-block;
+      min-width: 54px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .pass {
+      background: var(--pass-bg);
+      color: var(--pass);
+    }
+
+    .fail {
+      background: var(--fail-bg);
+      color: var(--fail);
+    }
+
+    .mixed {
+      background: var(--mixed-bg);
+      color: var(--mixed);
+    }
+
+    .na {
+      background: var(--na-bg);
+      color: var(--na);
+    }
+
+    .inconclusive {
+      background: #eee9fb;
+      color: #513f8c;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 12px 0 18px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    ul {
+      max-width: 850px;
+      margin: 0 0 18px;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .callout-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin: 20px 0 30px;
+      max-width: 960px;
+    }
+
+    .callout {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: #fbfcfd;
+    }
+
+    footer {
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        padding: 32px 16px 56px;
+      }
+
+      .cards,
+      .callout-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Draft benchmark post</p>
+    <h1>Jetmon v2 vs. the uptime monitoring field</h1>
+    <p class="lede">
+      Over a series of controlled uptime-bench runs, Jetmon v2 moved from a promising
+      in-house monitor with several blind spots to the strongest all-around detector in the
+      latest feature matrix. The biggest story is not that it became the fastest service.
+      It did not. The bigger story is that it became broad, consistent, and much better at
+      classifying what actually failed.
+    </p>
+  </header>
+
+  <section>
+    <h2>Short Version</h2>
+    <p>
+      The latest all-service feature matrix ran 33 scenario samples per service across HTTP,
+      TCP, content, DNS, TLS hard failures, TLS advisories, method-specific failures, custom
+      headers, partial responses, and response-time thresholds. Jetmon v2 passed every
+      comparable sample: 32 passed, 0 failed, and 1 excluded because response-time-threshold
+      checks are not currently supported by the Jetmon v2 adapter.
+    </p>
+
+    <div class="cards" aria-label="Latest benchmark summary">
+      <div class="metric">
+        <strong>32/32</strong>
+        <span>Jetmon v2 comparable samples passed in the latest feature matrix</span>
+      </div>
+      <div class="metric">
+        <strong>33</strong>
+        <span>Scenario samples per service in the latest all-service run</span>
+      </div>
+      <div class="metric">
+        <strong>8</strong>
+        <span>Enabled services compared in the latest run</span>
+      </div>
+      <div class="metric">
+        <strong>~177s</strong>
+        <span>Jetmon v2 weighted mean detection latency for true-positive latest samples</span>
+      </div>
+    </div>
+
+    <p>
+      Jetmon v1 did not perform competitively in the same test harness. In the latest matrix
+      it passed 0 of 25 comparable samples and had 8 capability mismatches. Earlier v1-inclusive
+      runs showed the same pattern: the current v1 adapter/bridge path can be included in the
+      tests, but it is not reliably detecting the scenario set.
+    </p>
+  </section>
+
+  <section>
+    <h2>Methodology and Caveats</h2>
+    <p>
+      These results come from uptime-bench, a harness that provisions monitors, injects a
+      controlled failure into target infrastructure, waits for the failure window and grace
+      period, retrieves provider events, and scores the result against ground truth.
+    </p>
+    <div class="note">
+      These are not vendor marketing numbers and they are not universal product guarantees.
+      They are verified behavior for the services as configured in this harness, using the
+      adapters available at the time of each run. Some rows have only one or two samples in
+      the latest feature matrix, so treat those cells as confirmed smoke-level evidence rather
+      than final statistical proof.
+    </div>
+    <ul>
+      <li>Probe geography differs. SaaS services and self-hosted services do not have identical vantage points.</li>
+      <li>Some services support a feature natively; others cannot configure it and are marked as unsupported.</li>
+      <li>Unsupported and inconclusive results are not counted as behavioral misses.</li>
+      <li>Detection latency is measured from injected failure start to first alert observed through the adapter API.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Latest Service Scores</h2>
+    <p>
+      This is the headline table from the latest all-service feature comparison run
+      (<code>20260507T050602Z-8h-feature-matrix</code>).
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Service</th>
+            <th class="num">Passed</th>
+            <th class="num">Failed</th>
+            <th class="num">Comparable</th>
+            <th class="num">Excluded</th>
+            <th class="num">Sample Pass Rate</th>
+            <th class="num">Category-Normalized</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Jetmon v2</td><td class="num">32</td><td class="num">0</td><td class="num">32</td><td class="num">1</td><td class="num">100.0%</td><td class="num">100.0%</td></tr>
+          <tr><td>Datadog Synthetics</td><td class="num">29</td><td class="num">4</td><td class="num">33</td><td class="num">0</td><td class="num">87.9%</td><td class="num">92.0%</td></tr>
+          <tr><td>Gatus</td><td class="num">28</td><td class="num">5</td><td class="num">33</td><td class="num">0</td><td class="num">84.8%</td><td class="num">89.1%</td></tr>
+          <tr><td>Better Uptime</td><td class="num">26</td><td class="num">5</td><td class="num">31</td><td class="num">2</td><td class="num">83.9%</td><td class="num">88.0%</td></tr>
+          <tr><td>Uptime Kuma</td><td class="num">24</td><td class="num">4</td><td class="num">28</td><td class="num">5</td><td class="num">85.7%</td><td class="num">92.0%</td></tr>
+          <tr><td>UptimeRobot</td><td class="num">24</td><td class="num">7</td><td class="num">31</td><td class="num">2</td><td class="num">77.4%</td><td class="num">84.0%</td></tr>
+          <tr><td>Pingdom</td><td class="num">20</td><td class="num">11</td><td class="num">31</td><td class="num">2</td><td class="num">64.5%</td><td class="num">76.0%</td></tr>
+          <tr><td>Jetmon v1</td><td class="num">0</td><td class="num">25</td><td class="num">25</td><td class="num">8</td><td class="num">0.0%</td><td class="num">0.0%</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Feature Support Matrix</h2>
+    <p>
+      The table below reads across: tests are rows, services are columns. "Pass" means the
+      service both supported the feature in this harness and produced the expected outcome.
+      "Fail" means the feature was exercised but the service missed it or classified it
+      incorrectly. "N/A" means the adapter/service configuration could not express the feature.
+      "?" means the sample was inconclusive due to an adapter/provider error.
+    </p>
+
+    <div class="legend">
+      <span><span class="status pass">Pass</span> verified</span>
+      <span><span class="status fail">Fail</span> tested miss or wrong classification</span>
+      <span><span class="status mixed">Mixed</span> partial support</span>
+      <span><span class="status na">N/A</span> unsupported in this setup</span>
+      <span><span class="status inconclusive">?</span> inconclusive</span>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Test / Feature</th>
+            <th>Jetmon v1</th>
+            <th>Jetmon v2</th>
+            <th>Pingdom</th>
+            <th>UptimeRobot</th>
+            <th>Datadog</th>
+            <th>Better Uptime</th>
+            <th>Gatus</th>
+            <th>Uptime Kuma</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>HTTP 503 outage</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>HTTP response timeout</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>Partial / truncated HTTP response</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>Redirect loop</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>TCP refused</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>TCP timeout</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>GET-specific failure, HEAD healthy</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>Required keyword missing</td><td><span class="status na">N/A</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>Forbidden keyword injected</td><td><span class="status na">N/A</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status na">N/A</span></td></tr>
+          <tr><td>Custom request header triggers failure</td><td><span class="status na">N/A</span></td><td><span class="status pass">Pass</span></td><td><span class="status na">N/A</span></td><td><span class="status na">N/A</span></td><td><span class="status pass">Pass</span></td><td><span class="status na">N/A</span></td><td><span class="status pass">Pass</span></td><td><span class="status inconclusive">?</span></td></tr>
+          <tr><td>Response-time threshold</td><td><span class="status na">N/A</span></td><td><span class="status na">N/A</span></td><td><span class="status na">N/A</span></td><td><span class="status na">N/A</span></td><td><span class="status pass">Pass</span></td><td><span class="status na">N/A</span></td><td><span class="status pass">Pass</span></td><td><span class="status na">N/A</span></td></tr>
+          <tr><td>DNS NXDOMAIN</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>DNS SERVFAIL</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>DNS timeout</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>CNAME to NXDOMAIN</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>TLS expired certificate</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>TLS invalid hostname</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>TLS handshake failure</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td><td><span class="status pass">Pass</span></td></tr>
+          <tr><td>TLS expiring advisory</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td></tr>
+          <tr><td>TLS deprecated protocol advisory</td><td><span class="status fail">Fail</span></td><td><span class="status pass">Pass</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td><td><span class="status fail">Fail</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="small">
+      TLS deprecated deserves special treatment: Jetmon v2 correctly treated it as an advisory
+      in the latest run. Better Uptime, Datadog, Gatus, and Uptime Kuma reported it as an outage;
+      Jetmon v1, Pingdom, and UptimeRobot missed the advisory signal.
+    </p>
+  </section>
+
+  <section>
+    <h2>How Jetmon v2 Improved</h2>
+    <p>
+      The important caveat: these runs are not a perfectly stable benchmark suite. The test mix
+      changed as the project learned where the weak spots were. A lower pass rate on a later date
+      often means the run was intentionally focused on harder scenarios, not that the service got
+      worse. With that caveat, the trend is still clear: Jetmon v2 repeatedly closed the gaps that
+      the previous runs exposed.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Run Focus</th>
+            <th>Jetmon v2 Result</th>
+            <th>What It Showed</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Apr 30</td>
+            <td>Expanded HTTP, content, maintenance, TCP, TLS, HEAD/GET matrix</td>
+            <td>182 passed, 52 failed, 9 unsupported; 77.8% comparable success</td>
+            <td>Strong on normal HTTP/TCP/TLS failures, but weak on partial responses, maintenance suppression, and deprecated TLS classification.</td>
+          </tr>
+          <tr>
+            <td>May 1</td>
+            <td>Overnight gap-fill with 21 scenarios</td>
+            <td>255/395 comparable passed; 64.6%</td>
+            <td>Broader tests confirmed several hard gaps: partial/truncated responses, geo-scoped behavior, deprecated TLS, expiring TLS, and maintenance behavior.</td>
+          </tr>
+          <tr>
+            <td>May 2</td>
+            <td>Jetmon-v2-heavy regression run</td>
+            <td>251/290 comparable passed; 86.6%</td>
+            <td>Partial/truncated responses and maintenance suppression came back clean. Deprecated TLS advisories and geo-scoped behavior still needed work.</td>
+          </tr>
+          <tr>
+            <td>May 5</td>
+            <td>Baseline all-service run</td>
+            <td>44/44 comparable passed; 100.0%</td>
+            <td>Core HTTP, redirect, timeout, TCP, content, and hard TLS paths were stable.</td>
+          </tr>
+          <tr>
+            <td>May 5-6</td>
+            <td>DNS/TLS gap-fill runs</td>
+            <td>26/42 then 17/40 passed</td>
+            <td>These intentionally harder runs exposed the DNS stream as the major remaining blind spot, while hard TLS and TLS expiry behavior were mostly healthy.</td>
+          </tr>
+          <tr>
+            <td>May 7</td>
+            <td>All-service feature comparison</td>
+            <td>32/32 comparable passed; 100.0%</td>
+            <td>DNS failures, TLS advisories, partial responses, content checks, custom headers, and hard outage paths all passed. Response-time threshold remains unsupported.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout-grid">
+      <div class="callout">
+        <h3>Most meaningful fixes</h3>
+        <p>
+          The biggest improvements were not cosmetic. Jetmon v2 went from missing most partial
+          response cases to passing them, from treating deprecated TLS as downtime to classifying
+          it as an advisory, and from missing DNS failures to passing NXDOMAIN, SERVFAIL, DNS
+          timeout, and CNAME-to-NXDOMAIN samples.
+        </p>
+      </div>
+      <div class="callout">
+        <h3>Remaining feature gap</h3>
+        <p>
+          Response-time-threshold monitoring is still not verified for Jetmon v2. In the latest
+          run it was correctly excluded as unsupported rather than counted as a miss.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Detection Times</h2>
+    <p>
+      Jetmon v2 was not the fastest detector in the latest matrix. Its detection times clustered
+      around the configured three-minute check cadence. That made it slower than Better Uptime,
+      Gatus, and UptimeRobot on several cases, but faster and more predictable than Datadog
+      Synthetics in this setup.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Service</th>
+            <th class="num">True-positive latency samples</th>
+            <th class="num">Weighted mean latency</th>
+            <th class="num">Worst feature p95</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Better Uptime</td><td class="num">26</td><td class="num">44.5s</td><td class="num">104.6s</td></tr>
+          <tr><td>Gatus</td><td class="num">28</td><td class="num">82.8s</td><td class="num">206.9s</td></tr>
+          <tr><td>UptimeRobot</td><td class="num">24</td><td class="num">96.1s</td><td class="num">261.8s</td></tr>
+          <tr><td>Pingdom</td><td class="num">20</td><td class="num">125.3s</td><td class="num">188.1s</td></tr>
+          <tr><td>Jetmon v2</td><td class="num">30</td><td class="num">176.9s</td><td class="num">185.6s</td></tr>
+          <tr><td>Uptime Kuma</td><td class="num">24</td><td class="num">179.5s</td><td class="num">180.0s</td></tr>
+          <tr><td>Datadog Synthetics</td><td class="num">29</td><td class="num">469.4s</td><td class="num">535.1s</td></tr>
+          <tr><td>Jetmon v1</td><td class="num">0</td><td class="num">N/A</td><td class="num">N/A</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The latency table should be read alongside the feature table. Better Uptime was much faster
+      in the scenarios it detected, but it missed or could not configure several feature classes.
+      Datadog was slower in this setup, but had excellent breadth. Jetmon v2's latest advantage
+      was correctness and classification breadth, not raw speed.
+    </p>
+  </section>
+
+  <section>
+    <h2>Classification Quality</h2>
+    <p>
+      A monitor that says "down" is useful. A monitor that says "DNS SERVFAIL," "TLS certificate
+      expiring," or "truncated response" is more useful. This is where Jetmon v2's recent work
+      became especially visible.
+    </p>
+    <ul>
+      <li>Deprecated TLS was correctly treated as an advisory by Jetmon v2, not a hard outage.</li>
+      <li>TLS expiring was detected as an advisory rather than downtime.</li>
+      <li>Hard TLS failures still stayed on the outage path.</li>
+      <li>DNS failures now produce distinct behavior for NXDOMAIN, SERVFAIL, timeout, and CNAME-to-NXDOMAIN cases.</li>
+      <li>Every successful Jetmon v2 outage sample in the latest matrix also produced recovery/closure data.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>What I Would Compare Next</h2>
+    <p>
+      The current findings are strong enough for a first public write-up, but there are several
+      comparisons that would make the story stronger over time.
+    </p>
+    <ul>
+      <li><strong>Repeat the feature matrix with more samples per cell.</strong> The latest run is excellent for breadth, but some rows only have one or two samples.</li>
+      <li><strong>Separate outage latency from advisory latency.</strong> Advisory workflows are different from paging workflows and should be measured separately.</li>
+      <li><strong>Measure recovery latency.</strong> Alert fire time is only half the operational story.</li>
+      <li><strong>Track provider/API reliability.</strong> Adapter errors, rate limits, and deprovision retries matter because they affect benchmark trust and real operational use.</li>
+      <li><strong>Compare cost and check frequency.</strong> A service that checks every 30 seconds and one that checks every 3 minutes are not trying to be the same product.</li>
+      <li><strong>Keep capacity testing separate.</strong> Jetmon v2 capacity work is a different benchmark lane and should not be mixed with feature detection claims unless the run was designed for both.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Takeaway</h2>
+    <p>
+      Jetmon v1, as currently exercised by the harness, does not stack up against the field.
+      Jetmon v2 does. The latest feature matrix shows Jetmon v2 matching or beating the field on
+      detection breadth, while also improving on the quality of the classification. Its biggest
+      missing feature from this run is response-time-threshold support, and its biggest competitive
+      tradeoff is detection speed: stable, roughly three-minute detection in this configuration,
+      but not the fastest in the group.
+    </p>
+    <p>
+      The more interesting result is the improvement curve. The benchmark repeatedly found real
+      defects, Jetmon v2 changed, and the next run verified whether those changes worked. That
+      feedback loop is the part worth keeping.
+    </p>
+  </section>
+
+  <footer>
+    <p>
+      Source report bundles: <code>20260430T033713Z-7h54m-matrix8h</code>,
+      <code>20260501T034241Z-9h29m-overnight-gapfill</code>,
+      <code>20260502T064102Z-6h44m-v2-regression-9am</code>,
+      <code>20260503T044348Z-8h02m-v1-inclusive-overnight</code>,
+      <code>20260505T033706Z-10h-all-services-baseline</code>,
+      <code>20260505T140706Z-10h-all-services-gapfill</code>,
+      <code>20260506T005613Z-11h50m-all-services-dns-tls-gapfill</code>, and
+      <code>20260507T050602Z-8h-feature-matrix</code>.
+    </p>
+    <p>
+      Draft status: ready for editing. Suggested next edit pass: decide how much raw methodology
+      detail belongs in the main post versus an appendix.
+    </p>
+  </footer>
+</main>
+</body>
+</html>
