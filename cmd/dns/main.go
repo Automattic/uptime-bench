@@ -36,6 +36,7 @@ func (z *zoneFlags) Set(v string) error {
 
 func main() {
 	dnsPort := flag.Int("dns-port", 53, "port for DNS traffic (UDP and TCP)")
+	listenAddress := flag.String("listen-address", "", "address to bind DNS traffic to; default all interfaces")
 	controlPort := flag.Int("control-port", 9100, "port for harness control API")
 	memberID := flag.String("id", "dns", "fleet member ID (must match a [[nameservers]] id in fleet.toml)")
 	fleetFile := flag.String("fleet", "", "path to fleet.toml; derives zone records for this member's domains")
@@ -123,6 +124,9 @@ func main() {
 	}()
 
 	dnsAddr := fmt.Sprintf(":%d", *dnsPort)
+	if strings.TrimSpace(*listenAddress) != "" {
+		dnsAddr = net.JoinHostPort(strings.TrimSpace(*listenAddress), fmt.Sprintf("%d", *dnsPort))
+	}
 
 	udpConn, err := net.ListenPacket("udp", dnsAddr)
 	if err != nil {
