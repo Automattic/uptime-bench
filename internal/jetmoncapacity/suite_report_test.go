@@ -51,6 +51,7 @@ func TestBuildSuiteReportTracksCleanAndProblemBatches(t *testing.T) {
 				Service:                "jetmon-v2",
 				Action:                 "window-end-verify",
 				Status:                 "pass",
+				FreshnessSource:        "db_last_checked_at",
 				ActiveSites:            int64Ptr(20),
 				StaleActiveSites:       int64Ptr(4),
 				MissedCheckPercent:     float64Ptr(20),
@@ -136,7 +137,7 @@ func TestBuildSuiteReportTracksCleanAndProblemBatches(t *testing.T) {
 		"## Check Interval Distribution",
 		"## Replay Detection",
 		"| 20 | jetmon-v2 | window-end-verify | 1 | 20 |",
-		"| 20 | jetmon-v2 | pass | fail | 20 | 4 | 20.00 | 3.00",
+		"| 20 | jetmon-v2 | pass | fail | db_last_checked_at | 20 | 4 | 20.00 | - | - | 3.00",
 		"| 20 | jetmon-v2 | fail | 20 | 5 | 4.00 | 3.00 | -1.00 | -25.00 | - |",
 		"| 20 | http-503-sample | jetmon-v2 | fail | 2 | 1 | 1 | 1 | 1 | 1 | 300s | 60 | 60 | 1 | 30.00/45.00/60.00 | 10.00/20.00/30.00 | interval mismatch |",
 	} {
@@ -163,7 +164,7 @@ func TestFormatSuiteReportMarkdownHandlesNoBatches(t *testing.T) {
 		"# Jetmon Capacity Suite Report",
 		"- Last clean batch: `none`",
 		"- First problem batch: `none`",
-		"| 0 | none | not recorded | - | - | - | - | - | - | - | - | false | no completed batches |",
+		"| 0 | none | not recorded | - | - | - | - | - | - | - | - | - | false | no completed batches |",
 		"operator stopped \\| no completed batch",
 	} {
 		if !strings.Contains(md, want) {

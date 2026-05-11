@@ -209,6 +209,54 @@ func TestRunConfigNormalizesReplayDetectionDefaults(t *testing.T) {
 	}
 }
 
+func TestRunConfigNormalizesStreamingTelemetryDefaults(t *testing.T) {
+	cfg := validCapacityConfigForTest()
+	cfg.NetworkBuckets = NetworkBucketsConfig{
+		SSHConfig: "/tmp/ssh-config",
+		Timeout:   "3s",
+	}
+	cfg.StreamingTelemetry = StreamingTelemetryConfig{
+		Enabled: true,
+		Hosts: []StreamingTelemetryHostConfig{{
+			Service:      " jetmon-v2 ",
+			SSHHost:      " jetmon-v2.example.test ",
+			DashboardURL: "http://127.0.0.1:8080/",
+		}},
+	}
+	cfg.JetmonV2.SchedulerEngine = " Streaming "
+
+	got := cfg.Normalize()
+	if got.StreamingTelemetry.SSHConfig != "/tmp/ssh-config" {
+		t.Fatalf("SSHConfig = %q, want network bucket default", got.StreamingTelemetry.SSHConfig)
+	}
+	if got.StreamingTelemetry.Timeout != "3s" {
+		t.Fatalf("Timeout = %q, want network bucket default", got.StreamingTelemetry.Timeout)
+	}
+	host := got.StreamingTelemetry.Hosts[0]
+	if host.Service != "jetmon-v2" || host.SSHHost != "jetmon-v2.example.test" || host.Unit != "jetmon2" || host.DashboardURL != "http://127.0.0.1:8080" {
+		t.Fatalf("host = %#v, want trimmed defaults", host)
+	}
+	if got.JetmonV2.SchedulerEngine != "streaming" {
+		t.Fatalf("SchedulerEngine = %q, want streaming", got.JetmonV2.SchedulerEngine)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if timeout, err := got.StreamingTelemetryTimeout(); err != nil || timeout != 3*time.Second {
+		t.Fatalf("StreamingTelemetryTimeout = %v, %v; want 3s", timeout, err)
+	}
+}
+
+func TestRunConfigRejectsInvalidSchedulerEngine(t *testing.T) {
+	cfg := validCapacityConfigForTest()
+	cfg.JetmonV2.SchedulerEngine = "eventual"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "jetmon_v2.scheduler_engine") {
+		t.Fatalf("Validate error = %v, want scheduler engine validation error", err)
+	}
+}
+
 func TestRunConfigRejectsReplayDetectionWithoutReplay(t *testing.T) {
 	cfg := validCapacityConfigForTest()
 	cfg.ReplayDetection = ReplayDetectionConfig{Enabled: true}

@@ -191,7 +191,11 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := r.URL.Path
 	if h.CapacityObserver != nil {
-		h.CapacityObserver.Record(host, r.Method, time.Now().UTC())
+		ow := &observeResponseWriter{ResponseWriter: w}
+		defer func() {
+			h.CapacityObserver.RecordResponse(host, r.Method, ow.statusCode, time.Now().UTC())
+		}()
+		w = ow
 	}
 
 	if spec, ok := h.Registry.Lookup("http_method_status", host, path); ok {
@@ -329,6 +333,26 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, healthyPageHTML(host, path))
+}
+
+type observeResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *observeResponseWriter) WriteHeader(code int) {
+	if w.statusCode != 0 {
+		return
+	}
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *observeResponseWriter) Write(p []byte) (int, error) {
+	if w.statusCode == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(p)
 }
 
 func matchesRequestMethod(spec control.FailureSpec, method string) bool {

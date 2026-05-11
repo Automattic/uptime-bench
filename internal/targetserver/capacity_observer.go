@@ -65,6 +65,8 @@ type CapacityObserveServiceSummary struct {
 	CoveragePercent          float64           `json:"coverage_percent"`
 	TotalRequests            uint64            `json:"total_requests"`
 	MethodCounts             map[string]uint64 `json:"method_counts,omitempty"`
+	StatusCounts             map[string]uint64 `json:"status_counts,omitempty"`
+	StatusHostCounts         map[string]int    `json:"status_host_counts,omitempty"`
 	RequestsPerSecond        float64           `json:"requests_per_second,omitempty"`
 	RequestsPerSiteMin       float64           `json:"requests_per_site_min,omitempty"`
 	RequestsPerSiteMean      float64           `json:"requests_per_site_mean,omitempty"`
@@ -112,6 +114,9 @@ type capacityObserveServiceState struct {
 	requests      []atomic.Uint64
 	lastSeen      []atomic.Int64
 	methods       [4]atomic.Uint64
+	statuses      [1000]atomic.Uint64
+	statusHostMu  sync.Mutex
+	statusHosts   map[int]map[int]struct{}
 	total         atomic.Uint64
 }
 
@@ -177,6 +182,16 @@ func (o *CapacityObserver) Summary(now time.Time) CapacityObserveSummary {
 // Record tracks one served request if its Host matches the active capacity
 // namespace.
 func (o *CapacityObserver) Record(host, method string, now time.Time) {
+	o.record(host, method, -1, now)
+}
+
+// RecordResponse tracks one served request plus the HTTP response status if its
+// Host matches the active capacity namespace.
+func (o *CapacityObserver) RecordResponse(host, method string, statusCode int, now time.Time) {
+	o.record(host, method, statusCode, now)
+}
+
+func (o *CapacityObserver) record(host, method string, statusCode int, now time.Time) {
 	if o == nil {
 		return
 	}
@@ -199,6 +214,10 @@ func (o *CapacityObserver) Record(host, method string, now time.Time) {
 		service.lastSeen[offset].Store(now.UTC().UnixNano())
 		service.total.Add(1)
 		service.methods[methodBucket(method)].Add(1)
+		if statusCode >= 0 && statusCode < len(service.statuses) {
+			service.statuses[statusCode].Add(1)
+			service.recordStatusHost(statusCode, offset)
+		}
 	}
 }
 
@@ -245,6 +264,7 @@ func newCapacityObserveServiceState(service CapacityObserveService, activeCount 
 		staleAfter:    staleAfter,
 		requests:      make([]atomic.Uint64, count),
 		lastSeen:      make([]atomic.Int64, count),
+		statusHosts:   make(map[int]map[int]struct{}),
 	}, nil
 }
 
@@ -353,6 +373,8 @@ func (s *capacityObserveServiceState) summary(now time.Time, elapsed time.Durati
 		StaleSites:               stale,
 		TotalRequests:            total,
 		MethodCounts:             s.methodCounts(),
+		StatusCounts:             s.statusCounts(),
+		StatusHostCounts:         s.statusHostCounts(),
 		ExpectedMinChecksPerSite: expectedMinChecks,
 		ExpectedMinRequests:      expectedMinRequests,
 		ExpectedRequestRatio:     expectedRequestRatio,
@@ -393,6 +415,45 @@ func (s *capacityObserveServiceState) methodCounts() map[string]uint64 {
 		if count == 0 {
 			delete(counts, method)
 		}
+	}
+	return counts
+}
+
+func (s *capacityObserveServiceState) statusCounts() map[string]uint64 {
+	counts := make(map[string]uint64)
+	for code := range s.statuses {
+		count := s.statuses[code].Load()
+		if count == 0 {
+			continue
+		}
+		counts[strconv.Itoa(code)] = count
+	}
+	return counts
+}
+
+func (s *capacityObserveServiceState) recordStatusHost(statusCode, offset int) {
+	if statusCode < 400 && statusCode != 0 {
+		return
+	}
+	s.statusHostMu.Lock()
+	defer s.statusHostMu.Unlock()
+	hosts := s.statusHosts[statusCode]
+	if hosts == nil {
+		hosts = make(map[int]struct{})
+		s.statusHosts[statusCode] = hosts
+	}
+	hosts[offset] = struct{}{}
+}
+
+func (s *capacityObserveServiceState) statusHostCounts() map[string]int {
+	s.statusHostMu.Lock()
+	defer s.statusHostMu.Unlock()
+	counts := make(map[string]int, len(s.statusHosts))
+	for code, hosts := range s.statusHosts {
+		if len(hosts) == 0 {
+			continue
+		}
+		counts[strconv.Itoa(code)] = len(hosts)
 	}
 	return counts
 }

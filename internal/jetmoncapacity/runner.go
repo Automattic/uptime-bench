@@ -41,13 +41,14 @@ type RunOptions struct {
 
 // Runner executes guarded Jetmon capacity lifecycle runs.
 type Runner struct {
-	Executor       SQLExecutor
-	Collector      PrometheusCollector
-	URLChecker     TargetURLChecker
-	ObserverClient TargetObserverClient
-	NetworkBuckets NetworkBucketCollector
-	Clock          Clock
-	Sleeper        Sleeper
+	Executor           SQLExecutor
+	Collector          PrometheusCollector
+	URLChecker         TargetURLChecker
+	ObserverClient     TargetObserverClient
+	NetworkBuckets     NetworkBucketCollector
+	StreamingTelemetry StreamingTelemetryCollector
+	Clock              Clock
+	Sleeper            Sleeper
 }
 
 // SQLExecutor executes rendered SQL against a service DB.
@@ -58,6 +59,12 @@ type SQLExecutor interface {
 // PrometheusCollector captures one Prometheus window.
 type PrometheusCollector interface {
 	Collect(ctx context.Context, promURL string, instances []string, start, end time.Time, step, rateWindow time.Duration) (capacitybench.Report, error)
+}
+
+// StreamingTelemetryCollector captures Jetmon streaming-scheduler telemetry for
+// a live capacity window.
+type StreamingTelemetryCollector interface {
+	Collect(ctx context.Context, cfg StreamingTelemetryConfig, services []ServiceLifecycle, start, end time.Time) (StreamingTelemetryRun, error)
 }
 
 // Clock is injected so run windows can be tested without wall-clock sleeps.
@@ -124,57 +131,60 @@ func (realSleeper) Sleep(ctx context.Context, duration time.Duration) error {
 
 // RunManifest is the operator-facing artifact for one invocation or batch.
 type RunManifest struct {
-	ID                    string                                `json:"id"`
-	Mode                  string                                `json:"mode"`
-	Apply                 bool                                  `json:"apply"`
-	ForceReseed           bool                                  `json:"force_reseed,omitempty"`
-	ConfigPath            string                                `json:"config_path"`
-	OutDir                string                                `json:"out_dir"`
-	ActiveCount           int                                   `json:"active_count,omitempty"`
-	BatchCount            int                                   `json:"batch_count,omitempty"`
-	TotalBatchCount       int                                   `json:"total_batch_count,omitempty"`
-	BatchSizes            []int                                 `json:"batch_sizes,omitempty"`
-	SuiteStartCount       int                                   `json:"suite_start_count,omitempty"`
-	SuiteStartSource      string                                `json:"suite_start_source,omitempty"`
-	SuiteStatePath        string                                `json:"suite_state_path,omitempty"`
-	BatchDuration         string                                `json:"batch_duration,omitempty"`
-	Cooldown              string                                `json:"cooldown,omitempty"`
-	EstimatedRuntime      string                                `json:"estimated_runtime,omitempty"`
-	PrometheusURL         string                                `json:"prometheus_url,omitempty"`
-	Instances             []string                              `json:"instances,omitempty"`
-	Target                TargetManifest                        `json:"target,omitempty"`
-	CreatedAt             time.Time                             `json:"created_at"`
-	WindowStart           *time.Time                            `json:"window_start,omitempty"`
-	WindowEnd             *time.Time                            `json:"window_end,omitempty"`
-	DeactivatedAt         *time.Time                            `json:"deactivated_at,omitempty"`
-	LifecycleStatus       string                                `json:"lifecycle_status,omitempty"`
-	HealthStatus          string                                `json:"health_status,omitempty"`
-	PrometheusStatus      string                                `json:"prometheus_status,omitempty"`
-	PrometheusError       string                                `json:"prometheus_error,omitempty"`
-	TargetObserverStatus  string                                `json:"target_observer_status,omitempty"`
-	TargetObserverError   string                                `json:"target_observer_error,omitempty"`
-	CapacityReplayStatus  string                                `json:"capacity_replay_status,omitempty"`
-	CapacityReplayError   string                                `json:"capacity_replay_error,omitempty"`
-	ReplayDetectionStatus string                                `json:"replay_detection_status,omitempty"`
-	ReplayDetectionError  string                                `json:"replay_detection_error,omitempty"`
-	NetworkBucketStatus   string                                `json:"network_bucket_status,omitempty"`
-	NetworkBucketError    string                                `json:"network_bucket_error,omitempty"`
-	CleanupStatus         string                                `json:"cleanup_status,omitempty"`
-	CleanupError          string                                `json:"cleanup_error,omitempty"`
-	Services              []ServiceManifest                     `json:"services"`
-	Artifacts             []Artifact                            `json:"artifacts"`
-	Executions            []ExecutionManifest                   `json:"executions,omitempty"`
-	Health                []ServiceHealth                       `json:"health,omitempty"`
-	Thresholds            []ThresholdFinding                    `json:"thresholds,omitempty"`
-	TargetPreflights      []TargetPreflight                     `json:"target_preflights,omitempty"`
-	TargetObservations    []targetserver.CapacityObserveSummary `json:"target_observations,omitempty"`
-	CapacityReplays       []CapacityReplayRun                   `json:"capacity_replays,omitempty"`
-	ReplayDetections      []ReplayDetectionRun                  `json:"replay_detections,omitempty"`
-	NetworkBuckets        []NetworkBucketHostSnapshot           `json:"network_buckets,omitempty"`
-	StopRecommended       bool                                  `json:"stop_recommended,omitempty"`
-	StopReason            string                                `json:"stop_reason,omitempty"`
-	Error                 string                                `json:"error,omitempty"`
-	Notes                 []string                              `json:"notes,omitempty"`
+	ID                       string                                `json:"id"`
+	Mode                     string                                `json:"mode"`
+	Apply                    bool                                  `json:"apply"`
+	ForceReseed              bool                                  `json:"force_reseed,omitempty"`
+	ConfigPath               string                                `json:"config_path"`
+	OutDir                   string                                `json:"out_dir"`
+	ActiveCount              int                                   `json:"active_count,omitempty"`
+	BatchCount               int                                   `json:"batch_count,omitempty"`
+	TotalBatchCount          int                                   `json:"total_batch_count,omitempty"`
+	BatchSizes               []int                                 `json:"batch_sizes,omitempty"`
+	SuiteStartCount          int                                   `json:"suite_start_count,omitempty"`
+	SuiteStartSource         string                                `json:"suite_start_source,omitempty"`
+	SuiteStatePath           string                                `json:"suite_state_path,omitempty"`
+	BatchDuration            string                                `json:"batch_duration,omitempty"`
+	Cooldown                 string                                `json:"cooldown,omitempty"`
+	EstimatedRuntime         string                                `json:"estimated_runtime,omitempty"`
+	PrometheusURL            string                                `json:"prometheus_url,omitempty"`
+	Instances                []string                              `json:"instances,omitempty"`
+	Target                   TargetManifest                        `json:"target,omitempty"`
+	CreatedAt                time.Time                             `json:"created_at"`
+	WindowStart              *time.Time                            `json:"window_start,omitempty"`
+	WindowEnd                *time.Time                            `json:"window_end,omitempty"`
+	DeactivatedAt            *time.Time                            `json:"deactivated_at,omitempty"`
+	LifecycleStatus          string                                `json:"lifecycle_status,omitempty"`
+	HealthStatus             string                                `json:"health_status,omitempty"`
+	PrometheusStatus         string                                `json:"prometheus_status,omitempty"`
+	PrometheusError          string                                `json:"prometheus_error,omitempty"`
+	TargetObserverStatus     string                                `json:"target_observer_status,omitempty"`
+	TargetObserverError      string                                `json:"target_observer_error,omitempty"`
+	CapacityReplayStatus     string                                `json:"capacity_replay_status,omitempty"`
+	CapacityReplayError      string                                `json:"capacity_replay_error,omitempty"`
+	ReplayDetectionStatus    string                                `json:"replay_detection_status,omitempty"`
+	ReplayDetectionError     string                                `json:"replay_detection_error,omitempty"`
+	NetworkBucketStatus      string                                `json:"network_bucket_status,omitempty"`
+	NetworkBucketError       string                                `json:"network_bucket_error,omitempty"`
+	StreamingTelemetryStatus string                                `json:"streaming_telemetry_status,omitempty"`
+	StreamingTelemetryError  string                                `json:"streaming_telemetry_error,omitempty"`
+	CleanupStatus            string                                `json:"cleanup_status,omitempty"`
+	CleanupError             string                                `json:"cleanup_error,omitempty"`
+	Services                 []ServiceManifest                     `json:"services"`
+	Artifacts                []Artifact                            `json:"artifacts"`
+	Executions               []ExecutionManifest                   `json:"executions,omitempty"`
+	Health                   []ServiceHealth                       `json:"health,omitempty"`
+	Thresholds               []ThresholdFinding                    `json:"thresholds,omitempty"`
+	TargetPreflights         []TargetPreflight                     `json:"target_preflights,omitempty"`
+	TargetObservations       []targetserver.CapacityObserveSummary `json:"target_observations,omitempty"`
+	CapacityReplays          []CapacityReplayRun                   `json:"capacity_replays,omitempty"`
+	ReplayDetections         []ReplayDetectionRun                  `json:"replay_detections,omitempty"`
+	NetworkBuckets           []NetworkBucketHostSnapshot           `json:"network_buckets,omitempty"`
+	StreamingTelemetry       []StreamingTelemetryRun               `json:"streaming_telemetry,omitempty"`
+	StopRecommended          bool                                  `json:"stop_recommended,omitempty"`
+	StopReason               string                                `json:"stop_reason,omitempty"`
+	Error                    string                                `json:"error,omitempty"`
+	Notes                    []string                              `json:"notes,omitempty"`
 }
 
 // SuiteState is the persisted resume hint for subsequent run-suite invocations.
@@ -204,6 +214,7 @@ type ServiceManifest struct {
 	BucketMin            int    `json:"bucket_min"`
 	BucketMax            int    `json:"bucket_max"`
 	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+	SchedulerEngine      string `json:"scheduler_engine,omitempty"`
 	DSNEnv               string `json:"dsn_env,omitempty"`
 	DSNFile              string `json:"dsn_file,omitempty"`
 	HasDSN               bool   `json:"has_dsn"`
@@ -225,30 +236,34 @@ type ExecutionManifest struct {
 
 // ServiceHealth is a compact DB-derived health snapshot.
 type ServiceHealth struct {
-	Service                    string             `json:"service"`
-	Action                     string             `json:"action"`
-	Status                     string             `json:"status"`
-	Reason                     string             `json:"reason,omitempty"`
-	BenchmarkSites             *int64             `json:"benchmark_sites,omitempty"`
-	ActiveSites                *int64             `json:"active_sites,omitempty"`
-	ExpectedActiveSites        *int64             `json:"expected_active_sites,omitempty"`
-	StaleActiveSites           *int64             `json:"stale_active_sites,omitempty"`
-	MissedCheckPercent         *float64           `json:"missed_check_percent,omitempty"`
-	OpenEvents                 *int64             `json:"open_events,omitempty"`
-	RecentCheckHistoryRows     *int64             `json:"recent_check_history_rows,omitempty"`
-	RecentChecksPerMinute      *float64           `json:"recent_checks_per_minute,omitempty"`
-	FreshnessWindowMinutes     int                `json:"freshness_window_minutes,omitempty"`
-	FreshnessSamples           *int64             `json:"freshness_samples,omitempty"`
-	FreshestCheckAgeSec        *float64           `json:"freshest_check_age_sec,omitempty"`
-	AverageCheckAgeSec         *float64           `json:"average_check_age_sec,omitempty"`
-	P50CheckAgeSec             *float64           `json:"p50_check_age_sec,omitempty"`
-	P95CheckAgeSec             *float64           `json:"p95_check_age_sec,omitempty"`
-	P99CheckAgeSec             *float64           `json:"p99_check_age_sec,omitempty"`
-	OldestCheckAgeSec          *float64           `json:"oldest_check_age_sec,omitempty"`
-	StaleBuckets               []BucketFreshness  `json:"stale_buckets,omitempty"`
-	CheckIntervals             []CheckIntervalRow `json:"check_intervals,omitempty"`
-	CheckIntervalMismatchSites *int64             `json:"check_interval_mismatch_sites,omitempty"`
-	FreshnessMeasured          bool               `json:"freshness_measured"`
+	Service                            string             `json:"service"`
+	Action                             string             `json:"action"`
+	Status                             string             `json:"status"`
+	Reason                             string             `json:"reason,omitempty"`
+	SchedulerEngine                    string             `json:"scheduler_engine,omitempty"`
+	FreshnessSource                    string             `json:"freshness_source,omitempty"`
+	BenchmarkSites                     *int64             `json:"benchmark_sites,omitempty"`
+	ActiveSites                        *int64             `json:"active_sites,omitempty"`
+	ExpectedActiveSites                *int64             `json:"expected_active_sites,omitempty"`
+	StaleActiveSites                   *int64             `json:"stale_active_sites,omitempty"`
+	MissedCheckPercent                 *float64           `json:"missed_check_percent,omitempty"`
+	LegacyProjectionStaleActiveSites   *int64             `json:"legacy_projection_stale_active_sites,omitempty"`
+	LegacyProjectionMissedCheckPercent *float64           `json:"legacy_projection_missed_check_percent,omitempty"`
+	OpenEvents                         *int64             `json:"open_events,omitempty"`
+	RecentCheckHistoryRows             *int64             `json:"recent_check_history_rows,omitempty"`
+	RecentChecksPerMinute              *float64           `json:"recent_checks_per_minute,omitempty"`
+	FreshnessWindowMinutes             int                `json:"freshness_window_minutes,omitempty"`
+	FreshnessSamples                   *int64             `json:"freshness_samples,omitempty"`
+	FreshestCheckAgeSec                *float64           `json:"freshest_check_age_sec,omitempty"`
+	AverageCheckAgeSec                 *float64           `json:"average_check_age_sec,omitempty"`
+	P50CheckAgeSec                     *float64           `json:"p50_check_age_sec,omitempty"`
+	P95CheckAgeSec                     *float64           `json:"p95_check_age_sec,omitempty"`
+	P99CheckAgeSec                     *float64           `json:"p99_check_age_sec,omitempty"`
+	OldestCheckAgeSec                  *float64           `json:"oldest_check_age_sec,omitempty"`
+	StaleBuckets                       []BucketFreshness  `json:"stale_buckets,omitempty"`
+	CheckIntervals                     []CheckIntervalRow `json:"check_intervals,omitempty"`
+	CheckIntervalMismatchSites         *int64             `json:"check_interval_mismatch_sites,omitempty"`
+	FreshnessMeasured                  bool               `json:"freshness_measured"`
 }
 
 // BucketFreshness summarizes stale rows in one scheduler bucket.
@@ -440,6 +455,9 @@ func (r Runner) withDefaults() Runner {
 	}
 	if r.NetworkBuckets == nil {
 		r.NetworkBuckets = DefaultNetworkBucketCollector{}
+	}
+	if r.StreamingTelemetry == nil {
+		r.StreamingTelemetry = DefaultStreamingTelemetryCollector{}
 	}
 	if r.Clock == nil {
 		r.Clock = realClock{}
@@ -693,6 +711,11 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 		m.NetworkBucketStatus = "fail"
 		m.NetworkBucketError = err.Error()
 		m.Notes = append(m.Notes, "Network bucket snapshot failed: "+err.Error())
+	}
+	if err := r.collectStreamingTelemetry(ctx, dir, services, cfg, start, end, m); err != nil {
+		m.StreamingTelemetryStatus = "fail"
+		m.StreamingTelemetryError = err.Error()
+		m.Notes = append(m.Notes, "Streaming telemetry capture failed: "+err.Error())
 	}
 
 	if err := r.verifyServices(ctx, dir, services, "window-end-verify", true, activeCount, m); err != nil {
@@ -1524,6 +1547,12 @@ func WriteSummary(dir string, m RunManifest) error {
 	if m.NetworkBucketError != "" {
 		fmt.Fprintf(&b, "Network Bucket Error: %s\n", m.NetworkBucketError)
 	}
+	if m.StreamingTelemetryStatus != "" {
+		fmt.Fprintf(&b, "Streaming Telemetry Status: %s\n", m.StreamingTelemetryStatus)
+	}
+	if m.StreamingTelemetryError != "" {
+		fmt.Fprintf(&b, "Streaming Telemetry Error: %s\n", m.StreamingTelemetryError)
+	}
 	if m.Target.HostPattern != "" || m.Target.URLPattern != "" {
 		fmt.Fprintf(&b, "Target Host Pattern: %s\n", m.Target.HostPattern)
 		fmt.Fprintf(&b, "Target URL Pattern: %s\n", m.Target.URLPattern)
@@ -1552,16 +1581,20 @@ func WriteSummary(dir string, m RunManifest) error {
 	if len(m.Health) > 0 {
 		fmt.Fprintln(&b, "\nService Health:")
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "SERVICE\tACTION\tSTATUS\tACTIVE\tEXPECTED\tSTALE\tMISSED_CHECK_%\tRECENT_ROWS\tRECENT/MIN\tP95_AGE_SEC\tOLDEST_AGE_SEC\tREASON")
+		fmt.Fprintln(tw, "SERVICE\tACTION\tSTATUS\tSCHEDULER\tFRESHNESS_SOURCE\tACTIVE\tEXPECTED\tSTALE\tMISSED_CHECK_%\tLEGACY_STALE\tLEGACY_MISSED_%\tRECENT_ROWS\tRECENT/MIN\tP95_AGE_SEC\tOLDEST_AGE_SEC\tREASON")
 		for _, h := range m.Health {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				h.Service,
 				h.Action,
 				h.Status,
+				h.SchedulerEngine,
+				h.FreshnessSource,
 				formatIntPtr(h.ActiveSites),
 				formatIntPtr(h.ExpectedActiveSites),
 				formatIntPtr(h.StaleActiveSites),
 				formatFloatPtr(h.MissedCheckPercent),
+				formatIntPtr(h.LegacyProjectionStaleActiveSites),
+				formatFloatPtr(h.LegacyProjectionMissedCheckPercent),
 				formatIntPtr(h.RecentCheckHistoryRows),
 				formatFloatPtr(h.RecentChecksPerMinute),
 				formatFloatPtr(h.P95CheckAgeSec),
@@ -1577,6 +1610,28 @@ func WriteSummary(dir string, m RunManifest) error {
 		fmt.Fprintln(tw, "SERVICE\tACTION\tCHECK_INTERVAL_MIN\tACTIVE")
 		for _, row := range rows {
 			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\n", row.Service, row.Action, row.CheckIntervalMinutes, row.ActiveSites)
+		}
+		_ = tw.Flush()
+	}
+	if latest := latestStreamingTelemetry(m.StreamingTelemetry); latest != nil && len(latest.Hosts) > 0 {
+		fmt.Fprintln(&b, "\nStreaming Telemetry:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SERVICE\tSTATUS\tSAMPLES\tCOMPLETED\tSPS_AVG\tSPS_MAX\tMAX_LAG_MS\tPENDING_MAX\tRESULT_DEPTH_MAX\tFAILURES\tSTALE_RESULTS\tERROR")
+		for _, host := range latest.Hosts {
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%.2f\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+				host.Service,
+				host.Status,
+				host.Aggregate.Samples,
+				host.Aggregate.Completed,
+				host.Aggregate.SPSAverage,
+				host.Aggregate.SPSMax,
+				host.Aggregate.MaxLagMSMax,
+				host.Aggregate.PendingMax,
+				host.Aggregate.ResultDepthMax,
+				host.Aggregate.Failures,
+				host.Aggregate.StaleResults,
+				host.Error,
+			)
 		}
 		_ = tw.Flush()
 	}
@@ -1756,6 +1811,7 @@ func ServiceSummaries(services []ServiceLifecycle) []ServiceManifest {
 			BucketMin:            c.BucketMin,
 			BucketMax:            c.BucketMax,
 			CheckIntervalMinutes: c.CheckIntervalMinutes,
+			SchedulerEngine:      svc.SchedulerEngine,
 			DSNEnv:               svc.DSNEnv,
 			DSNFile:              svc.DSNFile,
 			HasDSN:               svc.HasDSN,
@@ -1774,12 +1830,28 @@ func ValidRunMode(mode string) bool {
 	}
 }
 
+func serviceUsesStreamingScheduler(service ServiceLifecycle) bool {
+	return service.Config.Schema == SchemaV2 && normalizeSchedulerEngine(service.SchedulerEngine) == "streaming"
+}
+
+func freshnessSourceForService(service ServiceLifecycle) string {
+	if service.Config.Schema != SchemaV2 {
+		return "not_measured"
+	}
+	if serviceUsesStreamingScheduler(service) {
+		return "target_observer_replay_detection_streaming_telemetry"
+	}
+	return "db_last_checked_at"
+}
+
 func serviceHealthFromVerify(service ServiceLifecycle, action string, result SQLExecutionResult, expectedActive int) ServiceHealth {
 	health := ServiceHealth{
 		Service:           service.ID,
 		Action:            action,
 		Status:            "pass",
 		FreshnessMeasured: service.Config.Schema == SchemaV2,
+		SchedulerEngine:   service.SchedulerEngine,
+		FreshnessSource:   freshnessSourceForService(service),
 	}
 	if benchmarkSites, ok := firstInt64(result, "benchmark_sites"); ok {
 		health.BenchmarkSites = &benchmarkSites
@@ -1815,15 +1887,28 @@ func serviceHealthFromVerify(service ServiceLifecycle, action string, result SQL
 		health.Reason = appendReason(health.Reason, "freshness and missed checks are not measured for v1 by DB verify")
 		return health
 	}
-	if stale, ok := firstInt64(result, "stale_active_sites"); ok {
-		health.StaleActiveSites = &stale
-		if health.ActiveSites != nil && *health.ActiveSites > 0 {
-			missed := float64(stale) / float64(*health.ActiveSites) * 100
-			health.MissedCheckPercent = &missed
-		}
-	}
 	if openEvents, ok := firstInt64(result, "open_events"); ok {
 		health.OpenEvents = &openEvents
+	}
+	if stale, ok := firstInt64(result, "stale_active_sites"); ok {
+		if serviceUsesStreamingScheduler(service) {
+			health.LegacyProjectionStaleActiveSites = &stale
+			if health.ActiveSites != nil && *health.ActiveSites > 0 {
+				missed := float64(stale) / float64(*health.ActiveSites) * 100
+				health.LegacyProjectionMissedCheckPercent = &missed
+			}
+		} else {
+			health.StaleActiveSites = &stale
+			if health.ActiveSites != nil && *health.ActiveSites > 0 {
+				missed := float64(stale) / float64(*health.ActiveSites) * 100
+				health.MissedCheckPercent = &missed
+			}
+		}
+	}
+	if serviceUsesStreamingScheduler(service) {
+		health.FreshnessMeasured = false
+		health.Reason = appendReason(health.Reason, "DB freshness uses the legacy last_checked_at projection in v2 streaming mode; use target observer, replay detection, and streaming telemetry for check coverage")
+		return health
 	}
 	if history, ok := firstInt64(result, "recent_check_history_rows"); ok {
 		health.RecentCheckHistoryRows = &history

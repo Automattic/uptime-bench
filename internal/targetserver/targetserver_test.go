@@ -260,6 +260,51 @@ func TestVHH_HTTPMethodStatus_HeadFailsGetHealthy(t *testing.T) {
 	}
 }
 
+func TestVHH_CapacityObserverRecordsResponseStatus(t *testing.T) {
+	reg := control.NewRegistry()
+	observer := NewCapacityObserver()
+	start := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	if _, err := observer.Reset(CapacityObserveResetRequest{
+		ActiveCount: 1,
+		Services: []CapacityObserveService{{
+			ID:          "jetmon-v1",
+			HostPattern: "site-%07d.local",
+			URLStart:    1,
+		}},
+	}, start); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	h := &VirtualHostHandler{Registry: reg, CapacityObserver: observer}
+	reg.Set(control.FailureSpec{
+		Type: "http_method_status", Host: "site-0000001.local", Duration: time.Minute, Rate: 1.0,
+		Params: map[string]any{"method": "HEAD", "status_code": float64(503)},
+	}, 0)
+
+	head := request(t, h, http.MethodHead, "site-0000001.local", "/")
+	if head.Code != http.StatusServiceUnavailable {
+		t.Fatalf("HEAD status = %d, want 503", head.Code)
+	}
+	get := request(t, h, http.MethodGet, "site-0000001.local", "/")
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", get.Code)
+	}
+
+	summary := observer.Summary(start.Add(time.Minute))
+	if len(summary.Services) != 1 {
+		t.Fatalf("services = %d, want 1", len(summary.Services))
+	}
+	service := summary.Services[0]
+	if service.MethodCounts["HEAD"] != 1 || service.MethodCounts["GET"] != 1 {
+		t.Fatalf("MethodCounts = %#v, want one HEAD and one GET", service.MethodCounts)
+	}
+	if service.StatusCounts["503"] != 1 || service.StatusCounts["200"] != 1 {
+		t.Fatalf("StatusCounts = %#v, want one 503 and one 200", service.StatusCounts)
+	}
+	if service.StatusHostCounts["503"] != 1 {
+		t.Fatalf("StatusHostCounts = %#v, want one distinct 503 host", service.StatusHostCounts)
+	}
+}
+
 func TestVHH_HTTPMethodStatus_GetFailsHeadHealthy(t *testing.T) {
 	h, reg := newHandler()
 	reg.Set(control.FailureSpec{

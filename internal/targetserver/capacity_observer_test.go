@@ -25,8 +25,8 @@ func TestCapacityObserverRecordsGeneratedHosts(t *testing.T) {
 		t.Fatalf("Reset: %v", err)
 	}
 
-	observer.Record("site-0000001.load.example.test", http.MethodGet, start.Add(10*time.Second))
-	observer.Record("site-0000002.load.example.test:80", http.MethodHead, start.Add(20*time.Second))
+	observer.RecordResponse("site-0000001.load.example.test", http.MethodGet, http.StatusOK, start.Add(10*time.Second))
+	observer.RecordResponse("site-0000002.load.example.test:80", http.MethodHead, http.StatusServiceUnavailable, start.Add(20*time.Second))
 	observer.Record("site-0000004.load.example.test", http.MethodGet, start.Add(30*time.Second))
 	observer.Record("other.example.test", http.MethodGet, start.Add(40*time.Second))
 
@@ -49,6 +49,12 @@ func TestCapacityObserverRecordsGeneratedHosts(t *testing.T) {
 	}
 	if service.MethodCounts["GET"] != 1 || service.MethodCounts["HEAD"] != 1 {
 		t.Fatalf("MethodCounts = %#v, want one GET and one HEAD", service.MethodCounts)
+	}
+	if service.StatusCounts["200"] != 1 || service.StatusCounts["503"] != 1 {
+		t.Fatalf("StatusCounts = %#v, want one 200 and one 503", service.StatusCounts)
+	}
+	if service.StatusHostCounts["503"] != 1 {
+		t.Fatalf("StatusHostCounts = %#v, want one distinct 503 host", service.StatusHostCounts)
 	}
 	if service.ExpectedMinChecksPerSite != 2 || service.ExpectedMinRequests != 6 {
 		t.Fatalf("expected checks/requests = %d/%d, want 2/6", service.ExpectedMinChecksPerSite, service.ExpectedMinRequests)

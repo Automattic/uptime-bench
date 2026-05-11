@@ -197,6 +197,20 @@ These counters split host traffic into coarse buckets such as target HTTP,
 MySQL, DNS, monitoring scrape traffic, API/bridge traffic, SSH, and derived
 other traffic. The rules are counter-only and keep the default packet verdict.
 
+When `[jetmon_v2] scheduler_engine="streaming"`, DB freshness based on
+`last_checked_at` is treated as a legacy projection, not as the scored missed
+check signal. The capacity report still records
+`legacy_projection_stale_active_sites` for context, but the missed-check
+threshold is reported as `not_measured` for that service. Use target observer,
+capacity replay detection, and `[streaming_telemetry]` to confirm that v2 is
+actually checking sites during the window.
+
+When `[streaming_telemetry] enabled=true`, the runner captures Jetmon v2
+streaming scheduler summary lines from journald and an optional dashboard
+`/api/state` snapshot over SSH. The live fleet uses the v2 host's local
+dashboard URL, for example `http://127.0.0.1:8080`, so the request stays on the
+service host.
+
 Deploy the Docker stats exporter to a Jetmon host with:
 
 ```sh
@@ -230,8 +244,8 @@ The intended capacity sequence is:
    window.
 7. Apply deterministic target-side replay failures, when configured, inside the
    active window.
-8. Snapshot target observer, network buckets, DB health, and Prometheus metrics
-   for the exact window.
+8. Snapshot target observer, streaming telemetry, network buckets, DB health,
+   and Prometheus metrics for the exact window.
 9. Record Jetmon health signals: missed checks, lag, API errors, service errors,
    and active monitor counts.
 10. Remove or deactivate benchmark sites.

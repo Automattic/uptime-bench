@@ -12,21 +12,22 @@ import (
 
 // RunConfig describes an end-to-end Jetmon v1/v2 capacity run.
 type RunConfig struct {
-	ID              string                `toml:"id"`
-	PrometheusURL   string                `toml:"prometheus_url"`
-	Instances       []string              `toml:"instances"`
-	Window          WindowConfig          `toml:"window"`
-	Targets         TargetConfig          `toml:"targets"`
-	TargetPreflight TargetPreflightConfig `toml:"target_preflight"`
-	TargetObserver  TargetObserverConfig  `toml:"target_observer"`
-	CapacityReplay  CapacityReplayConfig  `toml:"capacity_replay"`
-	ReplayDetection ReplayDetectionConfig `toml:"replay_detection"`
-	NetworkBuckets  NetworkBucketsConfig  `toml:"network_buckets"`
-	Checks          ChecksConfig          `toml:"checks"`
-	Batches         BatchesConfig         `toml:"batches"`
-	JetmonV1        ServiceConfig         `toml:"jetmon_v1"`
-	JetmonV2        ServiceConfig         `toml:"jetmon_v2"`
-	StopThreshold   StopThresholds        `toml:"stop_thresholds"`
+	ID                 string                   `toml:"id"`
+	PrometheusURL      string                   `toml:"prometheus_url"`
+	Instances          []string                 `toml:"instances"`
+	Window             WindowConfig             `toml:"window"`
+	Targets            TargetConfig             `toml:"targets"`
+	TargetPreflight    TargetPreflightConfig    `toml:"target_preflight"`
+	TargetObserver     TargetObserverConfig     `toml:"target_observer"`
+	CapacityReplay     CapacityReplayConfig     `toml:"capacity_replay"`
+	ReplayDetection    ReplayDetectionConfig    `toml:"replay_detection"`
+	NetworkBuckets     NetworkBucketsConfig     `toml:"network_buckets"`
+	StreamingTelemetry StreamingTelemetryConfig `toml:"streaming_telemetry"`
+	Checks             ChecksConfig             `toml:"checks"`
+	Batches            BatchesConfig            `toml:"batches"`
+	JetmonV1           ServiceConfig            `toml:"jetmon_v1"`
+	JetmonV2           ServiceConfig            `toml:"jetmon_v2"`
+	StopThreshold      StopThresholds           `toml:"stop_thresholds"`
 }
 
 // WindowConfig controls baseline and Prometheus capture windows.
@@ -138,6 +139,25 @@ type NetworkBucketHostConfig struct {
 	PeerPort      int    `toml:"peer_port"`
 }
 
+// StreamingTelemetryConfig controls optional Jetmon v2 streaming-scheduler
+// telemetry capture during capacity windows.
+type StreamingTelemetryConfig struct {
+	Enabled   bool                           `toml:"enabled"`
+	SSHConfig string                         `toml:"ssh_config"`
+	Timeout   string                         `toml:"timeout"`
+	Unit      string                         `toml:"unit"`
+	Hosts     []StreamingTelemetryHostConfig `toml:"hosts"`
+}
+
+// StreamingTelemetryHostConfig describes one Jetmon host whose streaming
+// scheduler logs and dashboard state should be captured.
+type StreamingTelemetryHostConfig struct {
+	Service      string `toml:"service"`
+	SSHHost      string `toml:"ssh_host"`
+	Unit         string `toml:"unit"`
+	DashboardURL string `toml:"dashboard_url"`
+}
+
 // ChecksConfig describes the monitor check cadence.
 type ChecksConfig struct {
 	Interval string `toml:"interval"`
@@ -152,11 +172,12 @@ type BatchesConfig struct {
 
 // ServiceConfig describes one Jetmon service under capacity test.
 type ServiceConfig struct {
-	BridgeURL      string          `toml:"bridge_url"`
-	APIURL         string          `toml:"api_url"`
-	BulkLifecycle  string          `toml:"bulk_lifecycle"`
-	Lifecycle      LifecycleConfig `toml:"lifecycle"`
-	LifecycleTable string          `toml:"-"`
+	BridgeURL       string          `toml:"bridge_url"`
+	APIURL          string          `toml:"api_url"`
+	BulkLifecycle   string          `toml:"bulk_lifecycle"`
+	SchedulerEngine string          `toml:"scheduler_engine"`
+	Lifecycle       LifecycleConfig `toml:"lifecycle"`
+	LifecycleTable  string          `toml:"-"`
 }
 
 // LifecycleConfig describes the benchmark-owned database range for one service.
@@ -186,15 +207,16 @@ type StopThresholds struct {
 
 // ServiceLifecycle is a normalized lifecycle plan for one Jetmon service.
 type ServiceLifecycle struct {
-	ID      string
-	Config  Config
-	DSN     string
-	DSNEnv  string
-	DSNFile string
-	HasDSN  bool
-	APIURL  string
-	Bridge  string
-	BulkVia string
+	ID              string
+	Config          Config
+	DSN             string
+	DSNEnv          string
+	DSNFile         string
+	HasDSN          bool
+	APIURL          string
+	Bridge          string
+	BulkVia         string
+	SchedulerEngine string
 }
 
 // LoadRunConfig loads a capacity run config from TOML.
@@ -279,6 +301,19 @@ func (c RunConfig) Normalize() RunConfig {
 	for i := range c.NetworkBuckets.Hosts {
 		c.NetworkBuckets.Hosts[i] = normalizeNetworkBucketHost(c.NetworkBuckets.Hosts[i])
 	}
+	c.StreamingTelemetry.SSHConfig = strings.TrimSpace(firstNonEmpty(c.StreamingTelemetry.SSHConfig, c.NetworkBuckets.SSHConfig))
+	c.StreamingTelemetry.Unit = strings.TrimSpace(c.StreamingTelemetry.Unit)
+	if c.StreamingTelemetry.Unit == "" {
+		c.StreamingTelemetry.Unit = "jetmon2"
+	}
+	if c.StreamingTelemetry.Timeout == "" {
+		c.StreamingTelemetry.Timeout = firstNonEmpty(c.NetworkBuckets.Timeout, "10s")
+	}
+	for i := range c.StreamingTelemetry.Hosts {
+		c.StreamingTelemetry.Hosts[i] = normalizeStreamingTelemetryHost(c.StreamingTelemetry, c.StreamingTelemetry.Hosts[i])
+	}
+	c.JetmonV1.SchedulerEngine = normalizeSchedulerEngine(c.JetmonV1.SchedulerEngine)
+	c.JetmonV2.SchedulerEngine = normalizeSchedulerEngine(c.JetmonV2.SchedulerEngine)
 	if c.Checks.Interval == "" {
 		c.Checks.Interval = "1m"
 	}
@@ -370,6 +405,21 @@ func normalizeNetworkBucketHost(host NetworkBucketHostConfig) NetworkBucketHostC
 	return host
 }
 
+func normalizeStreamingTelemetryHost(cfg StreamingTelemetryConfig, host StreamingTelemetryHostConfig) StreamingTelemetryHostConfig {
+	host.Service = strings.TrimSpace(host.Service)
+	host.SSHHost = strings.TrimSpace(host.SSHHost)
+	host.Unit = strings.TrimSpace(host.Unit)
+	if host.Unit == "" {
+		host.Unit = strings.TrimSpace(cfg.Unit)
+	}
+	host.DashboardURL = strings.TrimRight(strings.TrimSpace(host.DashboardURL), "/")
+	return host
+}
+
+func normalizeSchedulerEngine(engine string) string {
+	return strings.ToLower(strings.TrimSpace(engine))
+}
+
 // Validate checks the run config without requiring live DB credentials.
 func (c RunConfig) Validate() error {
 	c = c.Normalize()
@@ -458,6 +508,15 @@ func (c RunConfig) Validate() error {
 	if _, err := c.NetworkBucketsTimeout(); err != nil {
 		return err
 	}
+	if _, err := c.StreamingTelemetryTimeout(); err != nil {
+		return err
+	}
+	if err := validateSchedulerEngine("jetmon_v1.scheduler_engine", c.JetmonV1.SchedulerEngine); err != nil {
+		return err
+	}
+	if err := validateSchedulerEngine("jetmon_v2.scheduler_engine", c.JetmonV2.SchedulerEngine); err != nil {
+		return err
+	}
 	if c.NetworkBuckets.Enabled {
 		if len(c.NetworkBuckets.Hosts) == 0 {
 			return fmt.Errorf("network_buckets.hosts must contain at least one host when network_buckets.enabled=true")
@@ -468,6 +527,22 @@ func (c RunConfig) Validate() error {
 			}
 			if strings.TrimSpace(host.SSHHost) == "" {
 				return fmt.Errorf("network_buckets.hosts[%d].ssh_host is required", i)
+			}
+		}
+	}
+	if c.StreamingTelemetry.Enabled {
+		if len(c.StreamingTelemetry.Hosts) == 0 {
+			return fmt.Errorf("streaming_telemetry.hosts must contain at least one host when streaming_telemetry.enabled=true")
+		}
+		for i, host := range c.StreamingTelemetry.Hosts {
+			if strings.TrimSpace(host.Service) == "" {
+				return fmt.Errorf("streaming_telemetry.hosts[%d].service is required", i)
+			}
+			if strings.TrimSpace(host.SSHHost) == "" {
+				return fmt.Errorf("streaming_telemetry.hosts[%d].ssh_host is required", i)
+			}
+			if strings.TrimSpace(host.Unit) == "" {
+				return fmt.Errorf("streaming_telemetry.hosts[%d].unit is required", i)
 			}
 		}
 	}
@@ -572,6 +647,11 @@ func (c RunConfig) NetworkBucketsTimeout() (time.Duration, error) {
 	return parseDuration("network_buckets.timeout", c.Normalize().NetworkBuckets.Timeout)
 }
 
+// StreamingTelemetryTimeout returns the per-host telemetry capture timeout.
+func (c RunConfig) StreamingTelemetryTimeout() (time.Duration, error) {
+	return parseDuration("streaming_telemetry.timeout", c.Normalize().StreamingTelemetry.Timeout)
+}
+
 func capacityReplayEventOffset(event CapacityReplayEvent, index int) (time.Duration, error) {
 	return parseDuration(fmt.Sprintf("capacity_replay.events[%d].offset", index), event.Offset)
 }
@@ -655,13 +735,14 @@ func serviceLifecycle(id string, svc ServiceConfig, target TargetConfig, checks 
 		if err != nil {
 			if os.IsNotExist(err) {
 				return ServiceLifecycle{
-					ID:      id,
-					Config:  plan,
-					DSNEnv:  strings.TrimSpace(lc.DSNEnv),
-					DSNFile: path,
-					APIURL:  strings.TrimSpace(svc.APIURL),
-					Bridge:  strings.TrimSpace(svc.BridgeURL),
-					BulkVia: strings.TrimSpace(svc.BulkLifecycle),
+					ID:              id,
+					Config:          plan,
+					DSNEnv:          strings.TrimSpace(lc.DSNEnv),
+					DSNFile:         path,
+					APIURL:          strings.TrimSpace(svc.APIURL),
+					Bridge:          strings.TrimSpace(svc.BridgeURL),
+					BulkVia:         strings.TrimSpace(svc.BulkLifecycle),
+					SchedulerEngine: normalizeSchedulerEngine(svc.SchedulerEngine),
 				}, nil
 			}
 			return ServiceLifecycle{}, fmt.Errorf("%s lifecycle: stat dsn_file: %w", id, err)
@@ -679,16 +760,26 @@ func serviceLifecycle(id string, svc ServiceConfig, target TargetConfig, checks 
 		dsn = strings.TrimSpace(string(data))
 	}
 	return ServiceLifecycle{
-		ID:      id,
-		Config:  plan,
-		DSN:     dsn,
-		DSNEnv:  strings.TrimSpace(lc.DSNEnv),
-		DSNFile: strings.TrimSpace(lc.DSNFile),
-		HasDSN:  dsn != "",
-		APIURL:  strings.TrimSpace(svc.APIURL),
-		Bridge:  strings.TrimSpace(svc.BridgeURL),
-		BulkVia: strings.TrimSpace(svc.BulkLifecycle),
+		ID:              id,
+		Config:          plan,
+		DSN:             dsn,
+		DSNEnv:          strings.TrimSpace(lc.DSNEnv),
+		DSNFile:         strings.TrimSpace(lc.DSNFile),
+		HasDSN:          dsn != "",
+		APIURL:          strings.TrimSpace(svc.APIURL),
+		Bridge:          strings.TrimSpace(svc.BridgeURL),
+		BulkVia:         strings.TrimSpace(svc.BulkLifecycle),
+		SchedulerEngine: normalizeSchedulerEngine(svc.SchedulerEngine),
 	}, nil
+}
+
+func validateSchedulerEngine(name, engine string) error {
+	switch normalizeSchedulerEngine(engine) {
+	case "", "legacy", "streaming":
+		return nil
+	default:
+		return fmt.Errorf("%s must be empty, %q, or %q", name, "legacy", "streaming")
+	}
 }
 
 func parseDuration(name, raw string) (time.Duration, error) {

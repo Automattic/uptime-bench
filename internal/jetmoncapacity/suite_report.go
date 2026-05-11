@@ -44,37 +44,40 @@ type SuiteReport struct {
 // SuiteBatchReport is a compact batch-level summary backed by the child
 // run-batch manifest and its Prometheus window artifact.
 type SuiteBatchReport struct {
-	ActiveCount           int                                   `json:"active_count"`
-	OutDir                string                                `json:"out_dir"`
-	Status                string                                `json:"status"`
-	LifecycleStatus       string                                `json:"lifecycle_status,omitempty"`
-	HealthStatus          string                                `json:"health_status,omitempty"`
-	PrometheusStatus      string                                `json:"prometheus_status,omitempty"`
-	PrometheusError       string                                `json:"prometheus_error,omitempty"`
-	TargetObserverStatus  string                                `json:"target_observer_status,omitempty"`
-	TargetObserverError   string                                `json:"target_observer_error,omitempty"`
-	CapacityReplayStatus  string                                `json:"capacity_replay_status,omitempty"`
-	CapacityReplayError   string                                `json:"capacity_replay_error,omitempty"`
-	ReplayDetectionStatus string                                `json:"replay_detection_status,omitempty"`
-	ReplayDetectionError  string                                `json:"replay_detection_error,omitempty"`
-	NetworkBucketStatus   string                                `json:"network_bucket_status,omitempty"`
-	NetworkBucketError    string                                `json:"network_bucket_error,omitempty"`
-	CleanupStatus         string                                `json:"cleanup_status,omitempty"`
-	CleanupError          string                                `json:"cleanup_error,omitempty"`
-	WindowStart           *time.Time                            `json:"window_start,omitempty"`
-	WindowEnd             *time.Time                            `json:"window_end,omitempty"`
-	StopRecommended       bool                                  `json:"stop_recommended,omitempty"`
-	StopReason            string                                `json:"stop_reason,omitempty"`
-	Error                 string                                `json:"error,omitempty"`
-	Health                []ServiceHealth                       `json:"health,omitempty"`
-	Thresholds            []ThresholdFinding                    `json:"thresholds,omitempty"`
-	ThroughputMargins     []ThroughputMargin                    `json:"throughput_margins,omitempty"`
-	PrometheusSummary     []capacitybench.SeriesSummary         `json:"prometheus_summary,omitempty"`
-	TargetPreflights      []TargetPreflight                     `json:"target_preflights,omitempty"`
-	TargetObservations    []targetserver.CapacityObserveSummary `json:"target_observations,omitempty"`
-	CapacityReplays       []CapacityReplayRun                   `json:"capacity_replays,omitempty"`
-	ReplayDetections      []ReplayDetectionRun                  `json:"replay_detections,omitempty"`
-	NetworkBuckets        []NetworkBucketHostSnapshot           `json:"network_buckets,omitempty"`
+	ActiveCount              int                                   `json:"active_count"`
+	OutDir                   string                                `json:"out_dir"`
+	Status                   string                                `json:"status"`
+	LifecycleStatus          string                                `json:"lifecycle_status,omitempty"`
+	HealthStatus             string                                `json:"health_status,omitempty"`
+	PrometheusStatus         string                                `json:"prometheus_status,omitempty"`
+	PrometheusError          string                                `json:"prometheus_error,omitempty"`
+	TargetObserverStatus     string                                `json:"target_observer_status,omitempty"`
+	TargetObserverError      string                                `json:"target_observer_error,omitempty"`
+	CapacityReplayStatus     string                                `json:"capacity_replay_status,omitempty"`
+	CapacityReplayError      string                                `json:"capacity_replay_error,omitempty"`
+	ReplayDetectionStatus    string                                `json:"replay_detection_status,omitempty"`
+	ReplayDetectionError     string                                `json:"replay_detection_error,omitempty"`
+	NetworkBucketStatus      string                                `json:"network_bucket_status,omitempty"`
+	NetworkBucketError       string                                `json:"network_bucket_error,omitempty"`
+	StreamingTelemetryStatus string                                `json:"streaming_telemetry_status,omitempty"`
+	StreamingTelemetryError  string                                `json:"streaming_telemetry_error,omitempty"`
+	CleanupStatus            string                                `json:"cleanup_status,omitempty"`
+	CleanupError             string                                `json:"cleanup_error,omitempty"`
+	WindowStart              *time.Time                            `json:"window_start,omitempty"`
+	WindowEnd                *time.Time                            `json:"window_end,omitempty"`
+	StopRecommended          bool                                  `json:"stop_recommended,omitempty"`
+	StopReason               string                                `json:"stop_reason,omitempty"`
+	Error                    string                                `json:"error,omitempty"`
+	Health                   []ServiceHealth                       `json:"health,omitempty"`
+	Thresholds               []ThresholdFinding                    `json:"thresholds,omitempty"`
+	ThroughputMargins        []ThroughputMargin                    `json:"throughput_margins,omitempty"`
+	PrometheusSummary        []capacitybench.SeriesSummary         `json:"prometheus_summary,omitempty"`
+	TargetPreflights         []TargetPreflight                     `json:"target_preflights,omitempty"`
+	TargetObservations       []targetserver.CapacityObserveSummary `json:"target_observations,omitempty"`
+	CapacityReplays          []CapacityReplayRun                   `json:"capacity_replays,omitempty"`
+	ReplayDetections         []ReplayDetectionRun                  `json:"replay_detections,omitempty"`
+	NetworkBuckets           []NetworkBucketHostSnapshot           `json:"network_buckets,omitempty"`
+	StreamingTelemetry       []StreamingTelemetryRun               `json:"streaming_telemetry,omitempty"`
 }
 
 // ThroughputMargin is a derived freshness-capacity view for one service in one
@@ -116,36 +119,39 @@ func buildSuiteReport(parent RunManifest, children []RunManifest) SuiteReport {
 	}
 	for _, child := range children {
 		batch := SuiteBatchReport{
-			ActiveCount:           child.ActiveCount,
-			OutDir:                child.OutDir,
-			Status:                suiteBatchStatus(child),
-			LifecycleStatus:       child.LifecycleStatus,
-			HealthStatus:          child.HealthStatus,
-			PrometheusStatus:      child.PrometheusStatus,
-			PrometheusError:       child.PrometheusError,
-			TargetObserverStatus:  child.TargetObserverStatus,
-			TargetObserverError:   child.TargetObserverError,
-			CapacityReplayStatus:  child.CapacityReplayStatus,
-			CapacityReplayError:   child.CapacityReplayError,
-			ReplayDetectionStatus: child.ReplayDetectionStatus,
-			ReplayDetectionError:  child.ReplayDetectionError,
-			NetworkBucketStatus:   child.NetworkBucketStatus,
-			NetworkBucketError:    child.NetworkBucketError,
-			CleanupStatus:         child.CleanupStatus,
-			CleanupError:          child.CleanupError,
-			WindowStart:           child.WindowStart,
-			WindowEnd:             child.WindowEnd,
-			StopRecommended:       child.StopRecommended,
-			StopReason:            child.StopReason,
-			Error:                 child.Error,
-			Health:                append([]ServiceHealth(nil), child.Health...),
-			Thresholds:            append([]ThresholdFinding(nil), child.Thresholds...),
-			ThroughputMargins:     throughputMarginsFromHealth(child.Health),
-			TargetPreflights:      append([]TargetPreflight(nil), child.TargetPreflights...),
-			TargetObservations:    append([]targetserver.CapacityObserveSummary(nil), child.TargetObservations...),
-			CapacityReplays:       append([]CapacityReplayRun(nil), child.CapacityReplays...),
-			ReplayDetections:      append([]ReplayDetectionRun(nil), child.ReplayDetections...),
-			NetworkBuckets:        append([]NetworkBucketHostSnapshot(nil), child.NetworkBuckets...),
+			ActiveCount:              child.ActiveCount,
+			OutDir:                   child.OutDir,
+			Status:                   suiteBatchStatus(child),
+			LifecycleStatus:          child.LifecycleStatus,
+			HealthStatus:             child.HealthStatus,
+			PrometheusStatus:         child.PrometheusStatus,
+			PrometheusError:          child.PrometheusError,
+			TargetObserverStatus:     child.TargetObserverStatus,
+			TargetObserverError:      child.TargetObserverError,
+			CapacityReplayStatus:     child.CapacityReplayStatus,
+			CapacityReplayError:      child.CapacityReplayError,
+			ReplayDetectionStatus:    child.ReplayDetectionStatus,
+			ReplayDetectionError:     child.ReplayDetectionError,
+			NetworkBucketStatus:      child.NetworkBucketStatus,
+			NetworkBucketError:       child.NetworkBucketError,
+			StreamingTelemetryStatus: child.StreamingTelemetryStatus,
+			StreamingTelemetryError:  child.StreamingTelemetryError,
+			CleanupStatus:            child.CleanupStatus,
+			CleanupError:             child.CleanupError,
+			WindowStart:              child.WindowStart,
+			WindowEnd:                child.WindowEnd,
+			StopRecommended:          child.StopRecommended,
+			StopReason:               child.StopReason,
+			Error:                    child.Error,
+			Health:                   append([]ServiceHealth(nil), child.Health...),
+			Thresholds:               append([]ThresholdFinding(nil), child.Thresholds...),
+			ThroughputMargins:        throughputMarginsFromHealth(child.Health),
+			TargetPreflights:         append([]TargetPreflight(nil), child.TargetPreflights...),
+			TargetObservations:       append([]targetserver.CapacityObserveSummary(nil), child.TargetObservations...),
+			CapacityReplays:          append([]CapacityReplayRun(nil), child.CapacityReplays...),
+			ReplayDetections:         append([]ReplayDetectionRun(nil), child.ReplayDetections...),
+			NetworkBuckets:           append([]NetworkBucketHostSnapshot(nil), child.NetworkBuckets...),
+			StreamingTelemetry:       append([]StreamingTelemetryRun(nil), child.StreamingTelemetry...),
 		}
 		if prom := child.loadPrometheusReport(child.OutDir); prom != nil {
 			batch.PrometheusSummary = append([]capacitybench.SeriesSummary(nil), prom.Summaries...)
@@ -228,10 +234,10 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 	}
 
 	fmt.Fprint(&b, "\n## Batch Results\n\n")
-	fmt.Fprintln(&b, "| Active | Status | Window | Target | Observer | Replay | Detection | Network | Health | Prometheus | Cleanup | Stop | Reason |")
-	fmt.Fprintln(&b, "| ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	fmt.Fprintln(&b, "| Active | Status | Window | Target | Observer | Replay | Detection | Streaming | Network | Health | Prometheus | Cleanup | Stop | Reason |")
+	fmt.Fprintln(&b, "| ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, batch := range report.Batches {
-		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %t | %s |\n",
+		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %t | %s |\n",
 			batch.ActiveCount,
 			batch.Status,
 			escapeSuiteCell(formatWindow(batch.WindowStart, batch.WindowEnd)),
@@ -239,16 +245,17 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 			escapeSuiteCell(suiteTargetObserverStatus(batch)),
 			escapeSuiteCell(suiteCapacityReplayStatus(batch)),
 			escapeSuiteCell(suiteReplayDetectionStatus(batch)),
+			escapeSuiteCell(suiteStreamingTelemetryStatus(batch)),
 			escapeSuiteCell(suiteNetworkBucketStatus(batch)),
 			escapeSuiteCell(batch.HealthStatus),
 			escapeSuiteCell(batch.PrometheusStatus),
 			escapeSuiteCell(batch.CleanupStatus),
 			batch.StopRecommended,
-			escapeSuiteCell(firstNonEmpty(batch.Error, batch.StopReason, batch.PrometheusError, batch.CleanupError)),
+			escapeSuiteCell(firstNonEmpty(batch.Error, batch.StopReason, batch.PrometheusError, batch.StreamingTelemetryError, batch.CleanupError)),
 		)
 	}
 	if len(report.Batches) == 0 {
-		fmt.Fprintln(&b, "| 0 | none | not recorded | - | - | - | - | - | - | - | - | false | no completed batches |")
+		fmt.Fprintln(&b, "| 0 | none | not recorded | - | - | - | - | - | - | - | - | - | false | no completed batches |")
 	}
 
 	writeSuiteServiceHealthMarkdown(&b, report)
@@ -257,6 +264,7 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 	writeSuiteTargetObserverMarkdown(&b, report)
 	writeSuiteCapacityReplayMarkdown(&b, report)
 	writeSuiteReplayDetectionMarkdown(&b, report)
+	writeSuiteStreamingTelemetryMarkdown(&b, report)
 	writeSuiteNetworkBucketMarkdown(&b, report)
 	writeSuiteTargetPreflightMarkdown(&b, report)
 	writeSuiteThresholdMarkdown(&b, report)
@@ -284,18 +292,21 @@ func writeSuiteServiceHealthMarkdown(b *strings.Builder, report SuiteReport) {
 		return
 	}
 	fmt.Fprint(b, "\n## Service Health\n\n")
-	fmt.Fprintln(b, "| Active | Service | Verify | Missed Check Threshold | Active Sites | Stale Sites | Missed % | Recent/Min | P95 Age Sec | Oldest Age Sec | Reason |")
-	fmt.Fprintln(b, "| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+	fmt.Fprintln(b, "| Active | Service | Verify | Missed Check Threshold | Freshness Source | Active Sites | Stale Sites | Missed % | Legacy Stale | Legacy Missed % | Recent/Min | P95 Age Sec | Oldest Age Sec | Reason |")
+	fmt.Fprintln(b, "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
 	for _, row := range rows {
 		h := row.Health
-		fmt.Fprintf(b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+		fmt.Fprintf(b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			row.Batch,
 			escapeSuiteCell(h.Service),
 			escapeSuiteCell(h.Status),
 			escapeSuiteCell(serviceMissedCheckThresholdStatus(reportBatch(report, row.Batch), h.Service)),
+			escapeSuiteCell(h.FreshnessSource),
 			formatIntPtr(h.ActiveSites),
 			formatIntPtr(h.StaleActiveSites),
 			formatFloatPtr(h.MissedCheckPercent),
+			formatIntPtr(h.LegacyProjectionStaleActiveSites),
+			formatFloatPtr(h.LegacyProjectionMissedCheckPercent),
 			formatFloatPtr(h.RecentChecksPerMinute),
 			formatFloatPtr(h.P95CheckAgeSec),
 			formatFloatPtr(h.OldestCheckAgeSec),
@@ -504,6 +515,49 @@ func writeSuiteReplayDetectionMarkdown(b *strings.Builder, report SuiteReport) {
 			escapeSuiteCell(formatLatencyRange(s.DownLatencyMinSec, s.DownLatencyMeanSec, s.DownLatencyMaxSec)),
 			escapeSuiteCell(formatLatencyRange(s.RecoveryLatencyMinSec, s.RecoveryLatencyMeanSec, s.RecoveryLatencyMaxSec)),
 			escapeSuiteCell(s.Error),
+		)
+	}
+}
+
+func writeSuiteStreamingTelemetryMarkdown(b *strings.Builder, report SuiteReport) {
+	var rows []struct {
+		Batch int
+		Host  StreamingTelemetryHostSnapshot
+	}
+	for _, batch := range report.Batches {
+		latest := latestStreamingTelemetry(batch.StreamingTelemetry)
+		if latest == nil {
+			continue
+		}
+		for _, host := range latest.Hosts {
+			rows = append(rows, struct {
+				Batch int
+				Host  StreamingTelemetryHostSnapshot
+			}{Batch: batch.ActiveCount, Host: host})
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprint(b, "\n## Streaming Telemetry\n\n")
+	fmt.Fprintln(b, "| Active | Service | Status | Samples | Completed | SPS Avg | SPS Max | Max Lag Ms | Pending Max | Result Depth Max | Failures | Stale Results | Error |")
+	fmt.Fprintln(b, "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+	for _, row := range rows {
+		agg := row.Host.Aggregate
+		fmt.Fprintf(b, "| %d | %s | %s | %d | %d | %.2f | %d | %d | %d | %d | %d | %d | %s |\n",
+			row.Batch,
+			escapeSuiteCell(row.Host.Service),
+			escapeSuiteCell(row.Host.Status),
+			agg.Samples,
+			agg.Completed,
+			agg.SPSAverage,
+			agg.SPSMax,
+			agg.MaxLagMSMax,
+			agg.PendingMax,
+			agg.ResultDepthMax,
+			agg.Failures,
+			agg.StaleResults,
+			escapeSuiteCell(row.Host.Error),
 		)
 	}
 }
@@ -736,7 +790,7 @@ func suitePrometheusRows(report SuiteReport) []suitePrometheusRow {
 }
 
 func suiteBatchStatus(m RunManifest) string {
-	if m.Error != "" || m.CleanupStatus == "fail" || m.LifecycleStatus == "fail" || m.HealthStatus == "fail" || m.PrometheusStatus == "fail" || m.PrometheusStatus == "preflight_failed" || m.TargetObserverStatus == "fail" || m.TargetObserverStatus == "preflight_failed" || m.CapacityReplayStatus == "fail" || m.CapacityReplayStatus == "preflight_failed" || m.ReplayDetectionStatus == "fail" || m.NetworkBucketStatus == "fail" || m.NetworkBucketStatus == "preflight_failed" {
+	if m.Error != "" || m.CleanupStatus == "fail" || m.LifecycleStatus == "fail" || m.HealthStatus == "fail" || m.PrometheusStatus == "fail" || m.PrometheusStatus == "preflight_failed" || m.TargetObserverStatus == "fail" || m.TargetObserverStatus == "preflight_failed" || m.CapacityReplayStatus == "fail" || m.CapacityReplayStatus == "preflight_failed" || m.ReplayDetectionStatus == "fail" || m.NetworkBucketStatus == "fail" || m.NetworkBucketStatus == "preflight_failed" || m.StreamingTelemetryStatus == "fail" {
 		return "fail"
 	}
 	for _, finding := range m.Thresholds {
@@ -778,6 +832,16 @@ func suiteReplayDetectionStatus(batch SuiteBatchReport) string {
 		return batch.ReplayDetectionStatus
 	}
 	if len(batch.ReplayDetections) > 0 {
+		return "captured"
+	}
+	return "-"
+}
+
+func suiteStreamingTelemetryStatus(batch SuiteBatchReport) string {
+	if batch.StreamingTelemetryStatus != "" {
+		return batch.StreamingTelemetryStatus
+	}
+	if len(batch.StreamingTelemetry) > 0 {
 		return "captured"
 	}
 	return "-"

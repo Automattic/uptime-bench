@@ -110,6 +110,20 @@ timeout = "10s"
   api_port = 8090
   peer_port = 7800
 
+[streaming_telemetry]
+# Captures Jetmon v2 streaming-scheduler journal summaries and, when the
+# dashboard is bound locally on the service host, its /api/state snapshot.
+enabled = false
+ssh_config = "~/.ssh/config"
+timeout = "10s"
+unit = "jetmon2"
+
+  [[streaming_telemetry.hosts]]
+  service = "jetmon-v2"
+  ssh_host = "jetmon-v2.example.com"
+  unit = "jetmon2"
+  dashboard_url = "http://127.0.0.1:8080"
+
 [checks]
 interval = "1m"
 
@@ -144,6 +158,7 @@ bulk_lifecycle = "bridge_or_db_seeded_range"
 [jetmon_v2]
 api_url = "http://jetmon-v2.example.com:8090/api/v1"
 bulk_lifecycle = "api_or_db_seeded_range"
+scheduler_engine = "streaming"
 
   [jetmon_v2.lifecycle]
   schema = "v2"

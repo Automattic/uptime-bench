@@ -603,6 +603,49 @@ func TestServiceHealthIncludesFreshnessDetails(t *testing.T) {
 	}
 }
 
+func TestServiceHealthTreatsStreamingDBFreshnessAsLegacyProjection(t *testing.T) {
+	service := ServiceLifecycle{
+		ID:              "jetmon-v2",
+		Config:          Config{Schema: SchemaV2, CheckIntervalMinutes: 1},
+		SchedulerEngine: "streaming",
+	}
+	result := SQLExecutionResult{
+		Statements: []SQLStatementResult{
+			{Columns: []string{"benchmark_sites", "active_sites"}, Rows: [][]string{{"100", "10"}}},
+			{Columns: []string{"check_interval", "active_sites"}, Rows: [][]string{{"1", "10"}}},
+			{Columns: []string{"open_events"}, Rows: [][]string{{"3"}}},
+			{Columns: []string{"stale_active_sites"}, Rows: [][]string{{"2"}}},
+			{Columns: []string{"recent_check_history_rows"}, Rows: [][]string{{"25"}}},
+		},
+	}
+
+	health := serviceHealthFromVerify(service, "window-end-verify", result, 10)
+	if health.FreshnessMeasured {
+		t.Fatal("FreshnessMeasured = true, want false for streaming scheduler")
+	}
+	if health.FreshnessSource != "target_observer_replay_detection_streaming_telemetry" {
+		t.Fatalf("FreshnessSource = %q, want streaming telemetry source", health.FreshnessSource)
+	}
+	if health.MissedCheckPercent != nil || health.StaleActiveSites != nil {
+		t.Fatalf("scored DB freshness = stale %v missed %v, want nil", health.StaleActiveSites, health.MissedCheckPercent)
+	}
+	if health.LegacyProjectionStaleActiveSites == nil || *health.LegacyProjectionStaleActiveSites != 2 {
+		t.Fatalf("LegacyProjectionStaleActiveSites = %v, want 2", health.LegacyProjectionStaleActiveSites)
+	}
+	if health.LegacyProjectionMissedCheckPercent == nil || *health.LegacyProjectionMissedCheckPercent != 20 {
+		t.Fatalf("LegacyProjectionMissedCheckPercent = %v, want 20", health.LegacyProjectionMissedCheckPercent)
+	}
+	if health.OpenEvents == nil || *health.OpenEvents != 3 {
+		t.Fatalf("OpenEvents = %v, want 3", health.OpenEvents)
+	}
+	if health.RecentCheckHistoryRows != nil {
+		t.Fatalf("RecentCheckHistoryRows = %v, want nil legacy streaming projection", health.RecentCheckHistoryRows)
+	}
+	if !strings.Contains(health.Reason, "legacy last_checked_at projection") {
+		t.Fatalf("Reason = %q, want legacy projection explanation", health.Reason)
+	}
+}
+
 func TestServiceHealthFailsCheckIntervalMismatch(t *testing.T) {
 	service := ServiceLifecycle{ID: "jetmon-v2", Config: Config{Schema: SchemaV2, CheckIntervalMinutes: 5}}
 	result := SQLExecutionResult{Statements: []SQLStatementResult{

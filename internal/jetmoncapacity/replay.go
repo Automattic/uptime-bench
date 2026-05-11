@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Automattic/uptime-bench/internal/control"
@@ -148,78 +149,87 @@ func (r Runner) executeCapacityReplay(ctx context.Context, plan CapacityReplayPl
 		Plan:      plan,
 	}
 	client := control.NewClient(plan.TargetControlURL, token, &http.Client{Timeout: timeout})
-	for _, event := range plan.Events {
-		offset, err := time.ParseDuration(event.Offset)
-		if err != nil {
+	results := make([]CapacityReplayEventResult, len(plan.Events))
+	errs := make([]error, len(plan.Events))
+	var wg sync.WaitGroup
+	for i, event := range plan.Events {
+		wg.Add(1)
+		go func(i int, event CapacityReplayEventPlan) {
+			defer wg.Done()
+			results[i], errs[i] = r.executeCapacityReplayEvent(ctx, client, plan, event, started)
+		}(i, event)
+	}
+	wg.Wait()
+	for i, result := range results {
+		run.Events = append(run.Events, result)
+		if errs[i] != nil && run.Error == "" {
 			run.Status = "fail"
-			run.Error = err.Error()
-			break
-		}
-		duration, err := time.ParseDuration(event.Duration)
-		if err != nil {
-			run.Status = "fail"
-			run.Error = err.Error()
-			break
-		}
-		if err := r.Sleeper.Sleep(ctx, time.Until(started.Add(offset))); err != nil {
-			run.Status = "fail"
-			run.Error = err.Error()
-			break
-		}
-		result := CapacityReplayEventResult{ID: event.ID}
-		activatedAt := time.Now().UTC()
-		result.ActivatedAt = &activatedAt
-		result.Hosts = make([]CapacityReplayHostResult, 0, len(event.Hosts))
-		for _, host := range event.Hosts {
-			hostResult := CapacityReplayHostResult{Host: host}
-			if err := client.Activate(ctx, control.ActivateRequest{
-				RunID: capacityReplayControlRunID(plan.RunID, event.ID),
-				Seed:  event.Seed,
-				Failure: control.FailureSpec{
-					Type:     event.Type,
-					Host:     host,
-					Path:     event.Path,
-					Duration: duration + 30*time.Second,
-					Rate:     event.Rate,
-					Params:   replayFailureParams(event),
-				},
-			}); err != nil {
-				hostResult.ActivateError = err.Error()
-				result.ActivateFailures++
-			}
-			result.Hosts = append(result.Hosts, hostResult)
-		}
-		if err := r.Sleeper.Sleep(ctx, duration); err != nil {
-			run.Status = "fail"
-			run.Error = err.Error()
-			run.Events = append(run.Events, result)
-			break
-		}
-		deactivatedAt := time.Now().UTC()
-		result.DeactivatedAt = &deactivatedAt
-		for i := range result.Hosts {
-			host := result.Hosts[i].Host
-			if err := client.Deactivate(ctx, control.DeactivateRequest{
-				RunID:       capacityReplayControlRunID(plan.RunID, event.ID),
-				FailureType: event.Type,
-				Host:        host,
-				Path:        event.Path,
-			}); err != nil {
-				result.Hosts[i].DeactivateError = err.Error()
-				result.DeactivateFailures++
-			}
+			run.Error = errs[i].Error()
 		}
 		if result.ActivateFailures > 0 || result.DeactivateFailures > 0 {
 			run.Status = "fail"
-			run.Error = "one or more capacity replay target-control operations failed"
-		}
-		run.Events = append(run.Events, result)
-		if run.Status == "fail" {
-			break
+			if run.Error == "" {
+				run.Error = "one or more capacity replay target-control operations failed"
+			}
 		}
 	}
 	run.CompletedAt = time.Now().UTC()
 	return run
+}
+
+func (r Runner) executeCapacityReplayEvent(ctx context.Context, client *control.Client, plan CapacityReplayPlan, event CapacityReplayEventPlan, started time.Time) (CapacityReplayEventResult, error) {
+	result := CapacityReplayEventResult{ID: event.ID}
+	offset, err := time.ParseDuration(event.Offset)
+	if err != nil {
+		return result, err
+	}
+	duration, err := time.ParseDuration(event.Duration)
+	if err != nil {
+		return result, err
+	}
+	if err := r.Sleeper.Sleep(ctx, time.Until(started.Add(offset))); err != nil {
+		return result, err
+	}
+	activatedAt := time.Now().UTC()
+	result.ActivatedAt = &activatedAt
+	result.Hosts = make([]CapacityReplayHostResult, 0, len(event.Hosts))
+	for _, host := range event.Hosts {
+		hostResult := CapacityReplayHostResult{Host: host}
+		if err := client.Activate(ctx, control.ActivateRequest{
+			RunID: capacityReplayControlRunID(plan.RunID, event.ID),
+			Seed:  event.Seed,
+			Failure: control.FailureSpec{
+				Type:     event.Type,
+				Host:     host,
+				Path:     event.Path,
+				Duration: duration + 30*time.Second,
+				Rate:     event.Rate,
+				Params:   replayFailureParams(event),
+			},
+		}); err != nil {
+			hostResult.ActivateError = err.Error()
+			result.ActivateFailures++
+		}
+		result.Hosts = append(result.Hosts, hostResult)
+	}
+	if err := r.Sleeper.Sleep(ctx, duration); err != nil {
+		return result, err
+	}
+	deactivatedAt := time.Now().UTC()
+	result.DeactivatedAt = &deactivatedAt
+	for i := range result.Hosts {
+		host := result.Hosts[i].Host
+		if err := client.Deactivate(ctx, control.DeactivateRequest{
+			RunID:       capacityReplayControlRunID(plan.RunID, event.ID),
+			FailureType: event.Type,
+			Host:        host,
+			Path:        event.Path,
+		}); err != nil {
+			result.Hosts[i].DeactivateError = err.Error()
+			result.DeactivateFailures++
+		}
+	}
+	return result, nil
 }
 
 func buildCapacityReplayPlan(cfg RunConfig, services []ServiceLifecycle, activeCount int, windowDuration time.Duration, runID string) (CapacityReplayPlan, error) {
