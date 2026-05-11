@@ -600,12 +600,20 @@ func runDiskIOSSH(ctx context.Context, cfg DiskIOAttributionConfig, sshHost stri
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	out, err := cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	out := stdout.Bytes()
 	if ctx.Err() != nil {
 		return out, ctx.Err()
 	}
 	if err != nil {
-		return out, fmt.Errorf("%v: %w: %s", append([]string{"ssh"}, args...), err, strings.TrimSpace(string(out)))
+		detail := strings.TrimSpace(stderr.String())
+		if stdout.Len() > 0 {
+			detail = strings.TrimSpace(stdout.String() + "\n" + detail)
+		}
+		return out, fmt.Errorf("%v: %w: %s", append([]string{"ssh"}, args...), err, detail)
 	}
 	return out, nil
 }
