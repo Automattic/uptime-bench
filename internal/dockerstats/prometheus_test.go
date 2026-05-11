@@ -40,6 +40,10 @@ func TestExporterWritesPrometheusMetrics(t *testing.T) {
 				MemoryLimitBytes:      4096,
 				NetworkReceiveBytes:   100,
 				NetworkTransmitBytes:  200,
+				BlockReadBytes:        4096,
+				BlockWriteBytes:       8192,
+				BlockReadOps:          3,
+				BlockWriteOps:         5,
 				PIDs:                  7,
 			},
 		},
@@ -60,6 +64,8 @@ func TestExporterWritesPrometheusMetrics(t *testing.T) {
 		`uptime_bench_docker_container_info{compose_project="jetmon",compose_service="app",container="jetmon-1",container_id="1234567890ab",image="repo/image:\"test\""} 1`,
 		`uptime_bench_docker_container_cpu_usage_seconds_total{compose_project="jetmon",compose_service="app",container="jetmon-1",container_id="1234567890ab",image="repo/image:\"test\""} 12.5`,
 		`uptime_bench_docker_container_memory_working_set_bytes{compose_project="jetmon",compose_service="app",container="jetmon-1",container_id="1234567890ab",image="repo/image:\"test\""} 1024`,
+		`uptime_bench_docker_container_block_read_bytes_total{compose_project="jetmon",compose_service="app",container="jetmon-1",container_id="1234567890ab",image="repo/image:\"test\""} 4096`,
+		`uptime_bench_docker_container_block_writes_total{compose_project="jetmon",compose_service="app",container="jetmon-1",container_id="1234567890ab",image="repo/image:\"test\""} 5`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics body missing %q:\n%s", want, body)

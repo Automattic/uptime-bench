@@ -173,6 +173,11 @@ count, average, p50, p95, max, and last value.
 | `host_cpu_used` | percent | `node_cpu_seconds_total` |
 | `host_memory_used` | percent | `node_memory_MemAvailable_bytes` / `node_memory_MemTotal_bytes` |
 | `host_root_disk_used` | percent | root `node_filesystem_*` |
+| `host_disk_read_bytes` | bytes/sec | `node_disk_read_bytes_total` |
+| `host_disk_written_bytes` | bytes/sec | `node_disk_written_bytes_total` |
+| `host_disk_reads` | ops/sec | `node_disk_reads_completed_total` |
+| `host_disk_writes` | ops/sec | `node_disk_writes_completed_total` |
+| `host_disk_io_time` | percent | `node_disk_io_time_seconds_total` |
 | `host_net_rx` | bytes/sec | `node_network_receive_bytes_total` |
 | `host_net_tx` | bytes/sec | `node_network_transmit_bytes_total` |
 | `container_cpu_used` | percent of one core | `container_cpu_usage_seconds_total` |
@@ -182,6 +187,10 @@ count, average, p50, p95, max, and last value.
 | `docker_container_memory_working_set` | bytes | `uptime_bench_docker_container_memory_working_set_bytes` |
 | `docker_container_net_rx` | bytes/sec | `uptime_bench_docker_container_network_receive_bytes_total` |
 | `docker_container_net_tx` | bytes/sec | `uptime_bench_docker_container_network_transmit_bytes_total` |
+| `docker_container_block_read_bytes` | bytes/sec | `uptime_bench_docker_container_block_read_bytes_total` |
+| `docker_container_block_write_bytes` | bytes/sec | `uptime_bench_docker_container_block_write_bytes_total` |
+| `docker_container_block_reads` | ops/sec | `uptime_bench_docker_container_block_reads_total` |
+| `docker_container_block_writes` | ops/sec | `uptime_bench_docker_container_block_writes_total` |
 | `dockerstats_scrape_success` | state | `uptime_bench_dockerstats_scrape_success` |
 | `process_cpu_used` | percent of one core | `namedprocess_namegroup_cpu_seconds_total` |
 | `process_memory_resident` | bytes | `namedprocess_namegroup_memory_bytes{memtype="resident"}` |

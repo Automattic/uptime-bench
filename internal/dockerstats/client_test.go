@@ -28,6 +28,17 @@ func TestSampleFromStats(t *testing.T) {
 		"eth0": {RxBytes: 100, TxBytes: 50},
 		"eth1": {RxBytes: 7, TxBytes: 3},
 	}
+	stats.BlkioStats.IoServiceBytesRecursive = []blkioStat{
+		{Op: "Read", Value: 4096},
+		{Op: "Write", Value: 8192},
+		{Op: "Sync", Value: 123},
+		{Op: "Total", Value: 12411},
+	}
+	stats.BlkioStats.IoServicedRecursive = []blkioStat{
+		{Op: "read", Value: 3},
+		{Op: "write", Value: 5},
+		{Op: "total", Value: 8},
+	}
 	stats.PIDsStats.Current = 8
 
 	sample := sampleFromStats(container, stats)
@@ -45,6 +56,12 @@ func TestSampleFromStats(t *testing.T) {
 	}
 	if sample.NetworkReceiveBytes != 107 || sample.NetworkTransmitBytes != 53 {
 		t.Fatalf("network = %v/%v, want 107/53", sample.NetworkReceiveBytes, sample.NetworkTransmitBytes)
+	}
+	if sample.BlockReadBytes != 4096 || sample.BlockWriteBytes != 8192 {
+		t.Fatalf("block bytes = %v/%v, want 4096/8192", sample.BlockReadBytes, sample.BlockWriteBytes)
+	}
+	if sample.BlockReadOps != 3 || sample.BlockWriteOps != 5 {
+		t.Fatalf("block ops = %v/%v, want 3/5", sample.BlockReadOps, sample.BlockWriteOps)
 	}
 	if sample.PIDs != 8 {
 		t.Fatalf("PIDs = %v, want 8", sample.PIDs)

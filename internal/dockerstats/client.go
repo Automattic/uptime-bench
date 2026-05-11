@@ -40,6 +40,10 @@ type Sample struct {
 	MemoryLimitBytes      float64
 	NetworkReceiveBytes   float64
 	NetworkTransmitBytes  float64
+	BlockReadBytes        float64
+	BlockWriteBytes       float64
+	BlockReadOps          float64
+	BlockWriteOps         float64
 	PIDs                  float64
 }
 
@@ -74,9 +78,20 @@ type dockerStats struct {
 		RxBytes uint64 `json:"rx_bytes"`
 		TxBytes uint64 `json:"tx_bytes"`
 	} `json:"networks"`
+	BlkioStats struct {
+		IoServiceBytesRecursive []blkioStat `json:"io_service_bytes_recursive"`
+		IoServicedRecursive     []blkioStat `json:"io_serviced_recursive"`
+	} `json:"blkio_stats"`
 	PIDsStats struct {
 		Current uint64 `json:"current"`
 	} `json:"pids_stats"`
+}
+
+type blkioStat struct {
+	Major uint64 `json:"major"`
+	Minor uint64 `json:"minor"`
+	Op    string `json:"op"`
+	Value uint64 `json:"value"`
 }
 
 // Collect returns stats for all running Docker containers.
@@ -199,6 +214,7 @@ func unixHTTPClient(socketPath string, timeout time.Duration) *http.Client {
 
 func sampleFromStats(container dockerContainer, stats dockerStats) Sample {
 	rx, tx := networkTotals(stats)
+	blockReadBytes, blockWriteBytes, blockReadOps, blockWriteOps := blockIOTotals(stats)
 	usage := float64(stats.MemoryStats.Usage)
 	inactiveFile := stats.MemoryStats.Stats["inactive_file"]
 	if inactiveFile == 0 {
@@ -222,6 +238,10 @@ func sampleFromStats(container dockerContainer, stats dockerStats) Sample {
 		MemoryLimitBytes:      float64(stats.MemoryStats.Limit),
 		NetworkReceiveBytes:   float64(rx),
 		NetworkTransmitBytes:  float64(tx),
+		BlockReadBytes:        float64(blockReadBytes),
+		BlockWriteBytes:       float64(blockWriteBytes),
+		BlockReadOps:          float64(blockReadOps),
+		BlockWriteOps:         float64(blockWriteOps),
 		PIDs:                  float64(stats.PIDsStats.Current),
 	}
 }
@@ -269,4 +289,24 @@ func networkTotals(stats dockerStats) (uint64, uint64) {
 		tx += network.TxBytes
 	}
 	return rx, tx
+}
+
+func blockIOTotals(stats dockerStats) (readBytes, writeBytes, readOps, writeOps uint64) {
+	for _, entry := range stats.BlkioStats.IoServiceBytesRecursive {
+		switch strings.ToLower(entry.Op) {
+		case "read":
+			readBytes += entry.Value
+		case "write":
+			writeBytes += entry.Value
+		}
+	}
+	for _, entry := range stats.BlkioStats.IoServicedRecursive {
+		switch strings.ToLower(entry.Op) {
+		case "read":
+			readOps += entry.Value
+		case "write":
+			writeOps += entry.Value
+		}
+	}
+	return readBytes, writeBytes, readOps, writeOps
 }

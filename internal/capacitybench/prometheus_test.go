@@ -111,6 +111,15 @@ func TestDefaultQueriesUseInstanceMatcher(t *testing.T) {
 		seen[q.Name] = true
 	}
 	for _, name := range []string{
+		"host_disk_read_bytes",
+		"host_disk_written_bytes",
+		"host_disk_reads",
+		"host_disk_writes",
+		"host_disk_io_time",
+		"docker_container_block_read_bytes",
+		"docker_container_block_write_bytes",
+		"docker_container_block_reads",
+		"docker_container_block_writes",
 		"process_cpu_used",
 		"process_memory_resident",
 		"process_count",

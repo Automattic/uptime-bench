@@ -131,6 +131,14 @@ func writeHeader(w io.Writer) {
 	fmt.Fprintln(w, "# TYPE uptime_bench_docker_container_network_receive_bytes_total counter")
 	fmt.Fprintln(w, "# HELP uptime_bench_docker_container_network_transmit_bytes_total Container network bytes transmitted.")
 	fmt.Fprintln(w, "# TYPE uptime_bench_docker_container_network_transmit_bytes_total counter")
+	fmt.Fprintln(w, "# HELP uptime_bench_docker_container_block_read_bytes_total Container block device bytes read.")
+	fmt.Fprintln(w, "# TYPE uptime_bench_docker_container_block_read_bytes_total counter")
+	fmt.Fprintln(w, "# HELP uptime_bench_docker_container_block_write_bytes_total Container block device bytes written.")
+	fmt.Fprintln(w, "# TYPE uptime_bench_docker_container_block_write_bytes_total counter")
+	fmt.Fprintln(w, "# HELP uptime_bench_docker_container_block_reads_total Container block device read operations.")
+	fmt.Fprintln(w, "# TYPE uptime_bench_docker_container_block_reads_total counter")
+	fmt.Fprintln(w, "# HELP uptime_bench_docker_container_block_writes_total Container block device write operations.")
+	fmt.Fprintln(w, "# TYPE uptime_bench_docker_container_block_writes_total counter")
 	fmt.Fprintln(w, "# HELP uptime_bench_docker_container_pids Container process count from Docker stats.")
 	fmt.Fprintln(w, "# TYPE uptime_bench_docker_container_pids gauge")
 }
@@ -145,6 +153,10 @@ func writeSample(w io.Writer, sample Sample) {
 	writeGauge(w, "uptime_bench_docker_container_memory_limit_bytes", labels, sample.MemoryLimitBytes)
 	writeGauge(w, "uptime_bench_docker_container_network_receive_bytes_total", labels, sample.NetworkReceiveBytes)
 	writeGauge(w, "uptime_bench_docker_container_network_transmit_bytes_total", labels, sample.NetworkTransmitBytes)
+	writeGauge(w, "uptime_bench_docker_container_block_read_bytes_total", labels, sample.BlockReadBytes)
+	writeGauge(w, "uptime_bench_docker_container_block_write_bytes_total", labels, sample.BlockWriteBytes)
+	writeGauge(w, "uptime_bench_docker_container_block_reads_total", labels, sample.BlockReadOps)
+	writeGauge(w, "uptime_bench_docker_container_block_writes_total", labels, sample.BlockWriteOps)
 	writeGauge(w, "uptime_bench_docker_container_pids", labels, sample.PIDs)
 }
 

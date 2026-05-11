@@ -168,6 +168,8 @@ func FormatValue(unit string, value float64) string {
 		return formatBytes(value)
 	case "bytes_per_second":
 		return formatBytes(value) + "/s"
+	case "ops_per_second":
+		return fmt.Sprintf("%.2f/s", value)
 	case "state":
 		return fmt.Sprintf("%.0f", value)
 	case "count":
@@ -233,7 +235,16 @@ func topConsumerFindings(report Report) []Finding {
 		"docker_container_cpu_used":           3,
 		"docker_container_cpu_rate":           3,
 		"container_memory_working_set":        3,
+		"docker_container_block_read_bytes":   3,
+		"docker_container_block_write_bytes":  3,
+		"docker_container_block_reads":        3,
+		"docker_container_block_writes":       3,
 		"docker_container_memory_working_set": 3,
+		"host_disk_io_time":                   3,
+		"host_disk_read_bytes":                3,
+		"host_disk_reads":                     3,
+		"host_disk_written_bytes":             3,
+		"host_disk_writes":                    3,
 		"process_cpu_used":                    3,
 		"process_memory_resident":             3,
 		"process_open_fds":                    3,

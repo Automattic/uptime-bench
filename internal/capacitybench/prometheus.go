@@ -235,6 +235,31 @@ func DefaultQueries(instanceRegex string, rateWindow time.Duration) []Query {
 			Expr: fmt.Sprintf(`100 * (1 - (node_filesystem_avail_bytes{job="node",mountpoint="/",fstype!~"tmpfs|overlay|squashfs|ramfs",%s} / node_filesystem_size_bytes{job="node",mountpoint="/",fstype!~"tmpfs|overlay|squashfs|ramfs",%s}))`, match, match),
 		},
 		{
+			Name: "host_disk_read_bytes",
+			Unit: "bytes_per_second",
+			Expr: fmt.Sprintf(`sum by(instance) (rate(node_disk_read_bytes_total{job="node",device!~"^(loop|ram|fd|sr|zram).*",%s}[%s]))`, match, window),
+		},
+		{
+			Name: "host_disk_written_bytes",
+			Unit: "bytes_per_second",
+			Expr: fmt.Sprintf(`sum by(instance) (rate(node_disk_written_bytes_total{job="node",device!~"^(loop|ram|fd|sr|zram).*",%s}[%s]))`, match, window),
+		},
+		{
+			Name: "host_disk_reads",
+			Unit: "ops_per_second",
+			Expr: fmt.Sprintf(`sum by(instance) (rate(node_disk_reads_completed_total{job="node",device!~"^(loop|ram|fd|sr|zram).*",%s}[%s]))`, match, window),
+		},
+		{
+			Name: "host_disk_writes",
+			Unit: "ops_per_second",
+			Expr: fmt.Sprintf(`sum by(instance) (rate(node_disk_writes_completed_total{job="node",device!~"^(loop|ram|fd|sr|zram).*",%s}[%s]))`, match, window),
+		},
+		{
+			Name: "host_disk_io_time",
+			Unit: "percent",
+			Expr: fmt.Sprintf(`100 * sum by(instance) (rate(node_disk_io_time_seconds_total{job="node",device!~"^(loop|ram|fd|sr|zram).*",%s}[%s]))`, match, window),
+		},
+		{
 			Name: "host_net_rx",
 			Unit: "bytes_per_second",
 			Expr: fmt.Sprintf(`sum by(instance) (rate(node_network_receive_bytes_total{job="node",device!~"lo|docker.*|veth.*|br-.*",%s}[%s]))`, match, window),
@@ -278,6 +303,26 @@ func DefaultQueries(instanceRegex string, rateWindow time.Duration) []Query {
 			Name: "docker_container_net_tx",
 			Unit: "bytes_per_second",
 			Expr: fmt.Sprintf(`sum by(instance,container) (rate(uptime_bench_docker_container_network_transmit_bytes_total{job="dockerstats",container!="",%s}[%s]))`, match, window),
+		},
+		{
+			Name: "docker_container_block_read_bytes",
+			Unit: "bytes_per_second",
+			Expr: fmt.Sprintf(`sum by(instance,container) (rate(uptime_bench_docker_container_block_read_bytes_total{job="dockerstats",container!="",%s}[%s]))`, match, window),
+		},
+		{
+			Name: "docker_container_block_write_bytes",
+			Unit: "bytes_per_second",
+			Expr: fmt.Sprintf(`sum by(instance,container) (rate(uptime_bench_docker_container_block_write_bytes_total{job="dockerstats",container!="",%s}[%s]))`, match, window),
+		},
+		{
+			Name: "docker_container_block_reads",
+			Unit: "ops_per_second",
+			Expr: fmt.Sprintf(`sum by(instance,container) (rate(uptime_bench_docker_container_block_reads_total{job="dockerstats",container!="",%s}[%s]))`, match, window),
+		},
+		{
+			Name: "docker_container_block_writes",
+			Unit: "ops_per_second",
+			Expr: fmt.Sprintf(`sum by(instance,container) (rate(uptime_bench_docker_container_block_writes_total{job="dockerstats",container!="",%s}[%s]))`, match, window),
 		},
 		{
 			Name: "dockerstats_scrape_success",

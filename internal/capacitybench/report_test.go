@@ -80,3 +80,9 @@ func TestAnalyzeFlagsUnhealthyScrape(t *testing.T) {
 		t.Fatalf("status = %q, want fail", findings[0].Status)
 	}
 }
+
+func TestFormatValueHandlesOpsPerSecond(t *testing.T) {
+	if got := FormatValue("ops_per_second", 12.345); got != "12.35/s" {
+		t.Fatalf("FormatValue = %q, want 12.35/s", got)
+	}
+}
