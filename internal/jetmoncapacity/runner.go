@@ -46,6 +46,7 @@ type Runner struct {
 	URLChecker         TargetURLChecker
 	ObserverClient     TargetObserverClient
 	NetworkBuckets     NetworkBucketCollector
+	DiskIOAttribution  DiskIOAttributionCollector
 	StreamingTelemetry StreamingTelemetryCollector
 	Clock              Clock
 	Sleeper            Sleeper
@@ -166,6 +167,8 @@ type RunManifest struct {
 	ReplayDetectionError     string                                `json:"replay_detection_error,omitempty"`
 	NetworkBucketStatus      string                                `json:"network_bucket_status,omitempty"`
 	NetworkBucketError       string                                `json:"network_bucket_error,omitempty"`
+	DiskIOAttributionStatus  string                                `json:"disk_io_attribution_status,omitempty"`
+	DiskIOAttributionError   string                                `json:"disk_io_attribution_error,omitempty"`
 	StreamingTelemetryStatus string                                `json:"streaming_telemetry_status,omitempty"`
 	StreamingTelemetryError  string                                `json:"streaming_telemetry_error,omitempty"`
 	CleanupStatus            string                                `json:"cleanup_status,omitempty"`
@@ -180,6 +183,7 @@ type RunManifest struct {
 	CapacityReplays          []CapacityReplayRun                   `json:"capacity_replays,omitempty"`
 	ReplayDetections         []ReplayDetectionRun                  `json:"replay_detections,omitempty"`
 	NetworkBuckets           []NetworkBucketHostSnapshot           `json:"network_buckets,omitempty"`
+	DiskIOAttribution        []DiskIOAttributionRun                `json:"disk_io_attribution,omitempty"`
 	StreamingTelemetry       []StreamingTelemetryRun               `json:"streaming_telemetry,omitempty"`
 	StopRecommended          bool                                  `json:"stop_recommended,omitempty"`
 	StopReason               string                                `json:"stop_reason,omitempty"`
@@ -456,6 +460,9 @@ func (r Runner) withDefaults() Runner {
 	if r.NetworkBuckets == nil {
 		r.NetworkBuckets = DefaultNetworkBucketCollector{}
 	}
+	if r.DiskIOAttribution == nil {
+		r.DiskIOAttribution = DefaultDiskIOAttributionCollector{}
+	}
 	if r.StreamingTelemetry == nil {
 		r.StreamingTelemetry = DefaultStreamingTelemetryCollector{}
 	}
@@ -675,6 +682,17 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 
 	start := r.Clock.Now().UTC()
 	m.WindowStart = &start
+	diskIOHandle, err := r.startDiskIOAttribution(ctx, dir, services, cfg, start, duration, m)
+	if err != nil {
+		m.DiskIOAttributionStatus = "partial"
+		m.DiskIOAttributionError = err.Error()
+		m.Notes = append(m.Notes, "Disk I/O attribution start failed: "+err.Error())
+	}
+	defer func() {
+		if diskIOHandle != nil {
+			diskIOHandle.Cancel()
+		}
+	}()
 	replayHandle, err := r.startCapacityReplay(ctx, dir, services, cfg, activeCount, duration, m)
 	if err != nil {
 		m.CapacityReplayStatus = "fail"
@@ -692,6 +710,14 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 	}
 	end := r.Clock.Now().UTC()
 	m.WindowEnd = &end
+	if diskIOHandle != nil {
+		if err := r.finishDiskIOAttribution(ctx, dir, diskIOHandle, end, m); err != nil {
+			m.DiskIOAttributionStatus = "partial"
+			m.DiskIOAttributionError = err.Error()
+			m.Notes = append(m.Notes, "Disk I/O attribution capture was partial: "+err.Error())
+		}
+		diskIOHandle = nil
+	}
 	if err := r.finishCapacityReplay(ctx, dir, replayHandle, m); err != nil {
 		m.CapacityReplayStatus = "fail"
 		m.CapacityReplayError = err.Error()
@@ -736,6 +762,11 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 		m.PrometheusStatus = "fail"
 		m.PrometheusError = err.Error()
 		m.Notes = append(m.Notes, "Prometheus capture failed: "+err.Error())
+	}
+	if err := r.annotateDiskIOAttribution(ctx, dir, m.loadPrometheusReport(dir), m); err != nil {
+		m.DiskIOAttributionStatus = "partial"
+		m.DiskIOAttributionError = err.Error()
+		m.Notes = append(m.Notes, "Disk I/O attribution annotation failed: "+err.Error())
 	}
 	if err := r.verifyServices(ctx, dir, services, "post-deactivate-verify", true, 0, m); err != nil {
 		m.CleanupStatus = "fail"
@@ -1547,6 +1578,12 @@ func WriteSummary(dir string, m RunManifest) error {
 	if m.NetworkBucketError != "" {
 		fmt.Fprintf(&b, "Network Bucket Error: %s\n", m.NetworkBucketError)
 	}
+	if m.DiskIOAttributionStatus != "" {
+		fmt.Fprintf(&b, "Disk I/O Attribution Status: %s\n", m.DiskIOAttributionStatus)
+	}
+	if m.DiskIOAttributionError != "" {
+		fmt.Fprintf(&b, "Disk I/O Attribution Error: %s\n", m.DiskIOAttributionError)
+	}
 	if m.StreamingTelemetryStatus != "" {
 		fmt.Fprintf(&b, "Streaming Telemetry Status: %s\n", m.StreamingTelemetryStatus)
 	}
@@ -1719,6 +1756,40 @@ func WriteSummary(dir string, m RunManifest) error {
 					counter.Packets,
 				)
 			}
+		}
+		_ = tw.Flush()
+	}
+	if latest := latestDiskIOAttribution(m.DiskIOAttribution); latest != nil && len(latest.Hosts) > 0 {
+		fmt.Fprintln(&b, "\nDisk I/O Attribution:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "HOST\tSTATUS\tHOST_READ\tPROC_READ\tCONTAINER_READ\tHOST_WRITE\tPROC_WRITE\tCONTAINER_WRITE\tTOP_DEVICE\tTOP_READ\tTOP_WRITE\tWARNINGS")
+		for _, host := range latest.Hosts {
+			summary := host.Summary
+			if summary == nil {
+				fmt.Fprintf(tw, "%s\t%s\t-\t-\t-\t-\t-\t-\t%s\t%s\t%s\t%s\n",
+					host.ID,
+					host.Status,
+					formatDeviceIOSummary(firstDeviceIOSummary(host.DeviceIO)),
+					diskIOProcessLabel(host.TopReadProcesses),
+					diskIOProcessLabel(host.TopWriteProcesses),
+					strings.Join(host.Warnings, "; "),
+				)
+				continue
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				host.ID,
+				summary.Status,
+				capacitybench.FormatValue("bytes_per_second", summary.HostReadBytesPerSecond),
+				capacitybench.FormatValue("bytes_per_second", summary.ProcessReadBytesPerSecond),
+				capacitybench.FormatValue("bytes_per_second", summary.ContainerReadBytesPerSecond),
+				capacitybench.FormatValue("bytes_per_second", summary.HostWriteBytesPerSecond),
+				capacitybench.FormatValue("bytes_per_second", summary.ProcessWriteBytesPerSecond),
+				capacitybench.FormatValue("bytes_per_second", summary.ContainerWriteBytesPerSecond),
+				summary.TopDevice,
+				summary.TopReadProcess,
+				summary.TopWriteProcess,
+				strings.Join(summary.Warnings, "; "),
+			)
 		}
 		_ = tw.Flush()
 	}

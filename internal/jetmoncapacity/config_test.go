@@ -247,6 +247,47 @@ func TestRunConfigNormalizesStreamingTelemetryDefaults(t *testing.T) {
 	}
 }
 
+func TestRunConfigNormalizesDiskIOAttributionDefaults(t *testing.T) {
+	cfg := validCapacityConfigForTest()
+	cfg.NetworkBuckets = NetworkBucketsConfig{
+		SSHConfig: "/tmp/ssh-config",
+		Timeout:   "7s",
+		Hosts: []NetworkBucketHostConfig{{
+			ID:       "jetmon-v2",
+			Instance: "jetmon-v2.example.test",
+			SSHHost:  "jetmon-v2",
+		}},
+	}
+	cfg.DiskIOAttribution = DiskIOAttributionConfig{Enabled: true}
+
+	got := cfg.Normalize()
+	if got.DiskIOAttribution.SSHConfig != "/tmp/ssh-config" {
+		t.Fatalf("SSHConfig = %q, want network bucket default", got.DiskIOAttribution.SSHConfig)
+	}
+	if got.DiskIOAttribution.Timeout != "7s" {
+		t.Fatalf("Timeout = %q, want network bucket default", got.DiskIOAttribution.Timeout)
+	}
+	if got.DiskIOAttribution.SampleInterval != "5s" {
+		t.Fatalf("SampleInterval = %q, want 5s", got.DiskIOAttribution.SampleInterval)
+	}
+	if len(got.DiskIOAttribution.ProcessPatterns) == 0 || len(got.DiskIOAttribution.MountPaths) == 0 {
+		t.Fatalf("disk I/O defaults missing: %+v", got.DiskIOAttribution)
+	}
+	if _, err := got.DiskIOAttributionTimeout(); err != nil {
+		t.Fatalf("DiskIOAttributionTimeout: %v", err)
+	}
+	if _, err := got.DiskIOAttributionSampleInterval(); err != nil {
+		t.Fatalf("DiskIOAttributionSampleInterval: %v", err)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	hosts := selectedDiskIOAttributionHosts(got, []ServiceLifecycle{{ID: "jetmon-v2"}})
+	if len(hosts) != 1 || hosts[0].Instance != "jetmon-v2.example.test" || hosts[0].SSHHost != "jetmon-v2" {
+		t.Fatalf("selected disk I/O hosts = %+v, want fallback from network bucket host", hosts)
+	}
+}
+
 func TestRunConfigRejectsInvalidSchedulerEngine(t *testing.T) {
 	cfg := validCapacityConfigForTest()
 	cfg.JetmonV2.SchedulerEngine = "eventual"

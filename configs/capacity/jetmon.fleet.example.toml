@@ -109,6 +109,15 @@ timeout = "10s"
   api_port = 8090
   peer_port = 7800
 
+[disk_io_attribution]
+# Captures read-only process, mount, pidstat, and iostat evidence on each
+# selected service host so host disk pressure can be attributed in reports. When
+# hosts are omitted, the runner reuses network_buckets.hosts.
+enabled = false
+ssh_config = "~/.ssh/config"
+timeout = "20s"
+sample_interval = "5s"
+
 [streaming_telemetry]
 # Captures Jetmon v2 streaming-scheduler journal summaries and, when the
 # dashboard is bound locally on the service host, its /api/state snapshot.

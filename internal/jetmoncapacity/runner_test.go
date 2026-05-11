@@ -208,6 +208,92 @@ func TestRunBatchCapturesTargetObserverWindow(t *testing.T) {
 	}
 }
 
+func TestRunBatchCapturesDiskIOAttribution(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, withDiskIOAttribution())
+	outDir := filepath.Join(t.TempDir(), "out")
+	report := scrapeUpReport("jetmon-v1", "jetmon-v2")
+	report.Summaries = append(report.Summaries,
+		capacitybench.SeriesSummary{Query: "host_disk_read_bytes", Unit: "bytes_per_second", Labels: map[string]string{"instance": "jetmon-v2"}, Avg: 2048},
+		capacitybench.SeriesSummary{Query: "host_disk_written_bytes", Unit: "bytes_per_second", Labels: map[string]string{"instance": "jetmon-v2"}, Avg: 4096},
+		capacitybench.SeriesSummary{Query: "docker_container_block_read_bytes", Unit: "bytes_per_second", Labels: map[string]string{"instance": "jetmon-v2", "container": "mysql"}, Avg: 512},
+		capacitybench.SeriesSummary{Query: "docker_container_block_write_bytes", Unit: "bytes_per_second", Labels: map[string]string{"instance": "jetmon-v2", "container": "mysql"}, Avg: 1024},
+	)
+	diskCollector := &fakeDiskIOAttributionCollector{run: DiskIOAttributionRun{
+		Status: "pass",
+		Hosts: []DiskIOAttributionHost{{
+			ID:       "jetmon-v2",
+			Instance: "jetmon-v2",
+			SSHHost:  "jetmon-v2",
+			Status:   "pass",
+			ProcessStart: []ProcessIOSnapshot{{
+				PID:            123,
+				StartTimeTicks: 10,
+				Comm:           "jetmon2",
+				Label:          "jetmon2",
+				Counters:       ProcessIOCounters{ReadBytes: 1000, WriteBytes: 2000},
+			}},
+			ProcessEnd: []ProcessIOSnapshot{{
+				PID:            123,
+				StartTimeTicks: 10,
+				Comm:           "jetmon2",
+				Label:          "jetmon2",
+				Counters:       ProcessIOCounters{ReadBytes: 2000, WriteBytes: 4000},
+			}},
+			ProcessDeltas: []ProcessIODelta{{
+				PID:                 123,
+				Label:               "jetmon2",
+				Delta:               ProcessIOCounters{ReadBytes: 1000, WriteBytes: 2000},
+				ReadBytesPerSecond:  1000,
+				WriteBytesPerSecond: 2000,
+			}},
+			TopReadProcesses: []ProcessIODelta{{
+				PID:                123,
+				Label:              "jetmon2",
+				ReadBytesPerSecond: 1000,
+			}},
+			TopWriteProcesses: []ProcessIODelta{{
+				PID:                 123,
+				Label:               "jetmon2",
+				WriteBytesPerSecond: 2000,
+			}},
+		}},
+	}}
+	manifest, err := (Runner{
+		Executor:          &fakeSQLExecutor{activeByDSN: map[string]int64{}},
+		Clock:             fixedClock{},
+		Sleeper:           noSleep{},
+		Collector:         fakeCollector{report: report},
+		DiskIOAttribution: diskCollector,
+	}).Run(context.Background(), RunOptions{
+		ConfigPath:  cfgPath,
+		Mode:        "run-batch",
+		ActiveCount: 10,
+		OutDir:      outDir,
+		Apply:       true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if diskCollector.startCalls != 1 || diskCollector.finishCalls != 1 {
+		t.Fatalf("disk collector calls start/finish = %d/%d, want 1/1", diskCollector.startCalls, diskCollector.finishCalls)
+	}
+	if manifest.DiskIOAttributionStatus != "complete" {
+		t.Fatalf("DiskIOAttributionStatus = %q, want complete", manifest.DiskIOAttributionStatus)
+	}
+	for _, name := range []string{"process-io-start.json", "process-io-end.json", "process-io-delta.json", "mounts-window.json", "pidstat-window.txt", "iostat-window.txt", "disk-io-attribution.json"} {
+		if _, err := os.Stat(filepath.Join(outDir, name)); err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(outDir, "summary.txt"))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if !strings.Contains(string(data), "Disk I/O Attribution:") {
+		t.Fatalf("summary missing disk I/O section:\n%s", string(data))
+	}
+}
+
 func TestRunBatchFailsOnTargetObserverGaps(t *testing.T) {
 	cfgPath := writeRunnerConfig(t, withTargetObserver("http://target-control.test:9000"))
 	outDir := filepath.Join(t.TempDir(), "out")
@@ -1178,6 +1264,7 @@ type runnerConfigSpec struct {
 	prometheusURL string
 	instances     []string
 	observerURL   string
+	diskIO        bool
 }
 
 func withPrometheus(prometheusURL string, instances []string) runnerConfigOption {
@@ -1190,6 +1277,12 @@ func withPrometheus(prometheusURL string, instances []string) runnerConfigOption
 func withTargetObserver(url string) runnerConfigOption {
 	return func(spec *runnerConfigSpec) {
 		spec.observerURL = url
+	}
+}
+
+func withDiskIOAttribution() runnerConfigOption {
+	return func(spec *runnerConfigSpec) {
+		spec.diskIO = true
 	}
 }
 
@@ -1230,6 +1323,20 @@ target_control_url = ` + strconv.Quote(spec.observerURL) + `
 timeout = "1s"
 `
 	}
+	var diskIOConfig string
+	if spec.diskIO {
+		diskIOConfig = `
+[disk_io_attribution]
+enabled = true
+timeout = "1s"
+sample_interval = "1s"
+
+  [[disk_io_attribution.hosts]]
+  id = "jetmon-v2"
+  instance = "jetmon-v2"
+  ssh_host = "jetmon-v2"
+`
+	}
 	path := filepath.Join(t.TempDir(), "capacity.toml")
 	content := `
 id = "capacity-test"
@@ -1243,6 +1350,7 @@ count = 100
 [target_preflight]
 skip_http = true
 ` + observerConfig + `
+` + diskIOConfig + `
 
 [checks]
 interval = "1m"
@@ -1528,6 +1636,30 @@ type fakeCollector struct {
 func (c fakeCollector) Collect(context.Context, string, []string, time.Time, time.Time, time.Duration, time.Duration) (capacitybench.Report, error) {
 	return c.report, nil
 }
+
+type fakeDiskIOAttributionCollector struct {
+	run         DiskIOAttributionRun
+	startCalls  int
+	finishCalls int
+}
+
+func (c *fakeDiskIOAttributionCollector) Start(context.Context, RunConfig, []ServiceLifecycle, time.Time, time.Duration) (DiskIOAttributionHandle, error) {
+	c.startCalls++
+	return &fakeDiskIOAttributionHandle{collector: c}, nil
+}
+
+type fakeDiskIOAttributionHandle struct {
+	collector *fakeDiskIOAttributionCollector
+}
+
+func (h *fakeDiskIOAttributionHandle) Finish(_ context.Context, end time.Time) (DiskIOAttributionRun, error) {
+	h.collector.finishCalls++
+	run := h.collector.run
+	run.End = end
+	return run, nil
+}
+
+func (h *fakeDiskIOAttributionHandle) Cancel() {}
 
 type sequenceCollector struct {
 	reports []capacitybench.Report

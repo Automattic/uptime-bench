@@ -206,6 +206,16 @@ These counters split host traffic into coarse buckets such as target HTTP,
 MySQL, DNS, monitoring scrape traffic, API/bridge traffic, SSH, and derived
 other traffic. The rules are counter-only and keep the default packet verdict.
 
+When `[disk_io_attribution] enabled=true`, the capacity runner captures
+read-only disk attribution evidence over SSH for each selected service host. If
+the block omits explicit hosts, the runner reuses `network_buckets.hosts`.
+Artifacts include `process-io-start.json`, `process-io-end.json`,
+`process-io-delta.json`, `pidstat-window.txt`, `iostat-window.txt`,
+`mounts-window.json`, and `disk-io-attribution.json`. The summary warns when
+host disk rates are much higher than process/container-attributed rates. Disk
+attribution is diagnostic: missing tools or partial `/proc` visibility are
+reported, but do not fail a capacity batch by themselves.
+
 When `[jetmon_v2] scheduler_engine="streaming"`, DB freshness based on
 `last_checked_at` is treated as a legacy projection, not as the scored missed
 check signal. The capacity report still records
@@ -251,14 +261,16 @@ The intended capacity sequence is:
    the window.
 6. Reset per-host network bucket counters, when enabled, immediately before the
    window.
-7. Apply deterministic target-side replay failures, when configured, inside the
+7. Start disk I/O attribution snapshots and `pidstat`/`iostat` samplers, when
+   enabled.
+8. Apply deterministic target-side replay failures, when configured, inside the
    active window.
-8. Snapshot target observer, streaming telemetry, network buckets, DB health,
-   and Prometheus metrics for the exact window.
-9. Record Jetmon health signals: missed checks, lag, API errors, service errors,
+9. Snapshot target observer, streaming telemetry, network buckets, disk I/O
+   attribution, DB health, and Prometheus metrics for the exact window.
+10. Record Jetmon health signals: missed checks, lag, API errors, service errors,
    and active monitor counts.
-10. Remove or deactivate benchmark sites.
-11. Increase the batch size until stop thresholds are reached.
+11. Remove or deactivate benchmark sites.
+12. Increase the batch size until stop thresholds are reached.
 
 Initial batch sizes live in `configs/capacity/jetmon.example.toml`.
 

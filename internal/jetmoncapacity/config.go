@@ -22,6 +22,7 @@ type RunConfig struct {
 	CapacityReplay     CapacityReplayConfig     `toml:"capacity_replay"`
 	ReplayDetection    ReplayDetectionConfig    `toml:"replay_detection"`
 	NetworkBuckets     NetworkBucketsConfig     `toml:"network_buckets"`
+	DiskIOAttribution  DiskIOAttributionConfig  `toml:"disk_io_attribution"`
 	StreamingTelemetry StreamingTelemetryConfig `toml:"streaming_telemetry"`
 	Checks             ChecksConfig             `toml:"checks"`
 	Batches            BatchesConfig            `toml:"batches"`
@@ -137,6 +138,28 @@ type NetworkBucketHostConfig struct {
 	BridgeAPIPort int    `toml:"bridge_api_port"`
 	APIPort       int    `toml:"api_port"`
 	PeerPort      int    `toml:"peer_port"`
+}
+
+// DiskIOAttributionConfig controls read-only process, device, and mount
+// attribution capture for Jetmon capacity windows.
+type DiskIOAttributionConfig struct {
+	Enabled         bool                          `toml:"enabled"`
+	SSHConfig       string                        `toml:"ssh_config"`
+	Timeout         string                        `toml:"timeout"`
+	SampleInterval  string                        `toml:"sample_interval"`
+	ProcessPatterns []string                      `toml:"process_patterns"`
+	MountPaths      []string                      `toml:"mount_paths"`
+	Hosts           []DiskIOAttributionHostConfig `toml:"hosts"`
+}
+
+// DiskIOAttributionHostConfig describes one service host where disk I/O
+// attribution should be captured.
+type DiskIOAttributionHostConfig struct {
+	ID              string   `toml:"id"`
+	Instance        string   `toml:"instance"`
+	SSHHost         string   `toml:"ssh_host"`
+	ProcessPatterns []string `toml:"process_patterns"`
+	MountPaths      []string `toml:"mount_paths"`
 }
 
 // StreamingTelemetryConfig controls optional Jetmon v2 streaming-scheduler
@@ -301,6 +324,18 @@ func (c RunConfig) Normalize() RunConfig {
 	for i := range c.NetworkBuckets.Hosts {
 		c.NetworkBuckets.Hosts[i] = normalizeNetworkBucketHost(c.NetworkBuckets.Hosts[i])
 	}
+	c.DiskIOAttribution.SSHConfig = strings.TrimSpace(firstNonEmpty(c.DiskIOAttribution.SSHConfig, c.NetworkBuckets.SSHConfig))
+	if c.DiskIOAttribution.Timeout == "" {
+		c.DiskIOAttribution.Timeout = firstNonEmpty(c.NetworkBuckets.Timeout, "20s")
+	}
+	if c.DiskIOAttribution.SampleInterval == "" {
+		c.DiskIOAttribution.SampleInterval = "5s"
+	}
+	c.DiskIOAttribution.ProcessPatterns = normalizeStringListWithDefault(c.DiskIOAttribution.ProcessPatterns, defaultDiskIOProcessPatterns())
+	c.DiskIOAttribution.MountPaths = normalizeStringListWithDefault(c.DiskIOAttribution.MountPaths, defaultDiskIOMountPaths())
+	for i := range c.DiskIOAttribution.Hosts {
+		c.DiskIOAttribution.Hosts[i] = normalizeDiskIOAttributionHost(c.DiskIOAttribution, c.DiskIOAttribution.Hosts[i])
+	}
 	c.StreamingTelemetry.SSHConfig = strings.TrimSpace(firstNonEmpty(c.StreamingTelemetry.SSHConfig, c.NetworkBuckets.SSHConfig))
 	c.StreamingTelemetry.Unit = strings.TrimSpace(c.StreamingTelemetry.Unit)
 	if c.StreamingTelemetry.Unit == "" {
@@ -405,6 +440,18 @@ func normalizeNetworkBucketHost(host NetworkBucketHostConfig) NetworkBucketHostC
 	return host
 }
 
+func normalizeDiskIOAttributionHost(cfg DiskIOAttributionConfig, host DiskIOAttributionHostConfig) DiskIOAttributionHostConfig {
+	host.ID = strings.TrimSpace(host.ID)
+	host.Instance = strings.TrimSpace(host.Instance)
+	host.SSHHost = strings.TrimSpace(host.SSHHost)
+	if host.SSHHost == "" {
+		host.SSHHost = host.Instance
+	}
+	host.ProcessPatterns = normalizeStringListWithDefault(host.ProcessPatterns, cfg.ProcessPatterns)
+	host.MountPaths = normalizeStringListWithDefault(host.MountPaths, cfg.MountPaths)
+	return host
+}
+
 func normalizeStreamingTelemetryHost(cfg StreamingTelemetryConfig, host StreamingTelemetryHostConfig) StreamingTelemetryHostConfig {
 	host.Service = strings.TrimSpace(host.Service)
 	host.SSHHost = strings.TrimSpace(host.SSHHost)
@@ -418,6 +465,23 @@ func normalizeStreamingTelemetryHost(cfg StreamingTelemetryConfig, host Streamin
 
 func normalizeSchedulerEngine(engine string) string {
 	return strings.ToLower(strings.TrimSpace(engine))
+}
+
+func normalizeStringListWithDefault(values, defaults []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	return append([]string(nil), defaults...)
 }
 
 // Validate checks the run config without requiring live DB credentials.
@@ -508,6 +572,12 @@ func (c RunConfig) Validate() error {
 	if _, err := c.NetworkBucketsTimeout(); err != nil {
 		return err
 	}
+	if _, err := c.DiskIOAttributionTimeout(); err != nil {
+		return err
+	}
+	if _, err := c.DiskIOAttributionSampleInterval(); err != nil {
+		return err
+	}
 	if _, err := c.StreamingTelemetryTimeout(); err != nil {
 		return err
 	}
@@ -527,6 +597,19 @@ func (c RunConfig) Validate() error {
 			}
 			if strings.TrimSpace(host.SSHHost) == "" {
 				return fmt.Errorf("network_buckets.hosts[%d].ssh_host is required", i)
+			}
+		}
+	}
+	if c.DiskIOAttribution.Enabled {
+		if len(c.DiskIOAttribution.Hosts) == 0 && len(c.NetworkBuckets.Hosts) == 0 {
+			return fmt.Errorf("disk_io_attribution.hosts or network_buckets.hosts must contain at least one host when disk_io_attribution.enabled=true")
+		}
+		for i, host := range c.DiskIOAttribution.Hosts {
+			if strings.TrimSpace(host.ID) == "" {
+				return fmt.Errorf("disk_io_attribution.hosts[%d].id is required", i)
+			}
+			if strings.TrimSpace(host.SSHHost) == "" {
+				return fmt.Errorf("disk_io_attribution.hosts[%d].ssh_host is required", i)
 			}
 		}
 	}
@@ -645,6 +728,18 @@ func (c RunConfig) ReplayDetectionWindowPadding() (time.Duration, error) {
 // NetworkBucketsTimeout returns the per-host SSH/nft command timeout.
 func (c RunConfig) NetworkBucketsTimeout() (time.Duration, error) {
 	return parseDuration("network_buckets.timeout", c.Normalize().NetworkBuckets.Timeout)
+}
+
+// DiskIOAttributionTimeout returns the per-host setup and final-snapshot
+// timeout for disk I/O attribution.
+func (c RunConfig) DiskIOAttributionTimeout() (time.Duration, error) {
+	return parseDuration("disk_io_attribution.timeout", c.Normalize().DiskIOAttribution.Timeout)
+}
+
+// DiskIOAttributionSampleInterval returns the sampling interval for pidstat
+// and iostat captures during the capacity window.
+func (c RunConfig) DiskIOAttributionSampleInterval() (time.Duration, error) {
+	return parseDuration("disk_io_attribution.sample_interval", c.Normalize().DiskIOAttribution.SampleInterval)
 }
 
 // StreamingTelemetryTimeout returns the per-host telemetry capture timeout.

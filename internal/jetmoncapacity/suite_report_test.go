@@ -164,7 +164,7 @@ func TestFormatSuiteReportMarkdownHandlesNoBatches(t *testing.T) {
 		"# Jetmon Capacity Suite Report",
 		"- Last clean batch: `none`",
 		"- First problem batch: `none`",
-		"| 0 | none | not recorded | - | - | - | - | - | - | - | - | - | false | no completed batches |",
+		"| 0 | none | not recorded | - | - | - | - | - | - | - | - | - | - | false | no completed batches |",
 		"operator stopped \\| no completed batch",
 	} {
 		if !strings.Contains(md, want) {

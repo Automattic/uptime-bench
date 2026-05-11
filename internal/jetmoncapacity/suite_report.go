@@ -59,6 +59,8 @@ type SuiteBatchReport struct {
 	ReplayDetectionError     string                                `json:"replay_detection_error,omitempty"`
 	NetworkBucketStatus      string                                `json:"network_bucket_status,omitempty"`
 	NetworkBucketError       string                                `json:"network_bucket_error,omitempty"`
+	DiskIOAttributionStatus  string                                `json:"disk_io_attribution_status,omitempty"`
+	DiskIOAttributionError   string                                `json:"disk_io_attribution_error,omitempty"`
 	StreamingTelemetryStatus string                                `json:"streaming_telemetry_status,omitempty"`
 	StreamingTelemetryError  string                                `json:"streaming_telemetry_error,omitempty"`
 	CleanupStatus            string                                `json:"cleanup_status,omitempty"`
@@ -77,6 +79,7 @@ type SuiteBatchReport struct {
 	CapacityReplays          []CapacityReplayRun                   `json:"capacity_replays,omitempty"`
 	ReplayDetections         []ReplayDetectionRun                  `json:"replay_detections,omitempty"`
 	NetworkBuckets           []NetworkBucketHostSnapshot           `json:"network_buckets,omitempty"`
+	DiskIOAttribution        []DiskIOAttributionRun                `json:"disk_io_attribution,omitempty"`
 	StreamingTelemetry       []StreamingTelemetryRun               `json:"streaming_telemetry,omitempty"`
 }
 
@@ -134,6 +137,8 @@ func buildSuiteReport(parent RunManifest, children []RunManifest) SuiteReport {
 			ReplayDetectionError:     child.ReplayDetectionError,
 			NetworkBucketStatus:      child.NetworkBucketStatus,
 			NetworkBucketError:       child.NetworkBucketError,
+			DiskIOAttributionStatus:  child.DiskIOAttributionStatus,
+			DiskIOAttributionError:   child.DiskIOAttributionError,
 			StreamingTelemetryStatus: child.StreamingTelemetryStatus,
 			StreamingTelemetryError:  child.StreamingTelemetryError,
 			CleanupStatus:            child.CleanupStatus,
@@ -151,6 +156,7 @@ func buildSuiteReport(parent RunManifest, children []RunManifest) SuiteReport {
 			CapacityReplays:          append([]CapacityReplayRun(nil), child.CapacityReplays...),
 			ReplayDetections:         append([]ReplayDetectionRun(nil), child.ReplayDetections...),
 			NetworkBuckets:           append([]NetworkBucketHostSnapshot(nil), child.NetworkBuckets...),
+			DiskIOAttribution:        append([]DiskIOAttributionRun(nil), child.DiskIOAttribution...),
 			StreamingTelemetry:       append([]StreamingTelemetryRun(nil), child.StreamingTelemetry...),
 		}
 		if prom := child.loadPrometheusReport(child.OutDir); prom != nil {
@@ -234,10 +240,10 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 	}
 
 	fmt.Fprint(&b, "\n## Batch Results\n\n")
-	fmt.Fprintln(&b, "| Active | Status | Window | Target | Observer | Replay | Detection | Streaming | Network | Health | Prometheus | Cleanup | Stop | Reason |")
-	fmt.Fprintln(&b, "| ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	fmt.Fprintln(&b, "| Active | Status | Window | Target | Observer | Replay | Detection | Streaming | Network | Disk I/O | Health | Prometheus | Cleanup | Stop | Reason |")
+	fmt.Fprintln(&b, "| ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, batch := range report.Batches {
-		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %t | %s |\n",
+		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %t | %s |\n",
 			batch.ActiveCount,
 			batch.Status,
 			escapeSuiteCell(formatWindow(batch.WindowStart, batch.WindowEnd)),
@@ -247,6 +253,7 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 			escapeSuiteCell(suiteReplayDetectionStatus(batch)),
 			escapeSuiteCell(suiteStreamingTelemetryStatus(batch)),
 			escapeSuiteCell(suiteNetworkBucketStatus(batch)),
+			escapeSuiteCell(suiteDiskIOAttributionStatus(batch)),
 			escapeSuiteCell(batch.HealthStatus),
 			escapeSuiteCell(batch.PrometheusStatus),
 			escapeSuiteCell(batch.CleanupStatus),
@@ -255,7 +262,7 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 		)
 	}
 	if len(report.Batches) == 0 {
-		fmt.Fprintln(&b, "| 0 | none | not recorded | - | - | - | - | - | - | - | - | - | false | no completed batches |")
+		fmt.Fprintln(&b, "| 0 | none | not recorded | - | - | - | - | - | - | - | - | - | - | false | no completed batches |")
 	}
 
 	writeSuiteServiceHealthMarkdown(&b, report)
@@ -266,6 +273,7 @@ func formatSuiteReportMarkdown(report SuiteReport) string {
 	writeSuiteReplayDetectionMarkdown(&b, report)
 	writeSuiteStreamingTelemetryMarkdown(&b, report)
 	writeSuiteNetworkBucketMarkdown(&b, report)
+	writeSuiteDiskIOAttributionMarkdown(&b, report)
 	writeSuiteTargetPreflightMarkdown(&b, report)
 	writeSuiteThresholdMarkdown(&b, report)
 	writeSuitePrometheusMarkdown(&b, report)
@@ -597,6 +605,55 @@ func writeSuiteNetworkBucketMarkdown(b *strings.Builder, report SuiteReport) {
 	}
 }
 
+func writeSuiteDiskIOAttributionMarkdown(b *strings.Builder, report SuiteReport) {
+	var rows []struct {
+		Batch   int
+		Host    DiskIOAttributionHost
+		Summary DiskIOAttributionSummary
+	}
+	for _, batch := range report.Batches {
+		latest := latestDiskIOAttribution(batch.DiskIOAttribution)
+		if latest == nil {
+			continue
+		}
+		for _, host := range latest.Hosts {
+			summary := DiskIOAttributionSummary{ID: host.ID, Instance: host.Instance, Status: host.Status}
+			if host.Summary != nil {
+				summary = *host.Summary
+			}
+			rows = append(rows, struct {
+				Batch   int
+				Host    DiskIOAttributionHost
+				Summary DiskIOAttributionSummary
+			}{Batch: batch.ActiveCount, Host: host, Summary: summary})
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprint(b, "\n## Disk I/O Attribution\n\n")
+	fmt.Fprintln(b, "| Active | Host | Status | Host Read | Process Read | Container Read | Host Write | Process Write | Container Write | Top Device | Top Read | Top Write | Warnings |")
+	fmt.Fprintln(b, "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |")
+	for _, row := range rows {
+		s := row.Summary
+		fmt.Fprintf(b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			row.Batch,
+			escapeSuiteCell(row.Host.ID),
+			escapeSuiteCell(s.Status),
+			capacitybench.FormatValue("bytes_per_second", s.HostReadBytesPerSecond),
+			capacitybench.FormatValue("bytes_per_second", s.ProcessReadBytesPerSecond),
+			capacitybench.FormatValue("bytes_per_second", s.ContainerReadBytesPerSecond),
+			capacitybench.FormatValue("bytes_per_second", s.HostWriteBytesPerSecond),
+			capacitybench.FormatValue("bytes_per_second", s.ProcessWriteBytesPerSecond),
+			capacitybench.FormatValue("bytes_per_second", s.ContainerWriteBytesPerSecond),
+			escapeSuiteCell(firstNonEmpty(s.TopDevice, formatDeviceIOSummary(firstDeviceIOSummary(row.Host.DeviceIO)))),
+			escapeSuiteCell(firstNonEmpty(s.TopReadProcess, diskIOProcessLabel(row.Host.TopReadProcesses))),
+			escapeSuiteCell(firstNonEmpty(s.TopWriteProcess, diskIOProcessLabel(row.Host.TopWriteProcesses))),
+			escapeSuiteCell(strings.Join(s.Warnings, "; ")),
+		)
+	}
+}
+
 func writeSuiteTargetPreflightMarkdown(b *strings.Builder, report SuiteReport) {
 	var rows []struct {
 		Batch     int
@@ -861,6 +918,16 @@ func suiteNetworkBucketStatus(batch SuiteBatchReport) string {
 		return batch.NetworkBucketStatus
 	}
 	if len(batch.NetworkBuckets) > 0 {
+		return "captured"
+	}
+	return "-"
+}
+
+func suiteDiskIOAttributionStatus(batch SuiteBatchReport) string {
+	if batch.DiskIOAttributionStatus != "" {
+		return batch.DiskIOAttributionStatus
+	}
+	if len(batch.DiskIOAttribution) > 0 {
 		return "captured"
 	}
 	return "-"
