@@ -248,6 +248,55 @@ func TestComputeMetrics_TLSDeprecatedFalseOutage(t *testing.T) {
 	}
 }
 
+func TestComputeMetrics_TLSExpiringAdvisoryDetected(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	alert := alertAt(start.Add(10 * time.Second))
+	alert.NormalizedClassification = classificationTLSAdvisory
+	sr := &serviceData{alerts: []db.MonitorReportRow{alert}}
+
+	out := computeMetrics(sr, []failureWindow{typedWindow(failureTLSExpiring, start, end)}, nil)
+
+	if v := out["tls_advisory_detected"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("tls_advisory_detected = %v, want 1", v)
+	}
+	if v := out["tls_advisory_missed"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("tls_advisory_missed = %v, want 0", v)
+	}
+	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("true_positive = %v, want 0 (expiring cert is advisory, not outage TP)", v)
+	}
+	if _, has := out["detection_latency_s"]; has {
+		t.Fatal("detection_latency_s should not be set for advisory-only TLS detections")
+	}
+}
+
+func TestComputeMetrics_TLSExpiringHTTPFailureIsFalseOutageNotTruePositive(t *testing.T) {
+	start := time.Now()
+	end := start.Add(time.Minute)
+	alert := alertAt(start.Add(10 * time.Second))
+	alert.NormalizedClassification = "http_failure"
+	sr := &serviceData{alerts: []db.MonitorReportRow{alert}}
+
+	out := computeMetrics(sr, []failureWindow{typedWindow(failureTLSExpiring, start, end)}, nil)
+
+	if v := out["tls_advisory_false_outage"].MetricValue; v == nil || *v != 1 {
+		t.Fatalf("tls_advisory_false_outage = %v, want 1", v)
+	}
+	if v := out["true_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("true_positive = %v, want 0 (wrong-layer HTTP outage must not satisfy TLS expiry)", v)
+	}
+	if v := out["false_negative"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_negative = %v, want 0 (advisory outcomes stay out of outage FN)", v)
+	}
+	if v := out["false_positive"].MetricValue; v == nil || *v != 0 {
+		t.Fatalf("false_positive = %v, want 0 (false outage is reported separately while advisory is active)", v)
+	}
+	if _, has := out["detection_latency_s"]; has {
+		t.Fatal("detection_latency_s should not be set from wrong-layer TLS expiry alerts")
+	}
+}
+
 // TestComputeMetrics_MixedAlerts — verifies the single-pass logic handles
 // both true-positive and false-positive alerts correctly. The earlier
 // two-loop version effectively did the same thing; this test pins down

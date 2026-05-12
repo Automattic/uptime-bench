@@ -24,6 +24,7 @@ const (
 	failureHTTPTimeout        = "http_timeout"
 	failureHTTPLatency        = "http_latency"
 	failureTLSDeprecated      = "tls_deprecated"
+	failureTLSExpiring        = "tls_expiring"
 	classificationTLSAdvisory = "tls_advisory"
 )
 
@@ -180,8 +181,8 @@ func computeMetrics(sr *serviceData, windows []failureWindow, maintenance *failu
 	normalWindows, tlsAdvisoryWindows := splitWindows(windows)
 
 	// Single pass over alerts: classify each one as in-window (true positive,
-	// candidate detection-latency sample), deprecated-TLS advisory, deprecated-
-	// TLS false outage report, or out-of-window false positive.
+	// candidate detection-latency sample), TLS advisory detection, TLS false
+	// outage report, or out-of-window false positive.
 	truePositive := false
 	falseNegative := len(normalWindows) > 0
 	falsePositive := false
@@ -282,7 +283,7 @@ func computeMetrics(sr *serviceData, windows []failureWindow, maintenance *failu
 
 func splitWindows(windows []failureWindow) (normal []failureWindow, tlsAdvisory []failureWindow) {
 	for _, w := range windows {
-		if w.kind == failureTLSDeprecated {
+		if isTLSAdvisoryFailure(w.kind) {
 			tlsAdvisory = append(tlsAdvisory, w)
 			continue
 		}
@@ -292,6 +293,15 @@ func splitWindows(windows []failureWindow) (normal []failureWindow, tlsAdvisory 
 		normal = append(normal, w)
 	}
 	return normal, tlsAdvisory
+}
+
+func isTLSAdvisoryFailure(kind string) bool {
+	switch kind {
+	case failureTLSDeprecated, failureTLSExpiring:
+		return true
+	default:
+		return false
+	}
 }
 
 func isHealthyGETMethodTrap(w failureWindow) bool {

@@ -373,6 +373,9 @@ func TestWriteMarkdownIncludesServiceScores(t *testing.T) {
 	if !strings.Contains(out, "## Failure-Type Details") {
 		t.Fatalf("markdown missing detail table: %q", out)
 	}
+	if !strings.Contains(out, "TLS Adv | TLS Miss | TLS False Outage") {
+		t.Fatalf("markdown missing TLS advisory columns: %q", out)
+	}
 	if !strings.Contains(out, "## Reason Codes") || !strings.Contains(out, "| http_status | svc | adapter_error | 1 |") {
 		t.Fatalf("markdown missing reason-code table: %q", out)
 	}

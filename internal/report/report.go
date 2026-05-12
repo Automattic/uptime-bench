@@ -1018,16 +1018,18 @@ func writeMarkdown(w io.Writer, r Report) error {
 		if _, err := fmt.Fprint(w, "\n## Failure-Type Details\n\n"); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(w, "| Failure Type | Service | N | TP Rate | TP | FN | FP | Unknown | Capability Mismatch | Min s | Avg s | P50 s | P95 s | Max s |"); err != nil {
+		if _, err := fmt.Fprintln(w, "| Failure Type | Service | N | TP Rate | TP | FN | FP | TLS Adv | TLS Miss | TLS False Outage | Unknown | Capability Mismatch | Min s | Avg s | P50 s | P95 s | Max s |"); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(w, "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"); err != nil {
+		if _, err := fmt.Fprintln(w, "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"); err != nil {
 			return err
 		}
 		for _, s := range r.Summaries {
-			if _, err := fmt.Fprintf(w, "| %s | %s | %d | %s | %d | %d | %d | %d | %d | %s | %s | %s | %s | %s |\n",
+			if _, err := fmt.Fprintf(w, "| %s | %s | %d | %s | %d | %d | %d | %d | %d | %d | %d | %d | %s | %s | %s | %s | %s |\n",
 				s.FailureType, s.ServiceID, s.Samples, formatRatio(s.DetectionRate),
-				s.TruePositive, s.FalseNegative, s.FalsePositive, s.Unknown, s.CapabilityMismatch,
+				s.TruePositive, s.FalseNegative, s.FalsePositive,
+				s.TLSAdvisoryDetected, s.TLSAdvisoryMissed, s.TLSAdvisoryFalseOutage,
+				s.Unknown, s.CapabilityMismatch,
 				formatSeconds(s.LatencyMinSeconds), formatSeconds(s.LatencyAvgSeconds), formatSeconds(s.LatencyP50Seconds),
 				formatSeconds(s.LatencyP95Seconds), formatSeconds(s.LatencyMaxSeconds)); err != nil {
 				return err

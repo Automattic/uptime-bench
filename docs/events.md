@@ -114,9 +114,9 @@ One row per monitor service per metric per run.
 | `maintenance_suppressed` | No alert fired because the scenario's maintenance window covered the failure period. Correct behaviour, excluded from false negatives. |
 | `cooldown_suppressed` | No alert fired and adapter metadata says a prior alert cooldown suppressed it. Excluded from false negatives. |
 | `cooldown_uncertain` | No alert fired and adapter metadata says cooldown reset state was uncertain. Excluded from false negatives because the run is not cleanly attributable. |
-| `tls_advisory_detected` | `tls_deprecated` was active and the service reported a TLS advisory instead of an outage. |
-| `tls_advisory_missed` | `tls_deprecated` was active and the service reported no TLS advisory. Excluded from false negatives because the HTTP request still succeeds. |
-| `tls_advisory_false_outage` | `tls_deprecated` was active and the service reported an outage-style alert instead of an advisory. |
+| `tls_advisory_detected` | A TLS advisory scenario, currently `tls_deprecated` or `tls_expiring`, was active and the service reported a TLS advisory instead of an outage. |
+| `tls_advisory_missed` | A TLS advisory scenario was active and the service reported no TLS advisory. Excluded from false negatives because the HTTP request still succeeds. |
+| `tls_advisory_false_outage` | A TLS advisory scenario was active and the service reported an outage-style alert instead of an advisory. |
 | `classification_match` | Boolean: the service's normalized classification matches the injected failure mode. |
 
 ---

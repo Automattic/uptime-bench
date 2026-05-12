@@ -394,7 +394,7 @@ days_expired = 7
 
 ### `tls_expiring`
 
-Serves a certificate that is valid today but approaching expiry. Tests whether monitors fire warning alerts before a cert actually breaks.
+Serves a certificate that is valid today but approaching expiry. Tests whether monitors fire warning alerts before a cert actually breaks. Measurement records this as `tls_advisory_detected`, `tls_advisory_missed`, or `tls_advisory_false_outage` rather than folding it into ordinary true-positive / false-negative outage accuracy.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
