@@ -75,6 +75,10 @@ for service behavior scoring:
 - `failure_not_observable` — the harness could not verify that the injected
   failure was visible on the controlled fleet surface. The row is recorded as
   `retrieve_status = "unknown"` so it is not counted as a service miss.
+- `setup_environment_dns_unstable` — a TLS-only scenario ran while DNS baseline
+  checks for the target hostname were failing. The row is recorded as
+  `retrieve_status = "unknown"` so DNS instability is separated from TLS
+  behavior scoring.
 - `maintenance_suppressed`, `cooldown_suppressed`, `cooldown_uncertain`, and
   `cooldown_reset_failed` — inter-run or vendor-side suppression states that
   must remain separate from detection failures.
@@ -130,6 +134,7 @@ Every scenario run records why it ended. This affects whether results are usable
 - `target_independent_failure` — the target failed in a way not caused by the scenario's own injection (e.g., underlying infrastructure issue).
 - `adapter_error` — one or more adapters failed to provision or retrieve data, potentially corrupting results for those services.
 - `setup_exposure_failure` — the harness activated a failure, but its preflight probe could not observe the intended failure mode on the controlled fleet surface. Per-service rows should use `reason_code = "failure_not_observable"`.
+- `setup_environment_dns_unstable` — TLS-only scenario DNS baseline checks failed before, during, or shortly after the active failure window. Per-service rows should use `reason_code = "setup_environment_dns_unstable"`.
 - `cleanup_error` — detection and retrieval completed, but one or more adapters failed to deprovision after retries. Monitor reports from the run may still be valid, but the leaked provider state must be investigated before relying on later runs.
 
 ---

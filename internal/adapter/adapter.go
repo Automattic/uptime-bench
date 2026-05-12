@@ -415,6 +415,11 @@ const (
 	// service detection miss.
 	ReasonFailureNotObservable = "failure_not_observable"
 
+	// ReasonSetupEnvironmentDNSUnstable: a TLS-only scenario ran while
+	// baseline DNS checks for the target hostname were unstable. The row is
+	// a setup/environment problem, not evidence of monitor TLS behavior.
+	ReasonSetupEnvironmentDNSUnstable = "setup_environment_dns_unstable"
+
 	// ReasonMaintenanceSuppressed: failure was active and the monitor
 	// returned no alerts, but a maintenance window covered the failure
 	// period. Correct behaviour, not a false negative. Written by the

@@ -98,6 +98,8 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		return "", fmt.Errorf("runner: %w", err)
 	}
 
+	dnsBaseline := newDNSBaselinePlan(sc, fl, svcCfg, endpoint.host)
+
 	token, err := readFleetToken(fl)
 	if err != nil {
 		return "", fmt.Errorf("runner: %w", err)
@@ -113,6 +115,9 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	}
 	if sc.FreshHostname {
 		params["fresh_hostname"] = true
+	}
+	if dnsBaseline != nil {
+		params["dns_baseline"] = "tls_only"
 	}
 	for k, v := range o.parameters {
 		params[k] = v
@@ -147,6 +152,12 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	if err := logEvent(ctx, database, runID, sc.Target, "run_start", "", nil); err != nil {
 		resolutionReason = "ground_truth_log_failure"
 		return runID, err
+	}
+	if dnsBaseline != nil {
+		if err := dnsBaseline.record(ctx, database, runID, sc.Target, "pre_provision"); err != nil {
+			resolutionReason = "ground_truth_log_failure"
+			return runID, err
+		}
 	}
 
 	// If the scenario declares a maintenance window, persist it as a
@@ -219,13 +230,25 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 	targetAutoExpiry := latestFailureEndOffset(sc.Duration, sc.Failures) + sc.GracePeriod + 30*time.Second
 
 	var failureStarted, failureEnded time.Time
+	dnsBaselineActive := 0
 	for _, e := range events {
 		if waitFor := time.Until(e.at); waitFor > 0 {
-			select {
-			case <-time.After(waitFor):
-			case <-ctx.Done():
-				resolutionReason = "aborted"
-				return runID, ctx.Err()
+			if dnsBaseline != nil && dnsBaselineActive > 0 {
+				if err := dnsBaseline.wait(ctx, database, runID, sc.Target, waitFor); err != nil {
+					if ctx.Err() != nil {
+						resolutionReason = "aborted"
+						return runID, ctx.Err()
+					}
+					resolutionReason = "ground_truth_log_failure"
+					return runID, err
+				}
+			} else {
+				select {
+				case <-time.After(waitFor):
+				case <-ctx.Done():
+					resolutionReason = "aborted"
+					return runID, ctx.Err()
+				}
 			}
 		}
 
@@ -313,6 +336,13 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			if failureStarted.IsZero() {
 				failureStarted = time.Now()
 			}
+			if dnsBaseline != nil {
+				dnsBaselineActive++
+				if err := dnsBaseline.record(ctx, database, runID, sc.Target, "active_start"); err != nil {
+					resolutionReason = "ground_truth_log_failure"
+					return runID, err
+				}
+			}
 		} else {
 			host, path := targetHostPathForFailure(endpoint, f)
 			members, err := controlMembersForFailure(fl, target, f, seed)
@@ -336,6 +366,15 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 			}
 			log.Printf("runner: deactivated %s", f.Type)
 			failureEnded = time.Now()
+			if dnsBaseline != nil {
+				if err := dnsBaseline.record(ctx, database, runID, sc.Target, "post_deactivation"); err != nil {
+					resolutionReason = "ground_truth_log_failure"
+					return runID, err
+				}
+				if dnsBaselineActive > 0 {
+					dnsBaselineActive--
+				}
+			}
 		}
 	}
 
@@ -348,6 +387,18 @@ func Run(ctx context.Context, sc *scenario.Scenario, fl *fleet.Config, database 
 		return runID, ctx.Err()
 	}
 	gracePeriodEnds := time.Now()
+	if dnsBaseline != nil {
+		if err := dnsBaseline.record(ctx, database, runID, sc.Target, "post_recovery"); err != nil {
+			resolutionReason = "ground_truth_log_failure"
+			return runID, err
+		}
+		if dnsBaseline.unstable {
+			if resolutionReason == "planned_completion" {
+				resolutionReason = adapter.ReasonSetupEnvironmentDNSUnstable
+			}
+			logDNSBaselineUnstable(ctx, database, runID, handles, dnsBaseline)
+		}
+	}
 
 	// Retrieve results.
 	window := adapter.RunWindow{

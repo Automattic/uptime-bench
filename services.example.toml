@@ -57,9 +57,16 @@ notes                     = "Use pre-seeded benchmark URLs or enable write_mode 
 # Jetmon 2
 # Required: url (Jetmon 2 internal REST API root; either server root or /api/v1)
 # Auth keys:
-#   token     — Jetmon API bearer token with write scope
-#   bucket_no — optional bucket assigned to synthetic benchmark sites (default 0);
-#               choose a bucket owned by the Jetmon v2 host under test
+#   token                  — Jetmon API bearer token with write scope
+#   bucket_no              — optional bucket assigned to synthetic benchmark sites
+#                            (default 0); choose a bucket owned by the Jetmon v2
+#                            host under test
+#   check_dns_resolvers    — optional comma-separated or JSON list of resolver
+#                            host:port values used by Jetmon checks; uptime-bench
+#                            includes these in TLS-only DNS baselines
+#   dns_baseline_ssh_host  — optional SSH host for the Jetmon monitor server;
+#                            when set, uptime-bench captures the monitor host's
+#                            system resolver and check-resolver answers too
 # Note: Jetmon is agent-based and does not have fixed probe IP ranges.
 # -----------------------------------------------------------------------------
 [[services]]
