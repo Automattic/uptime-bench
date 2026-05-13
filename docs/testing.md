@@ -55,7 +55,8 @@ Both names resolve to `target-01` on the fleet Docker network.
 For services that require pre-seeded monitors (for example, Jetmon v1 in
 read-only bridge mode), set them up now and verify the adapter can reach them
 before running a scenario. API-backed adapters such as Jetmon v2 create and
-soft-delete synthetic monitors for each run.
+soft-delete synthetic monitors for each run; for Jetmon v2 this means setting
+`monitor_active=0`, not physically removing the legacy site row.
 
 ## 4. Run a Scenario
 

@@ -71,8 +71,10 @@ engineering follow-ups:
 - Check whether errors cluster by service, scenario, monitor kind, request
   method, or replay position.
 - Look for leaked provider resources after interrupted or errored runs.
-- Confirm cleanup artifacts distinguish deleted, skipped, and ambiguous
-  resources.
+- Confirm cleanup artifacts distinguish deleted, soft-deleted, skipped, and
+  ambiguous resources. For Jetmon v2, API cleanup should be described as a
+  soft delete that sets `monitor_active=0`; any physical sidecar/runtime row
+  purge should be labeled as benchmark-only cleanup.
 - Treat duplicate-resource errors as a cleanup or ownership bug until proven
   otherwise.
 

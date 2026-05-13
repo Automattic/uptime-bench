@@ -395,7 +395,7 @@ Uptime Kuma automation uses an internal Socket.IO API through `uptime-kuma-api`,
 
 ### Jetmon v2 API-backed monitors
 
-Jetmon 2 uses the internal `/api/v1` REST API. Configure `url` as either the API server root or the versioned API root, set `auth.token` to a Jetmon API token with write scope, and optionally set `auth.bucket_no` to a bucket owned by the Jetmon v2 host under test. The adapter creates a synthetic high-range positive `blog_id` per run, sets `check_interval` from the scenario in whole minutes, configures present-mode `check_keyword` when requested, retrieves HTTP and TLS-expiry events, maps Jetmon `error_code` metadata into raw timeout/TLS/redirect/keyword labels, and soft-deletes the site at deprovision time.
+Jetmon 2 uses the internal `/api/v1` REST API. Configure `url` as either the API server root or the versioned API root, set `auth.token` to a Jetmon API token with write scope, and optionally set `auth.bucket_no` to a bucket owned by the Jetmon v2 host under test. The adapter creates a synthetic high-range positive `blog_id` per run, sets `check_interval` from the scenario in whole minutes, configures present-mode `check_keyword` when requested, retrieves HTTP and TLS-expiry events, maps Jetmon `error_code` metadata into raw timeout/TLS/redirect/keyword labels, and soft-deletes the site at deprovision time. Jetmon v2 API cleanup sets `monitor_active=0`; the legacy `jetpack_monitor_sites` row remains. Any physical purge of benchmark-only sidecar or runtime rows is a separate test cleanup step, not normal adapter/API behavior.
 
 Jetmon v2 does not support `keyword_check = "absent"` through the current API, so those scenarios are gated as capability mismatches.
 

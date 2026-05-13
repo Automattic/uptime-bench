@@ -414,8 +414,9 @@ func (a *Adapter) fetchEvents(ctx context.Context, siteID string, window adapter
 	return nil, fmt.Errorf("event pagination exceeded %d pages", maxEventPages)
 }
 
-// Deprovision soft-deletes the synthetic Jetmon site and closes any active
-// events. A missing site is treated as success so cleanup is idempotent.
+// Deprovision soft-deletes the synthetic Jetmon site by setting
+// monitor_active=0 and closes any active events. The legacy site row remains in
+// Jetmon. A missing site is treated as success so cleanup is idempotent.
 func (a *Adapter) Deprovision(ctx context.Context, handle adapter.MonitorHandle) error {
 	siteID := handle.MonitorID
 	if siteID == "" {

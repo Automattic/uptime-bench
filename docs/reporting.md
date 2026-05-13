@@ -132,6 +132,42 @@ For Jetmon v1/v2 capacity growth suites, the suite directory should include
 SQL lifecycle artifacts, execution results, exact UTC window timestamps, and
 `prometheus-window.json` when Prometheus capture is enabled.
 
+## Jetmon v2 Reporting Notes
+
+Jetmon v2 API cleanup is a soft delete. Reports should say that API cleanup
+soft-deleted benchmark sites by setting `monitor_active=0`; the legacy
+`jetpack_monitor_sites` row remains. If a test also physically purges
+benchmark-only sidecar or runtime rows, describe that as a separate
+benchmark-only cleanup step and name the affected tables or artifact. Do not
+summarize Jetmon v2 API-created site cleanup as "deleted N sites" unless the
+line is explicitly about a physical benchmark-only purge.
+
+For PR 109-style staged HEAD/GET rollout runs, use a strict schema/runtime log
+scan as the pass/fail signal. Normal streaming telemetry fields such as
+`error_timeout`, `error_connect`, `error_keyword`, and `error_body_read` are
+expected metric names, not schema errors. A clean run should be reported as:
+
+```text
+Strict schema/runtime scan: clean
+```
+
+Broad exploratory scans may still be useful during manual debugging, but label
+them as exploratory/noisy if they can match normal metric names.
+
+When StatsD/Graphite capture is available for Jetmon v2 staged rollout runs,
+validate that the expected low-cardinality cohort counters are present and
+non-zero for each cohort exercised by the run:
+
+```text
+scheduler.streaming.check.method.head.profile.legacy.count
+scheduler.streaming.check.method.get.profile.simple_http.count
+scheduler.streaming.check.method.get.profile.full.count
+```
+
+StatsD absence should not fail a correctness run by itself. If the raw metrics
+were not captured, report: "StatsD cohort counter validation: not captured;
+MySQL check-history evidence used instead."
+
 ## Optional But Preferred Files
 
 Include these when available because they make later investigation faster:
