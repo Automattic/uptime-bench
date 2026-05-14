@@ -291,6 +291,9 @@ func main() {
 		status = st
 		return phase
 	})
+	runPhase("transport-contract", func(ctx context.Context) phaseResult {
+		return runTransportContract(ctx, *v2Addr, *v2Token)
+	})
 	runPhase("auth-and-input-security", func(ctx context.Context) phaseResult {
 		return runSecurityChecks(ctx, *v2Addr, *v2Token)
 	})
@@ -311,6 +314,9 @@ func main() {
 	} else {
 		runPhase("monitor-lifecycle", func(ctx context.Context) phaseResult {
 			return runMonitorLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout)
+		})
+		runPhase("monitor-timeout-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorTimeoutLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout)
 		})
 	}
 
@@ -349,6 +355,7 @@ func runPreflight(ctx context.Context, api apiClient, v2Addr, targetControlURL, 
 		phase.pass("v2-status", "v2 status returned identity and capacity", map[string]any{
 			"version": status.Version, "vantage_id": status.Vantage.ID, "agent_id": status.Agent.ID,
 			"max_concurrency": status.Capacity.MaxConcurrency, "queue_capacity": status.Capacity.QueueCapacity,
+			"protocols": strings.Join(status.Protocols, ","),
 		})
 	}
 	targetClient := &http.Client{Timeout: 5 * time.Second}
@@ -369,6 +376,35 @@ func runPreflight(ctx context.Context, api apiClient, v2Addr, targetControlURL, 
 		}
 	}
 	return phase.finish(), status
+}
+
+func runTransportContract(ctx context.Context, v2Addr, token string) phaseResult {
+	phase := newPhase("transport-contract")
+	var status v2Status
+	if err := getJSON(ctx, "http://"+v2Addr+"/v2/status", "", &status); err != nil {
+		phase.fail("v2-status", err.Error(), nil)
+	} else {
+		data := map[string]any{
+			"version":    status.Version,
+			"protocols":  strings.Join(status.Protocols, ","),
+			"vantage_id": status.Vantage.ID,
+			"agent_id":   status.Agent.ID,
+		}
+		if !containsString(status.Protocols, "v2-json-http") {
+			phase.fail("protocol-v2-json-http", "/v2/status did not advertise v2-json-http", data)
+		} else {
+			phase.pass("protocol-v2-json-http", "/v2/status advertised v2-json-http", data)
+		}
+		if containsString(status.Protocols, "legacy-json-http") {
+			phase.fail("protocol-legacy-json-http-absent", "/v2/status advertised legacy-json-http while default legacy HTTP should be disabled", data)
+		} else {
+			phase.pass("protocol-legacy-json-http-absent", "/v2/status did not advertise legacy-json-http", data)
+		}
+	}
+
+	expectHTTPMethod(ctx, &phase, "legacy-status-disabled", http.MethodGet, "http://"+v2Addr+"/status", "", nil, http.StatusNotFound)
+	expectHTTP(ctx, &phase, "legacy-check-disabled", "http://"+v2Addr+"/check", token, []byte(`{"sites":[]}`), http.StatusNotFound)
+	return phase.finish()
 }
 
 func runSecurityChecks(ctx context.Context, v2Addr, token string) phaseResult {
@@ -634,12 +670,66 @@ func runOverload(ctx context.Context, target *control.Client, v2Addr, token stri
 }
 
 func runMonitorLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration) phaseResult {
-	phase := newPhase("monitor-lifecycle")
-	blogID := int64(910408000000 + time.Now().UTC().Unix()%1000000)
-	path := "/pr105-lifecycle-" + newID()
-	siteURL := targetURL + path
+	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
+		PhaseName:      "monitor-lifecycle",
+		BlogIDBase:     910408000000,
+		PathPrefix:     "/pr105-lifecycle-",
+		TargetURL:      targetURL,
+		TargetHost:     targetHost,
+		Timeout:        timeout,
+		CheckTimeout:   5,
+		FailureType:    "http_status",
+		FailureParams:  map[string]any{"status_code": 503},
+		FailurePass:    "activate-http-503",
+		FailureDetail:  "target failure activated",
+		CleanupPass:    "deactivate-http-503",
+		CleanupDetail:  "target failure deactivated",
+		CustomHeaderID: "veriflier-pr105-followup",
+	})
+}
+
+func runMonitorTimeoutLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration) phaseResult {
+	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
+		PhaseName:      "monitor-timeout-lifecycle",
+		BlogIDBase:     910409000000,
+		PathPrefix:     "/pr105-timeout-lifecycle-",
+		TargetURL:      targetURL,
+		TargetHost:     targetHost,
+		Timeout:        timeout,
+		CheckTimeout:   2,
+		FailureType:    "http_timeout",
+		FailureParams:  map[string]any{"method": "HEAD", "delay": "8s"},
+		FailurePass:    "activate-http-timeout",
+		FailureDetail:  "target HEAD timeout activated",
+		CleanupPass:    "deactivate-http-timeout",
+		CleanupDetail:  "target HEAD timeout deactivated",
+		CustomHeaderID: "veriflier-pr105-timeout-followup",
+	})
+}
+
+type monitorLifecycleCase struct {
+	PhaseName      string
+	BlogIDBase     int64
+	PathPrefix     string
+	TargetURL      string
+	TargetHost     string
+	Timeout        time.Duration
+	CheckTimeout   int
+	FailureType    string
+	FailureParams  map[string]any
+	FailurePass    string
+	FailureDetail  string
+	CleanupPass    string
+	CleanupDetail  string
+	CustomHeaderID string
+}
+
+func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control.Client, cfg monitorLifecycleCase) phaseResult {
+	phase := newPhase(cfg.PhaseName)
+	blogID := cfg.BlogIDBase + time.Now().UTC().UnixNano()%1000000
+	path := cfg.PathPrefix + newID()
+	siteURL := cfg.TargetURL + path
 	cooldown := 0
-	checkTimeout := 5
 	siteReq := apiSiteCreateRequest{
 		BlogID:               blogID,
 		MonitorURL:           siteURL,
@@ -648,8 +738,8 @@ func runMonitorLifecycle(ctx context.Context, api apiClient, target *control.Cli
 		RedirectPolicy:       "follow",
 		RequestMethod:        "HEAD",
 		DetectionProfile:     "legacy",
-		TimeoutSeconds:       &checkTimeout,
-		CustomHeaders:        map[string]string{"X-Uptime-Bench-Test": "veriflier-pr105-followup"},
+		TimeoutSeconds:       &cfg.CheckTimeout,
+		CustomHeaders:        map[string]string{"X-Uptime-Bench-Test": cfg.CustomHeaderID},
 		AlertCooldownMinutes: &cooldown,
 		CheckInterval:        1,
 	}
@@ -665,7 +755,7 @@ func runMonitorLifecycle(ctx context.Context, api apiClient, target *control.Cli
 		}
 	}()
 
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	waitCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 	if s, err := waitForSiteChecked(waitCtx, api, blogID, time.Now().UTC()); err != nil {
 		phase.fail("initial-check", err.Error(), nil)
@@ -680,19 +770,19 @@ func runMonitorLifecycle(ctx context.Context, api apiClient, target *control.Cli
 		RunID: runID,
 		Seed:  blogID,
 		Failure: control.FailureSpec{
-			Type:     "http_status",
-			Host:     targetHost,
+			Type:     cfg.FailureType,
+			Host:     cfg.TargetHost,
 			Path:     path,
-			Duration: timeout + time.Minute,
+			Duration: cfg.Timeout + time.Minute,
 			Rate:     1,
-			Params:   map[string]any{"status_code": 503},
+			Params:   cfg.FailureParams,
 		},
 	}); err != nil {
-		phase.fail("activate-http-503", err.Error(), nil)
+		phase.fail(cfg.FailurePass, err.Error(), nil)
 		return phase.finish()
 	}
-	defer deactivateFailure(target, runID, "http_status", targetHost, path)
-	phase.pass("activate-http-503", "target failure activated", map[string]any{"path": path, "activated_at": activatedAt.Format(time.RFC3339)})
+	defer deactivateFailure(target, runID, cfg.FailureType, cfg.TargetHost, path)
+	phase.pass(cfg.FailurePass, cfg.FailureDetail, map[string]any{"path": path, "activated_at": activatedAt.Format(time.RFC3339)})
 
 	downEvent, err := waitForEventState(waitCtx, api, blogID, "Down")
 	if err != nil {
@@ -712,11 +802,11 @@ func runMonitorLifecycle(ctx context.Context, api apiClient, target *control.Cli
 		phase.pass("verifier-confirmed-transition", "same event promoted to Down with v2 Veriflier evidence", eventDetailData(downDetail))
 	}
 
-	if err := target.Deactivate(ctx, control.DeactivateRequest{RunID: runID, FailureType: "http_status", Host: targetHost, Path: path}); err != nil {
-		phase.fail("deactivate-http-503", err.Error(), nil)
+	if err := target.Deactivate(ctx, control.DeactivateRequest{RunID: runID, FailureType: cfg.FailureType, Host: cfg.TargetHost, Path: path}); err != nil {
+		phase.fail(cfg.CleanupPass, err.Error(), nil)
 		return phase.finish()
 	}
-	phase.pass("deactivate-http-503", "target failure deactivated", nil)
+	phase.pass(cfg.CleanupPass, cfg.CleanupDetail, nil)
 
 	closed, err := waitForEventClosed(waitCtx, api, blogID, downEvent.ID)
 	if err != nil {
@@ -1203,6 +1293,15 @@ func transitionMetadataContains(transitions []apiTransition, reason, needle stri
 
 func escapePipe(s string) string {
 	return strings.ReplaceAll(s, "|", "\\|")
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func mustGetwd() string {
