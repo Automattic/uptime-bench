@@ -24,6 +24,7 @@ type TargetManifest struct {
 	PreflightTimeout        string   `json:"preflight_timeout,omitempty"`
 	PreflightExpectedStatus int      `json:"preflight_expected_status,omitempty"`
 	PreflightCheckSources   []string `json:"preflight_check_sources,omitempty"`
+	PreflightDNSResolvers   []string `json:"preflight_dns_resolvers,omitempty"`
 }
 
 // TargetPreflight records exact activated-URL validation for one service.
@@ -35,6 +36,7 @@ type TargetPreflight struct {
 	SampleCount    int               `json:"sample_count"`
 	ExpectedStatus int               `json:"expected_status,omitempty"`
 	CheckSources   []string          `json:"check_sources,omitempty"`
+	DNSResolvers   []string          `json:"dns_resolvers,omitempty"`
 	Samples        []TargetURLSample `json:"samples,omitempty"`
 }
 
@@ -67,9 +69,11 @@ type TargetURLChecker interface {
 	CheckURL(ctx context.Context, source string, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck
 }
 
-type defaultTargetURLChecker struct{}
+type defaultTargetURLChecker struct {
+	DNSResolvers []string
+}
 
-func (defaultTargetURLChecker) CheckURL(ctx context.Context, source string, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck {
+func (c defaultTargetURLChecker) CheckURL(ctx context.Context, source string, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck {
 	source = strings.TrimSpace(source)
 	if source == "" {
 		source = "runner"
@@ -89,7 +93,7 @@ func (defaultTargetURLChecker) CheckURL(ctx context.Context, source string, rawU
 		check.Error = "URL missing hostname"
 		return check
 	}
-	addrs, resolverName, err := lookupTargetHost(ctx, host, timeout)
+	addrs, resolverName, err := lookupTargetHost(ctx, host, timeout, c.DNSResolvers)
 	if err != nil {
 		check.Error = "dns: " + err.Error()
 		return check
@@ -126,7 +130,7 @@ var targetDNSFallbackServers = []string{
 	"8.8.8.8:53",
 }
 
-func lookupTargetHost(ctx context.Context, host string, timeout time.Duration) ([]string, string, error) {
+func lookupTargetHost(ctx context.Context, host string, timeout time.Duration, dnsResolvers []string) ([]string, string, error) {
 	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
 	addrs, err := net.DefaultResolver.LookupHost(lookupCtx, host)
 	cancel()
@@ -136,7 +140,11 @@ func lookupTargetHost(ctx context.Context, host string, timeout time.Duration) (
 	var failures []string
 	failures = append(failures, "default: "+err.Error())
 
-	for _, server := range targetDNSFallbackServers {
+	fallbacks := targetDNSFallbackServers
+	if len(dnsResolvers) > 0 {
+		fallbacks = dnsResolvers
+	}
+	for _, server := range fallbacks {
 		resolver := fallbackResolver(server, timeout)
 		lookupCtx, cancel := context.WithTimeout(ctx, timeout)
 		addrs, err := resolver.LookupHost(lookupCtx, host)
@@ -236,6 +244,7 @@ func targetManifest(cfg RunConfig) TargetManifest {
 		PreflightTimeout:        cfg.TargetPreflight.Timeout,
 		PreflightExpectedStatus: cfg.TargetPreflight.ExpectedStatus,
 		PreflightCheckSources:   append([]string(nil), cfg.TargetPreflight.CheckSources...),
+		PreflightDNSResolvers:   append([]string(nil), cfg.TargetPreflight.DNSResolvers...),
 	}
 }
 
@@ -358,6 +367,7 @@ func (r Runner) preflightServiceTargets(ctx context.Context, service ServiceLife
 		SkippedHTTP:    cfg.TargetPreflight.SkipHTTP,
 		ExpectedStatus: cfg.TargetPreflight.ExpectedStatus,
 		CheckSources:   append([]string(nil), cfg.TargetPreflight.CheckSources...),
+		DNSResolvers:   append([]string(nil), cfg.TargetPreflight.DNSResolvers...),
 	}
 	sqlText, err := RenderActiveURLSamplesSQL(service.Config, activeCount)
 	if err != nil {
@@ -390,7 +400,7 @@ func (r Runner) preflightServiceTargets(ctx context.Context, service ServiceLife
 		}
 		if !cfg.TargetPreflight.SkipHTTP {
 			for _, source := range cfg.TargetPreflight.CheckSources {
-				check := r.checkTargetURLWithRetry(ctx, source, samples[i].URL, timeout, cfg.TargetPreflight.ExpectedStatus)
+				check := r.checkTargetURLWithRetry(ctx, source, samples[i].URL, timeout, cfg.TargetPreflight.ExpectedStatus, cfg.TargetPreflight.DNSResolvers)
 				samples[i].Checks = append(samples[i].Checks, check)
 				if !check.DNSOK || !check.HTTPOK {
 					err = fmt.Errorf("activated URL %s failed %s DNS/HTTP check: %s", samples[i].URL, check.Source, check.Error)
@@ -409,9 +419,12 @@ func (r Runner) preflightServiceTargets(ctx context.Context, service ServiceLife
 	return preflight, nil
 }
 
-func (r Runner) checkTargetURLWithRetry(ctx context.Context, source string, rawURL string, timeout time.Duration, expectedStatus int) TargetURLCheck {
-	if r.URLChecker == nil {
-		r.URLChecker = defaultTargetURLChecker{}
+func (r Runner) checkTargetURLWithRetry(ctx context.Context, source string, rawURL string, timeout time.Duration, expectedStatus int, dnsResolvers []string) TargetURLCheck {
+	checker := r.URLChecker
+	if checker == nil {
+		checker = defaultTargetURLChecker{DNSResolvers: dnsResolvers}
+	} else if _, ok := checker.(defaultTargetURLChecker); ok {
+		checker = defaultTargetURLChecker{DNSResolvers: dnsResolvers}
 	}
 	source = strings.TrimSpace(source)
 	if source == "" {
@@ -419,7 +432,7 @@ func (r Runner) checkTargetURLWithRetry(ctx context.Context, source string, rawU
 	}
 	var last TargetURLCheck
 	for attempt := 1; attempt <= targetURLCheckAttempts; attempt++ {
-		last = r.URLChecker.CheckURL(ctx, source, rawURL, timeout, expectedStatus)
+		last = checker.CheckURL(ctx, source, rawURL, timeout, expectedStatus)
 		if strings.TrimSpace(last.Source) == "" {
 			last.Source = source
 		}

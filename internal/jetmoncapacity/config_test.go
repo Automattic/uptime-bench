@@ -44,6 +44,8 @@ dsn_env = "JETMON_V1_DB_DSN"
 	count = 100
 	bucket_min = 10
 	bucket_max = 19
+	request_method = "GET"
+	detection_profile = "full"
 	dsn_env = "JETMON_V2_DB_DSN"
 `
 	t.Setenv("JETMON_V2_DB_DSN", "v2-dsn")
@@ -72,6 +74,9 @@ dsn_env = "JETMON_V1_DB_DSN"
 	}
 	if services[0].Config.CheckIntervalMinutes != 1 {
 		t.Fatalf("check interval = %d, want 1", services[0].Config.CheckIntervalMinutes)
+	}
+	if services[1].Config.RequestMethod != "GET" || services[1].Config.DetectionProfile != "full" {
+		t.Fatalf("v2 check policy = method:%q profile:%q, want GET/full", services[1].Config.RequestMethod, services[1].Config.DetectionProfile)
 	}
 }
 

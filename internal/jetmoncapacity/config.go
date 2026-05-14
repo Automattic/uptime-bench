@@ -54,6 +54,7 @@ type TargetPreflightConfig struct {
 	Timeout        string   `toml:"timeout"`
 	ExpectedStatus int      `toml:"expected_status"`
 	CheckSources   []string `toml:"check_sources"`
+	DNSResolvers   []string `toml:"dns_resolvers"`
 }
 
 // TargetObserverConfig controls target-side black-box traffic observation for
@@ -205,17 +206,19 @@ type ServiceConfig struct {
 
 // LifecycleConfig describes the benchmark-owned database range for one service.
 type LifecycleConfig struct {
-	Schema        string `toml:"schema"`
-	BlogIDStart   int64  `toml:"blog_id_start"`
-	Count         int    `toml:"count"`
-	BucketMin     int    `toml:"bucket_min"`
-	BucketMax     int    `toml:"bucket_max"`
-	CheckInterval string `toml:"check_interval"`
-	BatchSize     int    `toml:"batch_size"`
-	URLStart      int64  `toml:"url_start"`
-	DSN           string `toml:"dsn"`
-	DSNEnv        string `toml:"dsn_env"`
-	DSNFile       string `toml:"dsn_file"`
+	Schema           string `toml:"schema"`
+	BlogIDStart      int64  `toml:"blog_id_start"`
+	Count            int    `toml:"count"`
+	BucketMin        int    `toml:"bucket_min"`
+	BucketMax        int    `toml:"bucket_max"`
+	CheckInterval    string `toml:"check_interval"`
+	BatchSize        int    `toml:"batch_size"`
+	URLStart         int64  `toml:"url_start"`
+	RequestMethod    string `toml:"request_method"`
+	DetectionProfile string `toml:"detection_profile"`
+	DSN              string `toml:"dsn"`
+	DSNEnv           string `toml:"dsn_env"`
+	DSNFile          string `toml:"dsn_file"`
 }
 
 // StopThresholds are documented in the config and interpreted by reporting.
@@ -286,6 +289,7 @@ func (c RunConfig) Normalize() RunConfig {
 		c.TargetPreflight.ExpectedStatus = http.StatusOK
 	}
 	c.TargetPreflight.CheckSources = normalizeCheckSources(c.TargetPreflight.CheckSources)
+	c.TargetPreflight.DNSResolvers = normalizeDNSResolvers(c.TargetPreflight.DNSResolvers)
 	c.TargetObserver.TargetControlURL = strings.TrimRight(strings.TrimSpace(c.TargetObserver.TargetControlURL), "/")
 	c.TargetObserver.TokenEnv = strings.TrimSpace(c.TargetObserver.TokenEnv)
 	c.TargetObserver.TokenFile = strings.TrimSpace(c.TargetObserver.TokenFile)
@@ -392,6 +396,26 @@ func normalizeCheckSources(sources []string) []string {
 	}
 	if len(out) == 0 {
 		return []string{"runner"}
+	}
+	return out
+}
+
+func normalizeDNSResolvers(resolvers []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(resolvers))
+	for _, resolver := range resolvers {
+		resolver = strings.TrimSpace(resolver)
+		if resolver == "" {
+			continue
+		}
+		if !strings.Contains(resolver, ":") {
+			resolver += ":53"
+		}
+		if seen[resolver] {
+			continue
+		}
+		seen[resolver] = true
+		out = append(out, resolver)
 	}
 	return out
 }
@@ -816,6 +840,8 @@ func serviceLifecycle(id string, svc ServiceConfig, target TargetConfig, checks 
 		BucketMax:            lc.BucketMax,
 		CheckIntervalMinutes: checkMinutes,
 		BatchSize:            lc.BatchSize,
+		RequestMethod:        lc.RequestMethod,
+		DetectionProfile:     lc.DetectionProfile,
 	}.Normalize()
 	if err := plan.Validate(); err != nil {
 		return ServiceLifecycle{}, fmt.Errorf("%s lifecycle: %w", id, err)

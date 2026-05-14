@@ -22,6 +22,7 @@ url_start = 1
 timeout = "5s"
 expected_status = 200
 skip_http = false
+dns_resolvers = ["10.0.0.176:53"]
 
 [target_observer]
 enabled = true
@@ -134,4 +135,6 @@ scheduler_engine = "streaming"
   check_interval = "5m"
   batch_size = 1000
   url_start = 1
+  request_method = "GET"
+  detection_profile = "full"
   dsn_file = "/home/jetmon/uptime-bench-capacity/secrets/jetmon-v2-capacity.dsn"

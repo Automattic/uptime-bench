@@ -46,6 +46,8 @@ type Config struct {
 	BucketMax            int
 	CheckIntervalMinutes int
 	BatchSize            int
+	RequestMethod        string
+	DetectionProfile     string
 }
 
 // Plan describes one SQL lifecycle plan to render.
@@ -84,6 +86,8 @@ func (c Config) Normalize() Config {
 		c.BatchSize = defaultBatchSize
 	}
 	c.Schema = strings.ToLower(strings.TrimSpace(c.Schema))
+	c.RequestMethod = strings.ToUpper(strings.TrimSpace(c.RequestMethod))
+	c.DetectionProfile = strings.ToLower(strings.TrimSpace(c.DetectionProfile))
 	return c
 }
 
@@ -143,6 +147,19 @@ func (c Config) Validate() error {
 	}
 	if c.BatchSize <= 0 {
 		return fmt.Errorf("batch size must be positive")
+	}
+	if c.Schema != SchemaV2 && (c.RequestMethod != "" || c.DetectionProfile != "") {
+		return fmt.Errorf("request_method and detection_profile are only supported for v2")
+	}
+	switch c.RequestMethod {
+	case "", "HEAD", "GET":
+	default:
+		return fmt.Errorf("request_method must be HEAD or GET")
+	}
+	switch c.DetectionProfile {
+	case "", "legacy", "simple_http", "full":
+	default:
+		return fmt.Errorf("detection_profile must be legacy, simple_http, or full")
 	}
 	firstURL, err := formatMonitorURL(c.URLPattern, c.URLNumberStart)
 	if err != nil {
@@ -307,6 +324,8 @@ func writeSeedSQL(w io.Writer, c Config) error {
 	fmt.Fprintln(w, "START TRANSACTION;")
 	if c.Schema == SchemaV2 {
 		writeCloseOpenEventsSQL(w, c, "capacity benchmark seed reset")
+		writeDeleteOptionalV2SidecarRangeSQL(w, "jetmon_site_runtime", c.BlogIDStart, c.BlogIDEnd())
+		writeDeleteOptionalV2SidecarRangeSQL(w, "jetmon_site_check_config", c.BlogIDStart, c.BlogIDEnd())
 	}
 	fmt.Fprintln(w, "-- Recreate only the benchmark-owned site rows.")
 	fmt.Fprintf(w, "DELETE FROM jetpack_monitor_sites WHERE blog_id BETWEEN %d AND %d;\n", c.BlogIDStart, c.BlogIDEnd())
@@ -415,21 +434,8 @@ SET @uptime_bench_freshness_cutoff := @uptime_bench_now - INTERVAL %d MINUTE;
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "-- Snapshot active v2 freshness rows so related freshness summaries use the same row state.")
-	fmt.Fprintf(w, `DROP TEMPORARY TABLE IF EXISTS uptime_bench_active_freshness;
-CREATE TEMPORARY TABLE uptime_bench_active_freshness AS
-SELECT
-  blog_id,
-  bucket_no,
-  last_checked_at,
-  TIMESTAMPDIFF(SECOND, last_checked_at, @uptime_bench_now) AS check_age_sec,
-  CASE
-    WHEN last_checked_at IS NULL OR last_checked_at < @uptime_bench_freshness_cutoff THEN 1
-    ELSE 0
-  END AS is_stale
-FROM jetpack_monitor_sites
-WHERE blog_id BETWEEN %d AND %d
-  AND monitor_active = 1;
-`, c.BlogIDStart, c.BlogIDEnd())
+	fmt.Fprintln(w, "DROP TEMPORARY TABLE IF EXISTS uptime_bench_active_freshness;")
+	writeCreateV2FreshnessSnapshotSQL(w, c)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "-- Active sites not checked within the freshness window.")
@@ -493,17 +499,9 @@ ORDER BY bucket_no;
 
 func writeInsertBatchSQL(w io.Writer, c Config, offset, n int) error {
 	fmt.Fprintf(w, "-- Seed rows %d..%d.\n", offset+1, offset+n)
-	if c.Schema == SchemaV2 {
-		fmt.Fprintln(w, `INSERT INTO jetpack_monitor_sites
-  (blog_id, bucket_no, monitor_url, monitor_active, site_status, last_status_change, check_interval,
-   last_checked_at, last_alert_sent_at, check_keyword, maintenance_start, maintenance_end,
-   custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes)
-VALUES`)
-	} else {
-		fmt.Fprintln(w, `INSERT INTO jetpack_monitor_sites
+	fmt.Fprintln(w, `INSERT INTO jetpack_monitor_sites
   (blog_id, bucket_no, monitor_url, monitor_active, site_status, last_status_change, check_interval)
 VALUES`)
-	}
 	for i := 0; i < n; i++ {
 		rowOffset := offset + i
 		blogID := c.BlogIDStart + int64(rowOffset)
@@ -517,13 +515,8 @@ VALUES`)
 		if i == n-1 {
 			terminator = ";"
 		}
-		if c.Schema == SchemaV2 {
-			fmt.Fprintf(w, "  (%d, %d, %s, 0, 1, UTC_TIMESTAMP(), %d, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'follow', NULL)%s\n",
-				blogID, bucket, sqlString(monitorURL), c.CheckIntervalMinutes, terminator)
-		} else {
-			fmt.Fprintf(w, "  (%d, %d, %s, 0, 1, UTC_TIMESTAMP(), %d)%s\n",
-				blogID, bucket, sqlString(monitorURL), c.CheckIntervalMinutes, terminator)
-		}
+		fmt.Fprintf(w, "  (%d, %d, %s, 0, 1, UTC_TIMESTAMP(), %d)%s\n",
+			blogID, bucket, sqlString(monitorURL), c.CheckIntervalMinutes, terminator)
 	}
 	return nil
 }
@@ -534,18 +527,7 @@ func writeSetRangeActiveSQL(w io.Writer, c Config, start, end int64, active bool
 		activeValue = 1
 	}
 	if c.Schema == SchemaV2 {
-		fmt.Fprintf(w, `UPDATE jetpack_monitor_sites
-   SET monitor_active = %d,
-       site_status = 1,
-       last_status_change = UTC_TIMESTAMP(),
-       check_interval = %d,
-       last_checked_at = NULL,
-       next_check_at = NULL,
-       last_alert_sent_at = NULL,
-       maintenance_start = NULL,
-       maintenance_end = NULL
- WHERE blog_id BETWEEN %d AND %d;
-`, activeValue, c.CheckIntervalMinutes, start, end)
+		writeSetV2RangeActiveSQL(w, c, start, end, activeValue)
 		return
 	}
 	fmt.Fprintf(w, `UPDATE jetpack_monitor_sites
@@ -555,6 +537,153 @@ func writeSetRangeActiveSQL(w io.Writer, c Config, start, end int64, active bool
        check_interval = %d
  WHERE blog_id BETWEEN %d AND %d;
 `, activeValue, c.CheckIntervalMinutes, start, end)
+}
+
+func writeSetV2RangeActiveSQL(w io.Writer, c Config, start, end int64, activeValue int) {
+	baseUpdate := fmt.Sprintf(`UPDATE jetpack_monitor_sites
+   SET monitor_active = %d,
+       site_status = 1,
+       last_status_change = UTC_TIMESTAMP(),
+       check_interval = %d
+ WHERE blog_id BETWEEN %d AND %d`, activeValue, c.CheckIntervalMinutes, start, end)
+	legacyUpdate := fmt.Sprintf(`UPDATE jetpack_monitor_sites
+   SET monitor_active = %d,
+       site_status = 1,
+       last_status_change = UTC_TIMESTAMP(),
+       check_interval = %d,
+       last_checked_at = NULL,
+       next_check_at = NULL,
+       last_alert_sent_at = NULL,
+       maintenance_start = NULL,
+       maintenance_end = NULL
+ WHERE blog_id BETWEEN %d AND %d`, activeValue, c.CheckIntervalMinutes, start, end)
+
+	fmt.Fprintf(w, `SET @uptime_bench_legacy_site_runtime_cols := (
+  SELECT COUNT(*)
+  FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'jetpack_monitor_sites'
+    AND COLUMN_NAME IN ('last_checked_at', 'next_check_at', 'last_alert_sent_at', 'maintenance_start', 'maintenance_end')
+);
+SET @uptime_bench_sql := IF(@uptime_bench_legacy_site_runtime_cols = 5, %s, %s);
+PREPARE uptime_bench_stmt FROM @uptime_bench_sql;
+EXECUTE uptime_bench_stmt;
+DEALLOCATE PREPARE uptime_bench_stmt;
+`, sqlString(legacyUpdate), sqlString(baseUpdate))
+	writeDeleteOptionalV2SidecarRangeSQL(w, "jetmon_site_runtime", start, end)
+	writeDeleteOptionalV2SidecarRangeSQL(w, "jetmon_site_check_config", start, end)
+	if activeValue == 1 {
+		writeInsertOptionalV2CheckConfigRangeSQL(w, c, start, end)
+	}
+}
+
+func writeDeleteOptionalV2SidecarRangeSQL(w io.Writer, table string, start, end int64) {
+	deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE blog_id BETWEEN %d AND %d", table, start, end)
+	fmt.Fprintf(w, `SET @uptime_bench_optional_table_exists := (
+  SELECT COUNT(*)
+  FROM INFORMATION_SCHEMA.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = %s
+);
+SET @uptime_bench_sql := IF(@uptime_bench_optional_table_exists > 0, %s, 'DO 0');
+PREPARE uptime_bench_stmt FROM @uptime_bench_sql;
+EXECUTE uptime_bench_stmt;
+DEALLOCATE PREPARE uptime_bench_stmt;
+`, sqlString(table), sqlString(deleteSQL))
+}
+
+func writeInsertOptionalV2CheckConfigRangeSQL(w io.Writer, c Config, start, end int64) {
+	if !c.hasV2CheckPolicy() || start > end {
+		return
+	}
+	fmt.Fprintln(w, "-- Apply explicit v2 per-site check policy for benchmark-owned active rows.")
+	fmt.Fprintf(w, `SET @uptime_bench_check_config_table_exists := (
+  SELECT COUNT(*)
+  FROM INFORMATION_SCHEMA.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'jetmon_site_check_config'
+);
+`)
+	for batchStart := start; batchStart <= end; {
+		batchEnd := batchStart + int64(c.BatchSize) - 1
+		if batchEnd > end {
+			batchEnd = end
+		}
+		insertSQL := renderV2CheckConfigInsertSQL(c, batchStart, batchEnd)
+		fmt.Fprintf(w, `SET @uptime_bench_sql := IF(@uptime_bench_check_config_table_exists > 0, %s, 'DO 0');
+PREPARE uptime_bench_stmt FROM @uptime_bench_sql;
+EXECUTE uptime_bench_stmt;
+DEALLOCATE PREPARE uptime_bench_stmt;
+`, sqlString(insertSQL))
+		batchStart = batchEnd + 1
+	}
+}
+
+func renderV2CheckConfigInsertSQL(c Config, start, end int64) string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "INSERT INTO jetmon_site_check_config")
+	fmt.Fprintln(&b, "  (blog_id, request_method, detection_profile)")
+	fmt.Fprintln(&b, "VALUES")
+	for blogID := start; blogID <= end; blogID++ {
+		terminator := ","
+		if blogID == end {
+			terminator = ""
+		}
+		fmt.Fprintf(&b, "  (%d, %s, %s)%s\n",
+			blogID,
+			sqlNullableString(c.RequestMethod),
+			sqlNullableString(c.DetectionProfile),
+			terminator)
+	}
+	fmt.Fprint(&b, "ON DUPLICATE KEY UPDATE request_method = VALUES(request_method), detection_profile = VALUES(detection_profile)")
+	return b.String()
+}
+
+func (c Config) hasV2CheckPolicy() bool {
+	c = c.Normalize()
+	return c.Schema == SchemaV2 && (c.RequestMethod != "" || c.DetectionProfile != "")
+}
+
+func writeCreateV2FreshnessSnapshotSQL(w io.Writer, c Config) {
+	sidecarSelect := fmt.Sprintf(`CREATE TEMPORARY TABLE uptime_bench_active_freshness AS
+SELECT
+  s.blog_id,
+  s.bucket_no,
+  r.last_checked_at,
+  TIMESTAMPDIFF(SECOND, r.last_checked_at, @uptime_bench_now) AS check_age_sec,
+  CASE
+    WHEN r.last_checked_at IS NULL OR r.last_checked_at < @uptime_bench_freshness_cutoff THEN 1
+    ELSE 0
+  END AS is_stale
+FROM jetpack_monitor_sites s
+LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+WHERE s.blog_id BETWEEN %d AND %d
+  AND s.monitor_active = 1`, c.BlogIDStart, c.BlogIDEnd())
+	legacySelect := fmt.Sprintf(`CREATE TEMPORARY TABLE uptime_bench_active_freshness AS
+SELECT
+  blog_id,
+  bucket_no,
+  last_checked_at,
+  TIMESTAMPDIFF(SECOND, last_checked_at, @uptime_bench_now) AS check_age_sec,
+  CASE
+    WHEN last_checked_at IS NULL OR last_checked_at < @uptime_bench_freshness_cutoff THEN 1
+    ELSE 0
+  END AS is_stale
+FROM jetpack_monitor_sites
+WHERE blog_id BETWEEN %d AND %d
+  AND monitor_active = 1`, c.BlogIDStart, c.BlogIDEnd())
+
+	fmt.Fprintf(w, `SET @uptime_bench_site_runtime_table_exists := (
+  SELECT COUNT(*)
+  FROM INFORMATION_SCHEMA.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'jetmon_site_runtime'
+);
+SET @uptime_bench_sql := IF(@uptime_bench_site_runtime_table_exists > 0, %s, %s);
+PREPARE uptime_bench_stmt FROM @uptime_bench_sql;
+EXECUTE uptime_bench_stmt;
+DEALLOCATE PREPARE uptime_bench_stmt;
+`, sqlString(sidecarSelect), sqlString(legacySelect))
 }
 
 func writeCloseOpenEventsSQL(w io.Writer, c Config, note string) {
@@ -609,6 +738,14 @@ func formatMonitorURL(pattern string, number int64) (string, error) {
 
 func sqlString(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func sqlNullableString(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "NULL"
+	}
+	return sqlString(value)
 }
 
 func generatedURLLikePattern(pattern string) (string, error) {

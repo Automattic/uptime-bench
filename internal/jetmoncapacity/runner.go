@@ -218,6 +218,8 @@ type ServiceManifest struct {
 	BucketMin            int    `json:"bucket_min"`
 	BucketMax            int    `json:"bucket_max"`
 	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+	RequestMethod        string `json:"request_method,omitempty"`
+	DetectionProfile     string `json:"detection_profile,omitempty"`
 	SchedulerEngine      string `json:"scheduler_engine,omitempty"`
 	DSNEnv               string `json:"dsn_env,omitempty"`
 	DSNFile              string `json:"dsn_file,omitempty"`
@@ -1882,6 +1884,8 @@ func ServiceSummaries(services []ServiceLifecycle) []ServiceManifest {
 			BucketMin:            c.BucketMin,
 			BucketMax:            c.BucketMax,
 			CheckIntervalMinutes: c.CheckIntervalMinutes,
+			RequestMethod:        c.RequestMethod,
+			DetectionProfile:     c.DetectionProfile,
 			SchedulerEngine:      svc.SchedulerEngine,
 			DSNEnv:               svc.DSNEnv,
 			DSNFile:              svc.DSNFile,
