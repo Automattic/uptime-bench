@@ -149,17 +149,25 @@ type endpointConfig struct {
 }
 
 type tierSpec struct {
-	Name              string        `json:"name"`
-	RatePerMin        int           `json:"rate_per_min"`
-	Duration          time.Duration `json:"-"`
-	DurationStr       string        `json:"duration"`
-	Concurrency       int           `json:"concurrency"`
-	URL               string        `json:"url"`
-	ExpectUp          bool          `json:"expect_up"`
-	Method            string        `json:"method,omitempty"`
-	DetectionProfile  string        `json:"detection_profile,omitempty"`
-	BodyReadMaxBytes  int64         `json:"body_read_max_bytes,omitempty"`
-	TargetCounterPath string        `json:"-"`
+	Name              string            `json:"name"`
+	RatePerMin        int               `json:"rate_per_min"`
+	Duration          time.Duration     `json:"-"`
+	DurationStr       string            `json:"duration"`
+	Concurrency       int               `json:"concurrency"`
+	URL               string            `json:"url"`
+	ExpectUp          bool              `json:"expect_up"`
+	Method            string            `json:"method,omitempty"`
+	DetectionProfile  string            `json:"detection_profile,omitempty"`
+	BodyReadMaxBytes  int64             `json:"body_read_max_bytes,omitempty"`
+	TrafficMix        []trafficMixEntry `json:"traffic_mix,omitempty"`
+	TargetCounterPath string            `json:"-"`
+}
+
+type trafficMixEntry struct {
+	Method           string `json:"method"`
+	DetectionProfile string `json:"detection_profile"`
+	BodyReadMaxBytes int64  `json:"body_read_max_bytes,omitempty"`
+	Weight           int    `json:"weight"`
 }
 
 type preflightResult struct {
@@ -192,12 +200,14 @@ type tierResult struct {
 	Method                 string                        `json:"method,omitempty"`
 	DetectionProfile       string                        `json:"detection_profile,omitempty"`
 	BodyReadMaxBytes       int64                         `json:"body_read_max_bytes,omitempty"`
+	TrafficMix             []trafficMixEntry             `json:"traffic_mix,omitempty"`
 	Start                  time.Time                     `json:"start"`
 	End                    time.Time                     `json:"end"`
 	ConfiguredRatePerMin   int                           `json:"configured_rate_per_min"`
 	ConfiguredDuration     string                        `json:"configured_duration"`
 	ConfiguredConcurrency  int                           `json:"configured_concurrency"`
 	BatchSize              int                           `json:"batch_size"`
+	RPCRequests            int                           `json:"rpc_requests"`
 	Attempted              int                           `json:"attempted"`
 	Submitted              int                           `json:"submitted"`
 	Completed              int                           `json:"completed"`
@@ -358,6 +368,7 @@ func main() {
 		method           = flag.String("method", "HEAD", "request method for generated checks: HEAD or GET")
 		detectionProfile = flag.String("detection-profile", "legacy", "v2 detection profile for generated checks: legacy, simple_http, or full")
 		bodyReadMaxBytes = flag.Int64("body-read-max-bytes", 0, "v2 body_read_max_bytes for generated checks; 0 lets Jetmon use its default")
+		trafficMixFlag   = flag.String("traffic-mix", "", "optional v2-only weighted mix as method:profile:body_read_max_bytes:weight, comma-separated")
 		countedListen    = flag.String("counted-target-listen", "", "optional listen address for an internal counted HTTP target served by this process, such as :18081")
 		countedBaseURL   = flag.String("counted-target-base-url", "", "base URL that Verifliers can reach for the counted target; inferred from counted-target-listen when empty")
 		countedBodyBytes = flag.Int("counted-target-body-bytes", 0, "response body bytes served by the counted target for GET requests")
@@ -407,6 +418,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	trafficMix, err := parseTrafficMix(*trafficMixFlag)
+	if err != nil {
+		log.Fatal(err)
+	}
 	var counter *countedTarget
 	if *countedListen != "" {
 		counter, err = startCountedTarget(*countedListen, *countedBaseURL, *countedBodyBytes)
@@ -436,6 +451,7 @@ func main() {
 		tiers[i].Method = normalizedMethod
 		tiers[i].DetectionProfile = normalizedProfile
 		tiers[i].BodyReadMaxBytes = *bodyReadMaxBytes
+		tiers[i].TrafficMix = trafficMix
 	}
 
 	allEndpoints := []endpointConfig{
@@ -445,6 +461,9 @@ func main() {
 	endpoints := selectEndpoints(allEndpoints, *endpointsFlag)
 	if len(endpoints) == 0 {
 		log.Fatal("no endpoints selected")
+	}
+	if len(trafficMix) > 0 && hasProtocol(endpoints, "v1") {
+		log.Fatal("-traffic-mix is v2-only; run v1 legacy tiers separately")
 	}
 
 	targetLocality := "internal-only direct HTTP target by private IP; capacity.internal DNS is not used because the current v1 Veriflier host does not resolve it"
@@ -505,7 +524,11 @@ func main() {
 		for _, ep := range endpoints {
 			runTier := tier
 			if counter != nil && runTier.ExpectUp {
-				runTier.URL, runTier.TargetCounterPath = counter.URLAndPathFor(ep.Name, runTier.Name, runTier.Method, runTier.DetectionProfile)
+				method, profile := runTier.Method, runTier.DetectionProfile
+				if len(runTier.TrafficMix) > 0 {
+					method, profile = "MIXED", "traffic_mix"
+				}
+				runTier.URL, runTier.TargetCounterPath = counter.URLAndPathFor(ep.Name, runTier.Name, method, profile)
 			}
 			if *cooldown > 0 && len(rep.Results) > 0 {
 				time.Sleep(*cooldown)
@@ -605,6 +628,46 @@ func validateCheckMode(method, profile string) (string, string, error) {
 	return method, profile, nil
 }
 
+func parseTrafficMix(spec string) ([]trafficMixEntry, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil, nil
+	}
+	var entries []trafficMixEntry
+	for _, raw := range strings.Split(spec, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		parts := strings.Split(raw, ":")
+		if len(parts) != 4 {
+			return nil, fmt.Errorf("traffic mix entry %q must be method:profile:body_read_max_bytes:weight", raw)
+		}
+		method, profile, err := validateCheckMode(parts[0], parts[1])
+		if err != nil {
+			return nil, fmt.Errorf("traffic mix entry %q: %w", raw, err)
+		}
+		bodyBytes, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil || bodyBytes < 0 {
+			return nil, fmt.Errorf("traffic mix entry %q has invalid body_read_max_bytes", raw)
+		}
+		weight, err := strconv.Atoi(parts[3])
+		if err != nil || weight <= 0 {
+			return nil, fmt.Errorf("traffic mix entry %q has invalid weight", raw)
+		}
+		entries = append(entries, trafficMixEntry{
+			Method:           method,
+			DetectionProfile: profile,
+			BodyReadMaxBytes: bodyBytes,
+			Weight:           weight,
+		})
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("traffic mix must contain at least one entry")
+	}
+	return entries, nil
+}
+
 func selectEndpoints(all []endpointConfig, spec string) []endpointConfig {
 	allowed := map[string]bool{}
 	for _, item := range strings.Split(spec, ",") {
@@ -654,7 +717,7 @@ func runEndpointTier(ctx context.Context, ep endpointConfig, tier tierSpec, cb *
 		inFlightBatches = 1
 	}
 	baseID := firstBlogID(ep.Name, tier.Name)
-	batches := buildBatches(total, batchSize, tier.URL, baseID, tier.Method, tier.DetectionProfile, tier.BodyReadMaxBytes)
+	batches := buildBatches(total, batchSize, tier.URL, baseID, tier.Method, tier.DetectionProfile, tier.BodyReadMaxBytes, tier.TrafficMix)
 
 	sampler := newResourceSampler(ep, sampleInterval)
 	sampler.start(ctx)
@@ -807,9 +870,11 @@ func runEndpointTier(ctx context.Context, ep endpointConfig, tier tierSpec, cb *
 		ConfiguredDuration:    tier.Duration.String(),
 		ConfiguredConcurrency: tier.Concurrency,
 		BatchSize:             batchSize,
+		RPCRequests:           len(batches),
 		Attempted:             total,
 		Submitted:             finalSubmitted,
 		ErrorsByKind:          finalErrors,
+		TrafficMix:            tier.TrafficMix,
 		ResourceSummary:       summarizeResources(sampler.samplesCopy(), sampler.errorsCopy()),
 	}
 	for _, r := range finalResults {
@@ -861,16 +926,30 @@ type benchCheck struct {
 	SubmittedAt      time.Time
 }
 
-func buildBatches(total, batchSize int, targetURL string, baseID int64, method, profile string, bodyReadMaxBytes int64) [][]benchCheck {
+func buildBatches(total, batchSize int, targetURL string, baseID int64, method, profile string, bodyReadMaxBytes int64, trafficMix []trafficMixEntry) [][]benchCheck {
+	mix := trafficMix
+	if len(mix) == 0 {
+		mix = []trafficMixEntry{{
+			Method:           method,
+			DetectionProfile: profile,
+			BodyReadMaxBytes: bodyReadMaxBytes,
+			Weight:           1,
+		}}
+	}
+	totalWeight := 0
+	for _, entry := range mix {
+		totalWeight += entry.Weight
+	}
 	checks := make([]benchCheck, total)
 	for i := 0; i < total; i++ {
+		entry := pickTrafficMixEntry(mix, totalWeight, i)
 		checks[i] = benchCheck{
 			BlogID:           baseID + int64(i),
 			RequestID:        "veriflier-bench-" + newID(),
 			URL:              targetURL,
-			Method:           method,
-			DetectionProfile: profile,
-			BodyReadMaxBytes: bodyReadMaxBytes,
+			Method:           entry.Method,
+			DetectionProfile: entry.DetectionProfile,
+			BodyReadMaxBytes: entry.BodyReadMaxBytes,
 		}
 	}
 	var batches [][]benchCheck
@@ -883,6 +962,20 @@ func buildBatches(total, batchSize int, targetURL string, baseID int64, method, 
 		checks = checks[n:]
 	}
 	return batches
+}
+
+func pickTrafficMixEntry(mix []trafficMixEntry, totalWeight int, idx int) trafficMixEntry {
+	if totalWeight <= 0 {
+		return mix[0]
+	}
+	offset := idx % totalWeight
+	for _, entry := range mix {
+		if offset < entry.Weight {
+			return entry
+		}
+		offset -= entry.Weight
+	}
+	return mix[len(mix)-1]
 }
 
 func firstBlogID(parts ...string) int64 {
@@ -1887,11 +1980,11 @@ func renderMarkdown(rep runReport) string {
 	}
 
 	fmt.Fprintf(&b, "\n## Throughput And Latency\n\n")
-	fmt.Fprintf(&b, "| Endpoint | Tier | Mode | Rate/min | Attempted | Completed | Target observed | Target/request | Checks/sec | Complete | Unexpected | Transport errors | p95 e2e ms | p99 e2e ms | p95 probe ms | Sustainable |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+	fmt.Fprintf(&b, "| Endpoint | Tier | Mode | Rate/min | Attempted | Completed | RPCs | Target observed | Target/request | Checks/sec | Complete | Unexpected | Transport errors | p95 e2e ms | p99 e2e ms | p95 probe ms | Sustainable |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 	for _, r := range rep.Results {
 		observed, ratio := targetObservationMarkdown(r.TargetObservation)
-		fmt.Fprintf(&b, "| %s | %s | %s/%s | %d | %d | %d | %s | %s | %.2f | %.2f%% | %.2f%% | %.2f%% | %.0f | %.0f | %.0f | `%t` |\n",
-			r.Endpoint, r.Tier, firstNonEmpty(r.Method, "-"), firstNonEmpty(r.DetectionProfile, "-"), r.ConfiguredRatePerMin, r.Attempted, r.Completed, observed, ratio, r.ThroughputPerSecond,
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %s | %s | %.2f | %.2f%% | %.2f%% | %.2f%% | %.0f | %.0f | %.0f | `%t` |\n",
+			r.Endpoint, r.Tier, modeLabel(r.Method, r.DetectionProfile, r.TrafficMix), r.ConfiguredRatePerMin, r.Attempted, r.Completed, r.RPCRequests, observed, ratio, r.ThroughputPerSecond,
 			r.CompletionRate*100, r.UnexpectedRate*100, r.TransportErrorRate*100, r.EndToEndLatencyMS.P95, r.EndToEndLatencyMS.P99, r.ProbeRTTMS.P95, r.Sustainable)
 	}
 
@@ -1964,6 +2057,17 @@ func targetObservationMarkdown(obs *targetObservation) (string, string) {
 		return "-", "-"
 	}
 	return strconv.FormatInt(obs.Requests, 10), fmt.Sprintf("%.4f", obs.RequestRatio)
+}
+
+func modeLabel(method, profile string, trafficMix []trafficMixEntry) string {
+	if len(trafficMix) == 0 {
+		return escapePipe(firstNonEmpty(method, "-") + "/" + firstNonEmpty(profile, "-"))
+	}
+	parts := make([]string, 0, len(trafficMix))
+	for _, entry := range trafficMix {
+		parts = append(parts, fmt.Sprintf("%s/%s/%dB:%d", entry.Method, entry.DetectionProfile, entry.BodyReadMaxBytes, entry.Weight))
+	}
+	return escapePipe(strings.Join(parts, ", "))
 }
 
 func copyStringInt(in map[string]int) map[string]int {
