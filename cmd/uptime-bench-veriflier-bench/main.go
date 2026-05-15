@@ -83,6 +83,7 @@ type v2CheckRequest struct {
 	DetectionProfile string            `json:"detection_profile,omitempty"`
 	Headers          map[string]string `json:"headers,omitempty"`
 	RedirectPolicy   string            `json:"redirect_policy,omitempty"`
+	BodyReadMaxBytes int64             `json:"body_read_max_bytes,omitempty"`
 }
 
 type v2BatchResponse struct {
@@ -147,13 +148,17 @@ type endpointConfig struct {
 }
 
 type tierSpec struct {
-	Name        string        `json:"name"`
-	RatePerMin  int           `json:"rate_per_min"`
-	Duration    time.Duration `json:"-"`
-	DurationStr string        `json:"duration"`
-	Concurrency int           `json:"concurrency"`
-	URL         string        `json:"url"`
-	ExpectUp    bool          `json:"expect_up"`
+	Name              string        `json:"name"`
+	RatePerMin        int           `json:"rate_per_min"`
+	Duration          time.Duration `json:"-"`
+	DurationStr       string        `json:"duration"`
+	Concurrency       int           `json:"concurrency"`
+	URL               string        `json:"url"`
+	ExpectUp          bool          `json:"expect_up"`
+	Method            string        `json:"method,omitempty"`
+	DetectionProfile  string        `json:"detection_profile,omitempty"`
+	BodyReadMaxBytes  int64         `json:"body_read_max_bytes,omitempty"`
+	TargetCounterPath string        `json:"-"`
 }
 
 type preflightResult struct {
@@ -163,17 +168,18 @@ type preflightResult struct {
 }
 
 type runReport struct {
-	GeneratedAt    time.Time         `json:"generated_at"`
-	StartedAt      time.Time         `json:"started_at"`
-	FinishedAt     time.Time         `json:"finished_at"`
-	OutDir         string            `json:"out_dir"`
-	TargetLocality string            `json:"target_locality"`
-	Endpoints      []endpointConfig  `json:"endpoints"`
-	Tiers          []tierSpec        `json:"tiers"`
-	Preflight      []preflightResult `json:"preflight"`
-	Results        []tierResult      `json:"results"`
-	Summary        summary           `json:"summary"`
-	Notes          []string          `json:"notes,omitempty"`
+	GeneratedAt    time.Time            `json:"generated_at"`
+	StartedAt      time.Time            `json:"started_at"`
+	FinishedAt     time.Time            `json:"finished_at"`
+	OutDir         string               `json:"out_dir"`
+	TargetLocality string               `json:"target_locality"`
+	CountedTarget  *countedTargetConfig `json:"counted_target,omitempty"`
+	Endpoints      []endpointConfig     `json:"endpoints"`
+	Tiers          []tierSpec           `json:"tiers"`
+	Preflight      []preflightResult    `json:"preflight"`
+	Results        []tierResult         `json:"results"`
+	Summary        summary              `json:"summary"`
+	Notes          []string             `json:"notes,omitempty"`
 }
 
 type tierResult struct {
@@ -182,6 +188,9 @@ type tierResult struct {
 	Tier                   string                        `json:"tier"`
 	URL                    string                        `json:"url"`
 	ExpectUp               bool                          `json:"expect_up"`
+	Method                 string                        `json:"method,omitempty"`
+	DetectionProfile       string                        `json:"detection_profile,omitempty"`
+	BodyReadMaxBytes       int64                         `json:"body_read_max_bytes,omitempty"`
 	Start                  time.Time                     `json:"start"`
 	End                    time.Time                     `json:"end"`
 	ConfiguredRatePerMin   int                           `json:"configured_rate_per_min"`
@@ -205,6 +214,7 @@ type tierResult struct {
 	ResourceSummary        resourceSummary               `json:"resource_summary"`
 	DisplayResourceSummary resourceSummary               `json:"display_resource_summary,omitempty"`
 	DisplayResourceSource  string                        `json:"display_resource_source,omitempty"`
+	TargetObservation      *targetObservation            `json:"target_observation,omitempty"`
 	PrometheusStatus       string                        `json:"prometheus_status,omitempty"`
 	PrometheusError        string                        `json:"prometheus_error,omitempty"`
 	PrometheusSummary      []capacitybench.SeriesSummary `json:"prometheus_summary,omitempty"`
@@ -230,6 +240,41 @@ type checkResult struct {
 	TransportErr string
 	Missing      bool
 	Overloaded   bool
+}
+
+type countedTargetConfig struct {
+	Listen    string `json:"listen"`
+	BaseURL   string `json:"base_url"`
+	BodyBytes int    `json:"body_bytes"`
+	RunID     string `json:"run_id"`
+}
+
+type targetObservation struct {
+	Path             string  `json:"path"`
+	Requests         int64   `json:"requests"`
+	HEADRequests     int64   `json:"head_requests"`
+	GETRequests      int64   `json:"get_requests"`
+	OtherRequests    int64   `json:"other_requests"`
+	BytesWritten     int64   `json:"bytes_written"`
+	RequestRatio     float64 `json:"request_ratio"`
+	ExpectedRequests int     `json:"expected_requests"`
+}
+
+type targetCounterStats struct {
+	Requests      int64
+	HEADRequests  int64
+	GETRequests   int64
+	OtherRequests int64
+	BytesWritten  int64
+}
+
+type countedTarget struct {
+	cfg      countedTargetConfig
+	srv      *http.Server
+	listener net.Listener
+	body     []byte
+	mu       sync.Mutex
+	stats    map[string]targetCounterStats
 }
 
 type callbackRow struct {
@@ -301,35 +346,41 @@ type statBlock struct {
 
 func main() {
 	var (
-		v1Addr          = flag.String("v1-addr", defaultV1Addr, "Jetmon v1 Veriflier legacy TLS address")
-		v2Addr          = flag.String("v2-addr", defaultV2Addr, "Jetmon v2 Veriflier v2 HTTP address")
-		v1Token         = flag.String("v1-token", "", "Jetmon v1 Veriflier auth token; prefer V1_VERIFLIER_TOKEN or VERIFLIER_AUTH_TOKEN")
-		v2Token         = flag.String("v2-token", "", "Jetmon v2 Veriflier auth token; prefer V2_VERIFLIER_TOKEN or VERIFLIER_AUTH_TOKEN")
-		targetURL       = flag.String("target-url", defaultTargetURL, "healthy internal target URL")
-		failureURL      = flag.String("failure-url", defaultFailureURL, "internal failure target URL")
-		tiersFlag       = flag.String("tiers", "smoke:100:30s:20,baseline-1kpm:1000:2m:80,ramp-5kpm:5000:2m:160,ramp-10kpm:10000:2m:240", "comma-separated tiers as name:checks_per_min:duration:concurrency[:healthy|failure]")
-		includeFailure  = flag.Bool("include-failure-tier", true, "append a short failure-target tier")
-		failureRate     = flag.Int("failure-rate-per-min", 1000, "checks/min for the appended failure tier")
-		failureDuration = flag.Duration("failure-duration", 1*time.Minute, "duration for the appended failure tier")
-		failureConc     = flag.Int("failure-concurrency", 80, "concurrency for the appended failure tier")
-		v1BatchSize     = flag.Int("v1-batch-size", 50, "checks per v1 legacy request")
-		v2BatchSize     = flag.Int("v2-batch-size", 50, "checks per v2 /v2/check request")
-		requestTimeout  = flag.Duration("request-timeout", 8*time.Second, "per-request transport timeout")
-		drainTimeout    = flag.Duration("drain-timeout", 45*time.Second, "extra time to wait for v1 callbacks after a tier")
-		cooldown        = flag.Duration("cooldown", 15*time.Second, "sleep between endpoint tiers")
-		callbackListen  = flag.String("callback-listen", ":7800", "TLS callback listen address for v1 results")
-		promURL         = flag.String("prometheus-url", defaultPrometheusURL, "Prometheus base URL; empty disables Prometheus capture")
-		promStep        = flag.Duration("prometheus-step", 15*time.Second, "Prometheus query_range step")
-		promRateWindow  = flag.Duration("prometheus-rate-window", 30*time.Second, "Prometheus rate window")
-		sampleInterval  = flag.Duration("resource-sample-interval", 5*time.Second, "SSH /proc resource sample interval")
-		v1SSHHost       = flag.String("v1-ssh-host", "jetmon-vm-host-1", "SSH host for v1 Veriflier resource sampling")
-		v1PIDPattern    = flag.String("v1-pid-pattern", "^./veriflier start$", "pgrep -f pattern for v1 Veriflier")
-		v1Instance      = flag.String("v1-prometheus-instance", "jetmon-vm-host-1", "Prometheus instance label for the v1 Veriflier host")
-		v2SSHHost       = flag.String("v2-ssh-host", "jetmon-service-host-2", "SSH host for v2 Veriflier resource sampling")
-		v2PIDPattern    = flag.String("v2-pid-pattern", "^./veriflier2$", "pgrep -f pattern for v2 Veriflier")
-		v2Instance      = flag.String("v2-prometheus-instance", "jetmon-service-host-2", "Prometheus instance label for the v2 Veriflier host")
-		endpointsFlag   = flag.String("endpoints", "v1,v2", "comma-separated endpoints to test: v1,v2")
-		outDir          = flag.String("out-dir", "", "report output directory")
+		v1Addr           = flag.String("v1-addr", defaultV1Addr, "Jetmon v1 Veriflier legacy TLS address")
+		v2Addr           = flag.String("v2-addr", defaultV2Addr, "Jetmon v2 Veriflier v2 HTTP address")
+		v1Token          = flag.String("v1-token", "", "Jetmon v1 Veriflier auth token; prefer V1_VERIFLIER_TOKEN or VERIFLIER_AUTH_TOKEN")
+		v2Token          = flag.String("v2-token", "", "Jetmon v2 Veriflier auth token; prefer V2_VERIFLIER_TOKEN or VERIFLIER_AUTH_TOKEN")
+		targetURL        = flag.String("target-url", defaultTargetURL, "healthy internal target URL")
+		failureURL       = flag.String("failure-url", defaultFailureURL, "internal failure target URL")
+		tiersFlag        = flag.String("tiers", "smoke:100:30s:20,baseline-1kpm:1000:2m:80,ramp-5kpm:5000:2m:160,ramp-10kpm:10000:2m:240", "comma-separated tiers as name:checks_per_min:duration:concurrency[:healthy|failure]")
+		includeFailure   = flag.Bool("include-failure-tier", true, "append a short failure-target tier")
+		method           = flag.String("method", "HEAD", "request method for generated checks: HEAD or GET")
+		detectionProfile = flag.String("detection-profile", "legacy", "v2 detection profile for generated checks: legacy, simple_http, or full")
+		bodyReadMaxBytes = flag.Int64("body-read-max-bytes", 0, "v2 body_read_max_bytes for generated checks; 0 lets Jetmon use its default")
+		countedListen    = flag.String("counted-target-listen", "", "optional listen address for an internal counted HTTP target served by this process, such as :18081")
+		countedBaseURL   = flag.String("counted-target-base-url", "", "base URL that Verifliers can reach for the counted target; inferred from counted-target-listen when empty")
+		countedBodyBytes = flag.Int("counted-target-body-bytes", 0, "response body bytes served by the counted target for GET requests")
+		failureRate      = flag.Int("failure-rate-per-min", 1000, "checks/min for the appended failure tier")
+		failureDuration  = flag.Duration("failure-duration", 1*time.Minute, "duration for the appended failure tier")
+		failureConc      = flag.Int("failure-concurrency", 80, "concurrency for the appended failure tier")
+		v1BatchSize      = flag.Int("v1-batch-size", 50, "checks per v1 legacy request")
+		v2BatchSize      = flag.Int("v2-batch-size", 50, "checks per v2 /v2/check request")
+		requestTimeout   = flag.Duration("request-timeout", 8*time.Second, "per-request transport timeout")
+		drainTimeout     = flag.Duration("drain-timeout", 45*time.Second, "extra time to wait for v1 callbacks after a tier")
+		cooldown         = flag.Duration("cooldown", 15*time.Second, "sleep between endpoint tiers")
+		callbackListen   = flag.String("callback-listen", ":7800", "TLS callback listen address for v1 results")
+		promURL          = flag.String("prometheus-url", defaultPrometheusURL, "Prometheus base URL; empty disables Prometheus capture")
+		promStep         = flag.Duration("prometheus-step", 15*time.Second, "Prometheus query_range step")
+		promRateWindow   = flag.Duration("prometheus-rate-window", 30*time.Second, "Prometheus rate window")
+		sampleInterval   = flag.Duration("resource-sample-interval", 5*time.Second, "SSH /proc resource sample interval")
+		v1SSHHost        = flag.String("v1-ssh-host", "jetmon-vm-host-1", "SSH host for v1 Veriflier resource sampling")
+		v1PIDPattern     = flag.String("v1-pid-pattern", "^./veriflier start$", "pgrep -f pattern for v1 Veriflier")
+		v1Instance       = flag.String("v1-prometheus-instance", "jetmon-vm-host-1", "Prometheus instance label for the v1 Veriflier host")
+		v2SSHHost        = flag.String("v2-ssh-host", "jetmon-service-host-2", "SSH host for v2 Veriflier resource sampling")
+		v2PIDPattern     = flag.String("v2-pid-pattern", "^./veriflier2$", "pgrep -f pattern for v2 Veriflier")
+		v2Instance       = flag.String("v2-prometheus-instance", "jetmon-service-host-2", "Prometheus instance label for the v2 Veriflier host")
+		endpointsFlag    = flag.String("endpoints", "v1,v2", "comma-separated endpoints to test: v1,v2")
+		outDir           = flag.String("out-dir", "", "report output directory")
 	)
 	flag.Parse()
 
@@ -349,6 +400,20 @@ func main() {
 		log.Fatalf("create report dir: %v", err)
 	}
 
+	normalizedMethod, normalizedProfile, err := validateCheckMode(*method, *detectionProfile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var counter *countedTarget
+	if *countedListen != "" {
+		counter, err = startCountedTarget(*countedListen, *countedBaseURL, *countedBodyBytes)
+		if err != nil {
+			log.Fatalf("start counted target: %v", err)
+		}
+		defer counter.Close()
+		log.Printf("counted target listening on %s advertised as %s", counter.cfg.Listen, counter.cfg.BaseURL)
+	}
+
 	tiers, err := parseTiers(*tiersFlag, *targetURL, *failureURL)
 	if err != nil {
 		log.Fatal(err)
@@ -364,6 +429,11 @@ func main() {
 			ExpectUp:    false,
 		})
 	}
+	for i := range tiers {
+		tiers[i].Method = normalizedMethod
+		tiers[i].DetectionProfile = normalizedProfile
+		tiers[i].BodyReadMaxBytes = *bodyReadMaxBytes
+	}
 
 	allEndpoints := []endpointConfig{
 		{Name: "v1", Protocol: "v1-legacy-tls-callback", Addr: *v1Addr, Token: *v1Token, SSHHost: *v1SSHHost, PIDPattern: *v1PIDPattern, Instance: *v1Instance, BatchSize: *v1BatchSize},
@@ -374,18 +444,32 @@ func main() {
 		log.Fatal("no endpoints selected")
 	}
 
+	targetLocality := "internal-only direct HTTP target by private IP; capacity.internal DNS is not used because the current v1 Veriflier host does not resolve it"
+	var countedConfig *countedTargetConfig
+	notes := []string{
+		"The first campaign uses direct internal HTTP targets to avoid public internet variability.",
+		"DNS-specific comparison is deferred until v1 and v2 resolve the same internal DNS zone from their Veriflier hosts.",
+	}
+	if counter != nil {
+		targetLocality = "internal-only counted HTTP target served by uptime-bench and reached by private LAN address"
+		cfgCopy := counter.cfg
+		countedConfig = &cfgCopy
+		notes = append(notes, "Target-side request counts come from the counted HTTP target in this harness; each endpoint/tier uses a unique path.")
+		if *countedBodyBytes > 0 {
+			notes = append(notes, fmt.Sprintf("Counted target serves %d response body bytes on GET requests.", *countedBodyBytes))
+		}
+	}
+
 	started := time.Now().UTC()
 	rep := runReport{
 		GeneratedAt:    started,
 		StartedAt:      started,
 		OutDir:         *outDir,
-		TargetLocality: "internal-only direct HTTP target by private IP; capacity.internal DNS is not used because the current v1 Veriflier host does not resolve it",
+		TargetLocality: targetLocality,
+		CountedTarget:  countedConfig,
 		Endpoints:      scrubEndpoints(endpoints),
 		Tiers:          tiers,
-		Notes: []string{
-			"The first campaign uses direct internal HTTP targets to avoid public internet variability.",
-			"DNS-specific comparison is deferred until v1 and v2 resolve the same internal DNS zone from their Veriflier hosts.",
-		},
+		Notes:          notes,
 	}
 
 	ctx := context.Background()
@@ -398,7 +482,12 @@ func main() {
 		defer cb.Close()
 	}
 
-	rep.Preflight = append(rep.Preflight, preflightTarget(ctx, *targetURL, true), preflightTarget(ctx, *failureURL, false))
+	if counter != nil {
+		rep.Preflight = append(rep.Preflight, preflightTarget(ctx, counter.URLFor("preflight", "healthy", normalizedMethod, normalizedProfile), true))
+	} else {
+		rep.Preflight = append(rep.Preflight, preflightTarget(ctx, *targetURL, true))
+	}
+	rep.Preflight = append(rep.Preflight, preflightTarget(ctx, *failureURL, false))
 	for _, ep := range endpoints {
 		switch ep.Name {
 		case "v1":
@@ -411,11 +500,18 @@ func main() {
 
 	for _, tier := range tiers {
 		for _, ep := range endpoints {
+			runTier := tier
+			if counter != nil && runTier.ExpectUp {
+				runTier.URL, runTier.TargetCounterPath = counter.URLAndPathFor(ep.Name, runTier.Name, runTier.Method, runTier.DetectionProfile)
+			}
 			if *cooldown > 0 && len(rep.Results) > 0 {
 				time.Sleep(*cooldown)
 			}
-			log.Printf("running endpoint=%s tier=%s rate=%d/min duration=%s", ep.Name, tier.Name, tier.RatePerMin, tier.Duration)
-			result := runEndpointTier(ctx, ep, tier, cb, *requestTimeout, *drainTimeout, *sampleInterval)
+			log.Printf("running endpoint=%s tier=%s method=%s profile=%s rate=%d/min duration=%s", ep.Name, runTier.Name, runTier.Method, runTier.DetectionProfile, runTier.RatePerMin, runTier.Duration)
+			result := runEndpointTier(ctx, ep, runTier, cb, *requestTimeout, *drainTimeout, *sampleInterval)
+			if counter != nil && runTier.TargetCounterPath != "" {
+				result.TargetObservation = counter.Observation(runTier.TargetCounterPath, result.Attempted)
+			}
 			if *promURL != "" {
 				result.PrometheusStatus = "pass"
 				result.PrometheusSummary, err = collectPrometheus(ctx, *promURL, ep.Instance, result.Start, result.End, *promStep, *promRateWindow)
@@ -481,6 +577,31 @@ func parseTiers(spec, targetURL, failureURL string) ([]tierSpec, error) {
 	return tiers, nil
 }
 
+func validateCheckMode(method, profile string) (string, string, error) {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		method = http.MethodHead
+	}
+	switch method {
+	case http.MethodHead, http.MethodGet:
+	default:
+		return "", "", fmt.Errorf("method must be HEAD or GET")
+	}
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	if profile == "" {
+		profile = "legacy"
+	}
+	switch profile {
+	case "legacy", "simple_http", "full":
+	default:
+		return "", "", fmt.Errorf("detection-profile must be legacy, simple_http, or full")
+	}
+	if method == http.MethodHead && profile == "full" {
+		profile = "simple_http"
+	}
+	return method, profile, nil
+}
+
 func selectEndpoints(all []endpointConfig, spec string) []endpointConfig {
 	allowed := map[string]bool{}
 	for _, item := range strings.Split(spec, ",") {
@@ -530,7 +651,7 @@ func runEndpointTier(ctx context.Context, ep endpointConfig, tier tierSpec, cb *
 		inFlightBatches = 1
 	}
 	baseID := firstBlogID(ep.Name, tier.Name)
-	batches := buildBatches(total, batchSize, tier.URL, baseID)
+	batches := buildBatches(total, batchSize, tier.URL, baseID, tier.Method, tier.DetectionProfile, tier.BodyReadMaxBytes)
 
 	sampler := newResourceSampler(ep, sampleInterval)
 	sampler.start(ctx)
@@ -674,6 +795,9 @@ func runEndpointTier(ctx context.Context, ep endpointConfig, tier tierSpec, cb *
 		Tier:                  tier.Name,
 		URL:                   tier.URL,
 		ExpectUp:              tier.ExpectUp,
+		Method:                tier.Method,
+		DetectionProfile:      tier.DetectionProfile,
+		BodyReadMaxBytes:      tier.BodyReadMaxBytes,
 		Start:                 start,
 		End:                   end,
 		ConfiguredRatePerMin:  tier.RatePerMin,
@@ -725,19 +849,25 @@ func runEndpointTier(ctx context.Context, ep endpointConfig, tier tierSpec, cb *
 }
 
 type benchCheck struct {
-	BlogID      int64
-	RequestID   string
-	URL         string
-	SubmittedAt time.Time
+	BlogID           int64
+	RequestID        string
+	URL              string
+	Method           string
+	DetectionProfile string
+	BodyReadMaxBytes int64
+	SubmittedAt      time.Time
 }
 
-func buildBatches(total, batchSize int, targetURL string, baseID int64) [][]benchCheck {
+func buildBatches(total, batchSize int, targetURL string, baseID int64, method, profile string, bodyReadMaxBytes int64) [][]benchCheck {
 	checks := make([]benchCheck, total)
 	for i := 0; i < total; i++ {
 		checks[i] = benchCheck{
-			BlogID:    baseID + int64(i),
-			RequestID: "veriflier-bench-" + newID(),
-			URL:       targetURL,
+			BlogID:           baseID + int64(i),
+			RequestID:        "veriflier-bench-" + newID(),
+			URL:              targetURL,
+			Method:           method,
+			DetectionProfile: profile,
+			BodyReadMaxBytes: bodyReadMaxBytes,
 		}
 	}
 	var batches [][]benchCheck
@@ -800,8 +930,9 @@ func sendV2Batch(ctx context.Context, addr, token string, checks []benchCheck, t
 			BlogID:           checks[i].BlogID,
 			URL:              checks[i].URL,
 			TimeoutMS:        int64(timeout / time.Millisecond),
-			Method:           "HEAD",
-			DetectionProfile: "legacy",
+			Method:           checks[i].Method,
+			DetectionProfile: checks[i].DetectionProfile,
+			BodyReadMaxBytes: checks[i].BodyReadMaxBytes,
 		}
 	}
 	body, err := json.Marshal(v2BatchRequest{BatchID: "bench-" + newID(), DeadlineMS: int64((timeout + 2*time.Second) / time.Millisecond), Requests: requests})
@@ -1020,6 +1151,189 @@ func preflightResourceSampler(ctx context.Context, ep endpointConfig) preflightR
 		return preflightResult{Name: ep.Name + " resource sampler", Status: "fail", Detail: "process not found"}
 	}
 	return preflightResult{Name: ep.Name + " resource sampler", Status: "pass", Detail: fmt.Sprintf("host=%s pid=%d rss=%.1fMiB fds=%.0f threads=%.0f", ep.SSHHost, sample.PID, sample.RSSBytes/1024/1024, sample.OpenFDs, sample.Threads)}
+}
+
+func startCountedTarget(listen, baseURL string, bodyBytes int) (*countedTarget, error) {
+	if bodyBytes < 0 {
+		return nil, fmt.Errorf("counted target body bytes must be non-negative")
+	}
+	if baseURL == "" {
+		var err error
+		baseURL, err = inferCountedTargetBaseURL(listen)
+		if err != nil {
+			return nil, err
+		}
+	}
+	body := bytes.Repeat([]byte("x"), bodyBytes)
+	target := &countedTarget{
+		cfg: countedTargetConfig{
+			Listen:    listen,
+			BaseURL:   strings.TrimRight(baseURL, "/"),
+			BodyBytes: bodyBytes,
+			RunID:     time.Now().UTC().Format("20060102T150405Z") + "-" + newID(),
+		},
+		body:  body,
+		stats: map[string]targetCounterStats{},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", target.handle)
+	ln, err := net.Listen("tcp", listen)
+	if err != nil {
+		return nil, err
+	}
+	target.listener = ln
+	target.srv = &http.Server{Handler: mux}
+	go func() {
+		if err := target.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("counted target server: %v", err)
+		}
+	}()
+	return target, nil
+}
+
+func inferCountedTargetBaseURL(listen string) (string, error) {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		if strings.HasPrefix(listen, ":") {
+			host = ""
+			port = strings.TrimPrefix(listen, ":")
+		} else {
+			return "", fmt.Errorf("parse counted target listen address: %w", err)
+		}
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host, err = firstPrivateIPv4()
+		if err != nil {
+			return "", err
+		}
+	}
+	if port == "" {
+		return "", fmt.Errorf("counted target listen address must include a port")
+	}
+	return "http://" + host + ":" + port, nil
+}
+
+func firstPrivateIPv4() (string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			ip = ip.To4()
+			if ip == nil || !ip.IsPrivate() {
+				continue
+			}
+			return ip.String(), nil
+		}
+	}
+	return "", fmt.Errorf("could not infer a private IPv4 address for counted target; set -counted-target-base-url")
+}
+
+func (c *countedTarget) handle(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Content-Length", strconv.Itoa(len(c.body)))
+	switch r.Method {
+	case http.MethodHead:
+		c.add(path, r.Method, 0)
+	case http.MethodGet:
+		n, _ := w.Write(c.body)
+		c.add(path, r.Method, int64(n))
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		c.add(path, r.Method, 0)
+	}
+}
+
+func (c *countedTarget) URLFor(endpoint, tier, method, profile string) string {
+	url, _ := c.URLAndPathFor(endpoint, tier, method, profile)
+	return url
+}
+
+func (c *countedTarget) URLAndPathFor(endpoint, tier, method, profile string) (string, string) {
+	path := "/veriflier-bench/" + c.cfg.RunID + "/" + safePathPart(endpoint) + "/" + safePathPart(tier) + "/" + safePathPart(method+"-"+profile)
+	return c.cfg.BaseURL + path, path
+}
+
+func (c *countedTarget) add(path, method string, bytesWritten int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	stats := c.stats[path]
+	stats.Requests++
+	switch method {
+	case http.MethodHead:
+		stats.HEADRequests++
+	case http.MethodGet:
+		stats.GETRequests++
+	default:
+		stats.OtherRequests++
+	}
+	stats.BytesWritten += bytesWritten
+	c.stats[path] = stats
+}
+
+func (c *countedTarget) Observation(path string, expected int) *targetObservation {
+	c.mu.Lock()
+	stats := c.stats[path]
+	c.mu.Unlock()
+	obs := &targetObservation{
+		Path:             path,
+		Requests:         stats.Requests,
+		HEADRequests:     stats.HEADRequests,
+		GETRequests:      stats.GETRequests,
+		OtherRequests:    stats.OtherRequests,
+		BytesWritten:     stats.BytesWritten,
+		ExpectedRequests: expected,
+	}
+	if expected > 0 {
+		obs.RequestRatio = float64(stats.Requests) / float64(expected)
+	}
+	return obs
+}
+
+func (c *countedTarget) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = c.srv.Shutdown(ctx)
+}
+
+func safePathPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		ok := (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')
+		if ok {
+			b.WriteByte(ch)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "unnamed"
+	}
+	return out
 }
 
 func startCallbackServer(addr string) (*callbackServer, error) {
@@ -1469,6 +1783,8 @@ func percentile(sorted []float64, p float64) float64 {
 
 func classifySustainability(result tierResult) (bool, string) {
 	switch {
+	case result.TargetObservation != nil && (result.TargetObservation.RequestRatio < 0.99 || result.TargetObservation.RequestRatio > 1.01):
+		return false, fmt.Sprintf("target observed %.2f%% of requested checks", result.TargetObservation.RequestRatio*100)
 	case result.CompletionRate < 0.99:
 		return false, fmt.Sprintf("completion rate %.2f%% below 99%%", result.CompletionRate*100)
 	case result.TransportErrorRate > 0.01:
@@ -1525,6 +1841,9 @@ func renderMarkdown(rep runReport) string {
 		fmt.Fprintf(&b, "- Finished: `%s`\n", rep.FinishedAt.Format(time.RFC3339))
 	}
 	fmt.Fprintf(&b, "- Target locality: %s\n\n", rep.TargetLocality)
+	if rep.CountedTarget != nil {
+		fmt.Fprintf(&b, "- Counted target: `%s` served from `%s` with `%d` GET body bytes\n\n", rep.CountedTarget.BaseURL, rep.CountedTarget.Listen, rep.CountedTarget.BodyBytes)
+	}
 
 	fmt.Fprintf(&b, "## Endpoints\n\n")
 	fmt.Fprintf(&b, "| Endpoint | Protocol | Address | SSH host | Prometheus instance | Batch size |\n|---|---|---|---|---|---:|\n")
@@ -1539,11 +1858,23 @@ func renderMarkdown(rep runReport) string {
 	}
 
 	fmt.Fprintf(&b, "\n## Throughput And Latency\n\n")
-	fmt.Fprintf(&b, "| Endpoint | Tier | Rate/min | Attempted | Completed | Checks/sec | Complete | Unexpected | Transport errors | p95 e2e ms | p99 e2e ms | p95 probe ms | Sustainable |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+	fmt.Fprintf(&b, "| Endpoint | Tier | Mode | Rate/min | Attempted | Completed | Target observed | Target/request | Checks/sec | Complete | Unexpected | Transport errors | p95 e2e ms | p99 e2e ms | p95 probe ms | Sustainable |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 	for _, r := range rep.Results {
-		fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %.2f | %.2f%% | %.2f%% | %.2f%% | %.0f | %.0f | %.0f | `%t` |\n",
-			r.Endpoint, r.Tier, r.ConfiguredRatePerMin, r.Attempted, r.Completed, r.ThroughputPerSecond,
+		observed, ratio := targetObservationMarkdown(r.TargetObservation)
+		fmt.Fprintf(&b, "| %s | %s | %s/%s | %d | %d | %d | %s | %s | %.2f | %.2f%% | %.2f%% | %.2f%% | %.0f | %.0f | %.0f | `%t` |\n",
+			r.Endpoint, r.Tier, firstNonEmpty(r.Method, "-"), firstNonEmpty(r.DetectionProfile, "-"), r.ConfiguredRatePerMin, r.Attempted, r.Completed, observed, ratio, r.ThroughputPerSecond,
 			r.CompletionRate*100, r.UnexpectedRate*100, r.TransportErrorRate*100, r.EndToEndLatencyMS.P95, r.EndToEndLatencyMS.P99, r.ProbeRTTMS.P95, r.Sustainable)
+	}
+
+	fmt.Fprintf(&b, "\n## Target-Side Counts\n\n")
+	fmt.Fprintf(&b, "| Endpoint | Tier | Path | Requests | HEAD | GET | Other | Bytes written MiB | Request ratio |\n|---|---|---|---:|---:|---:|---:|---:|---:|\n")
+	for _, r := range rep.Results {
+		if r.TargetObservation == nil {
+			continue
+		}
+		obs := r.TargetObservation
+		fmt.Fprintf(&b, "| %s | %s | `%s` | %d | %d | %d | %d | %.2f | %.4f |\n",
+			r.Endpoint, r.Tier, obs.Path, obs.Requests, obs.HEADRequests, obs.GETRequests, obs.OtherRequests, bytesToMiB(float64(obs.BytesWritten)), obs.RequestRatio)
 	}
 
 	fmt.Fprintf(&b, "\n## Resource Curves\n\n")
@@ -1597,6 +1928,13 @@ func bytesToMiB(v float64) float64 {
 
 func bytesToKiB(v float64) float64 {
 	return v / 1024
+}
+
+func targetObservationMarkdown(obs *targetObservation) (string, string) {
+	if obs == nil {
+		return "-", "-"
+	}
+	return strconv.FormatInt(obs.Requests, 10), fmt.Sprintf("%.4f", obs.RequestRatio)
 }
 
 func copyStringInt(in map[string]int) map[string]int {
