@@ -177,38 +177,40 @@ type runReport struct {
 }
 
 type tierResult struct {
-	Endpoint              string                        `json:"endpoint"`
-	Protocol              string                        `json:"protocol"`
-	Tier                  string                        `json:"tier"`
-	URL                   string                        `json:"url"`
-	ExpectUp              bool                          `json:"expect_up"`
-	Start                 time.Time                     `json:"start"`
-	End                   time.Time                     `json:"end"`
-	ConfiguredRatePerMin  int                           `json:"configured_rate_per_min"`
-	ConfiguredDuration    string                        `json:"configured_duration"`
-	ConfiguredConcurrency int                           `json:"configured_concurrency"`
-	BatchSize             int                           `json:"batch_size"`
-	Attempted             int                           `json:"attempted"`
-	Submitted             int                           `json:"submitted"`
-	Completed             int                           `json:"completed"`
-	ExpectedMatches       int                           `json:"expected_matches"`
-	UnexpectedResults     int                           `json:"unexpected_results"`
-	MissingResults        int                           `json:"missing_results"`
-	TransportErrors       int                           `json:"transport_errors"`
-	OverloadResponses     int                           `json:"overload_responses"`
-	ThroughputPerSecond   float64                       `json:"throughput_per_second"`
-	CompletionRate        float64                       `json:"completion_rate"`
-	UnexpectedRate        float64                       `json:"unexpected_rate"`
-	TransportErrorRate    float64                       `json:"transport_error_rate"`
-	EndToEndLatencyMS     statBlock                     `json:"end_to_end_latency_ms"`
-	ProbeRTTMS            statBlock                     `json:"probe_rtt_ms"`
-	ResourceSummary       resourceSummary               `json:"resource_summary"`
-	PrometheusStatus      string                        `json:"prometheus_status,omitempty"`
-	PrometheusError       string                        `json:"prometheus_error,omitempty"`
-	PrometheusSummary     []capacitybench.SeriesSummary `json:"prometheus_summary,omitempty"`
-	Sustainable           bool                          `json:"sustainable"`
-	SaturationReason      string                        `json:"saturation_reason,omitempty"`
-	ErrorsByKind          map[string]int                `json:"errors_by_kind,omitempty"`
+	Endpoint               string                        `json:"endpoint"`
+	Protocol               string                        `json:"protocol"`
+	Tier                   string                        `json:"tier"`
+	URL                    string                        `json:"url"`
+	ExpectUp               bool                          `json:"expect_up"`
+	Start                  time.Time                     `json:"start"`
+	End                    time.Time                     `json:"end"`
+	ConfiguredRatePerMin   int                           `json:"configured_rate_per_min"`
+	ConfiguredDuration     string                        `json:"configured_duration"`
+	ConfiguredConcurrency  int                           `json:"configured_concurrency"`
+	BatchSize              int                           `json:"batch_size"`
+	Attempted              int                           `json:"attempted"`
+	Submitted              int                           `json:"submitted"`
+	Completed              int                           `json:"completed"`
+	ExpectedMatches        int                           `json:"expected_matches"`
+	UnexpectedResults      int                           `json:"unexpected_results"`
+	MissingResults         int                           `json:"missing_results"`
+	TransportErrors        int                           `json:"transport_errors"`
+	OverloadResponses      int                           `json:"overload_responses"`
+	ThroughputPerSecond    float64                       `json:"throughput_per_second"`
+	CompletionRate         float64                       `json:"completion_rate"`
+	UnexpectedRate         float64                       `json:"unexpected_rate"`
+	TransportErrorRate     float64                       `json:"transport_error_rate"`
+	EndToEndLatencyMS      statBlock                     `json:"end_to_end_latency_ms"`
+	ProbeRTTMS             statBlock                     `json:"probe_rtt_ms"`
+	ResourceSummary        resourceSummary               `json:"resource_summary"`
+	DisplayResourceSummary resourceSummary               `json:"display_resource_summary,omitempty"`
+	DisplayResourceSource  string                        `json:"display_resource_source,omitempty"`
+	PrometheusStatus       string                        `json:"prometheus_status,omitempty"`
+	PrometheusError        string                        `json:"prometheus_error,omitempty"`
+	PrometheusSummary      []capacitybench.SeriesSummary `json:"prometheus_summary,omitempty"`
+	Sustainable            bool                          `json:"sustainable"`
+	SaturationReason       string                        `json:"saturation_reason,omitempty"`
+	ErrorsByKind           map[string]int                `json:"errors_by_kind,omitempty"`
 }
 
 type summary struct {
@@ -422,6 +424,7 @@ func main() {
 					result.PrometheusError = err.Error()
 				}
 			}
+			result.DisplayResourceSummary, result.DisplayResourceSource = displayResourceSummary(result)
 			result.Sustainable, result.SaturationReason = classifySustainability(result)
 			rep.Results = append(rep.Results, result)
 			if err := writeReports(*outDir, rep); err != nil {
@@ -1341,6 +1344,68 @@ func collectPrometheus(ctx context.Context, promURL, instance string, start, end
 	return capacitybench.Collect(ctx, client, capacitybench.DefaultQueries(regex, rateWindow), start, end, step)
 }
 
+func displayResourceSummary(result tierResult) (resourceSummary, string) {
+	out := result.ResourceSummary
+	source := "ssh-proc"
+	container := preferredContainer(result)
+	if container == "" {
+		return out, source
+	}
+	applied := false
+	if s, ok := findPromSummary(result.PrometheusSummary, "docker_container_cpu_rate", "container", container); ok {
+		out.ProcessCPUPercentCore = statFromPromSummary(s)
+		applied = true
+	}
+	if s, ok := findPromSummary(result.PrometheusSummary, "docker_container_memory_working_set", "container", container); ok {
+		out.RSSBytes = statFromPromSummary(s)
+		applied = true
+	}
+	if applied {
+		source = "dockerstats:" + container + " for CPU/RSS; ssh-proc for FDs/threads/network/I/O"
+	}
+	return out, source
+}
+
+func preferredContainer(result tierResult) string {
+	if result.Endpoint != "v2" {
+		return ""
+	}
+	for _, want := range []string{"docker-veriflier-1", "jetmon-v2-veriflier", "veriflier"} {
+		for _, summary := range result.PrometheusSummary {
+			if summary.Query == "docker_container_cpu_rate" && summary.Labels["container"] == want {
+				return want
+			}
+		}
+	}
+	for _, summary := range result.PrometheusSummary {
+		if summary.Query == "docker_container_cpu_rate" && strings.Contains(strings.ToLower(summary.Labels["container"]), "veriflier") {
+			return summary.Labels["container"]
+		}
+	}
+	return ""
+}
+
+func findPromSummary(summaries []capacitybench.SeriesSummary, query, label, value string) (capacitybench.SeriesSummary, bool) {
+	for _, summary := range summaries {
+		if summary.Query == query && summary.Labels[label] == value {
+			return summary, true
+		}
+	}
+	return capacitybench.SeriesSummary{}, false
+}
+
+func statFromPromSummary(summary capacitybench.SeriesSummary) statBlock {
+	return statBlock{
+		Count: summary.Samples,
+		Min:   summary.Min,
+		Avg:   summary.Avg,
+		P50:   summary.P50,
+		P95:   summary.P95,
+		P99:   summary.P95,
+		Max:   summary.Max,
+	}
+}
+
 func appendStat(block statBlock, value float64) statBlock {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return block
@@ -1482,11 +1547,20 @@ func renderMarkdown(rep runReport) string {
 	}
 
 	fmt.Fprintf(&b, "\n## Resource Curves\n\n")
-	fmt.Fprintf(&b, "| Endpoint | Tier | CPU avg/p95/max %%core | RSS avg/p95/max MiB | FDs avg/p95/max | Threads avg/p95/max | Net RX/TX avg MiB/s | I/O read/write avg KiB/s |\n|---|---|---:|---:|---:|---:|---:|---:|\n")
+	fmt.Fprintf(&b, "For v2, CPU and RSS prefer dockerstats for the Veriflier container when available; FDs, threads, host network, and process I/O remain from the SSH `/proc` sampler.\n\n")
+	fmt.Fprintf(&b, "| Endpoint | Tier | Source | CPU avg/p95/max %%core | RSS avg/p95/max MiB | FDs avg/p95/max | Threads avg/p95/max | Net RX/TX avg MiB/s | I/O read/write avg KiB/s |\n|---|---|---|---:|---:|---:|---:|---:|---:|\n")
 	for _, r := range rep.Results {
-		rs := r.ResourceSummary
-		fmt.Fprintf(&b, "| %s | %s | %.1f / %.1f / %.1f | %.1f / %.1f / %.1f | %.0f / %.0f / %.0f | %.0f / %.0f / %.0f | %.2f / %.2f | %.1f / %.1f |\n",
+		rs := r.DisplayResourceSummary
+		source := r.DisplayResourceSource
+		if rs.Samples == 0 && rs.RSSBytes.Count == 0 && rs.ProcessCPUPercentCore.Count == 0 {
+			rs = r.ResourceSummary
+		}
+		if source == "" {
+			source = "ssh-proc"
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %.1f / %.1f / %.1f | %.1f / %.1f / %.1f | %.0f / %.0f / %.0f | %.0f / %.0f / %.0f | %.2f / %.2f | %.1f / %.1f |\n",
 			r.Endpoint, r.Tier,
+			escapePipe(source),
 			rs.ProcessCPUPercentCore.Avg, rs.ProcessCPUPercentCore.P95, rs.ProcessCPUPercentCore.Max,
 			bytesToMiB(rs.RSSBytes.Avg), bytesToMiB(rs.RSSBytes.P95), bytesToMiB(rs.RSSBytes.Max),
 			rs.OpenFDs.Avg, rs.OpenFDs.P95, rs.OpenFDs.Max,
