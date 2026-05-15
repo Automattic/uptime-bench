@@ -137,14 +137,15 @@ type v2CheckResult struct {
 }
 
 type endpointConfig struct {
-	Name       string `json:"name"`
-	Protocol   string `json:"protocol"`
-	Addr       string `json:"addr"`
-	Token      string `json:"-"`
-	SSHHost    string `json:"ssh_host,omitempty"`
-	PIDPattern string `json:"pid_pattern,omitempty"`
-	Instance   string `json:"prometheus_instance,omitempty"`
-	BatchSize  int    `json:"batch_size"`
+	Name       string       `json:"name"`
+	Protocol   string       `json:"protocol"`
+	Addr       string       `json:"addr"`
+	Token      string       `json:"-"`
+	SSHHost    string       `json:"ssh_host,omitempty"`
+	PIDPattern string       `json:"pid_pattern,omitempty"`
+	Instance   string       `json:"prometheus_instance,omitempty"`
+	BatchSize  int          `json:"batch_size"`
+	HTTPClient *http.Client `json:"-"`
 }
 
 type tierSpec struct {
@@ -365,6 +366,8 @@ func main() {
 		failureConc      = flag.Int("failure-concurrency", 80, "concurrency for the appended failure tier")
 		v1BatchSize      = flag.Int("v1-batch-size", 50, "checks per v1 legacy request")
 		v2BatchSize      = flag.Int("v2-batch-size", 50, "checks per v2 /v2/check request")
+		v2MaxIdleConns   = flag.Int("v2-max-idle-conns", 100, "max idle connections for the shared v2 benchmark HTTP transport")
+		v2MaxIdlePerHost = flag.Int("v2-max-idle-conns-per-host", 20, "max idle connections per host for the shared v2 benchmark HTTP transport")
 		requestTimeout   = flag.Duration("request-timeout", 8*time.Second, "per-request transport timeout")
 		drainTimeout     = flag.Duration("drain-timeout", 45*time.Second, "extra time to wait for v1 callbacks after a tier")
 		cooldown         = flag.Duration("cooldown", 15*time.Second, "sleep between endpoint tiers")
@@ -437,7 +440,7 @@ func main() {
 
 	allEndpoints := []endpointConfig{
 		{Name: "v1", Protocol: "v1-legacy-tls-callback", Addr: *v1Addr, Token: *v1Token, SSHHost: *v1SSHHost, PIDPattern: *v1PIDPattern, Instance: *v1Instance, BatchSize: *v1BatchSize},
-		{Name: "v2", Protocol: "v2-json-http", Addr: *v2Addr, Token: *v2Token, SSHHost: *v2SSHHost, PIDPattern: *v2PIDPattern, Instance: *v2Instance, BatchSize: *v2BatchSize},
+		{Name: "v2", Protocol: "v2-json-http", Addr: *v2Addr, Token: *v2Token, SSHHost: *v2SSHHost, PIDPattern: *v2PIDPattern, Instance: *v2Instance, BatchSize: *v2BatchSize, HTTPClient: newV2BenchmarkHTTPClient(*v2MaxIdleConns, *v2MaxIdlePerHost)},
 	}
 	endpoints := selectEndpoints(allEndpoints, *endpointsFlag)
 	if len(endpoints) == 0 {
@@ -724,7 +727,7 @@ func runEndpointTier(ctx context.Context, ep endpointConfig, tier tierSpec, cb *
 				}
 				addSubmitted(len(batch))
 			case "v2":
-				res := sendV2Batch(subCtx, ep.Addr, ep.Token, batch, requestTimeout)
+				res := sendV2Batch(subCtx, ep, batch, requestTimeout)
 				submittedNow := 0
 				for _, r := range res {
 					if r.TransportErr == "" {
@@ -920,7 +923,7 @@ func sendV1Batch(ctx context.Context, addr, token string, checks []benchCheck) e
 	return nil
 }
 
-func sendV2Batch(ctx context.Context, addr, token string, checks []benchCheck, timeout time.Duration) []checkResult {
+func sendV2Batch(ctx context.Context, ep endpointConfig, checks []benchCheck, timeout time.Duration) []checkResult {
 	now := time.Now()
 	requests := make([]v2CheckRequest, len(checks))
 	for i := range checks {
@@ -939,13 +942,16 @@ func sendV2Batch(ctx context.Context, addr, token string, checks []benchCheck, t
 	if err != nil {
 		return transportFailures(checks, "encode_request")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/v2/check", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+ep.Addr+"/v2/check", bytes.NewReader(body))
 	if err != nil {
 		return transportFailures(checks, "build_request")
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+ep.Token)
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: timeout + 5*time.Second}
+	client := ep.HTTPClient
+	if client == nil {
+		client = newV2BenchmarkHTTPClient(100, 20)
+	}
 	start := time.Now()
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
@@ -1151,6 +1157,29 @@ func preflightResourceSampler(ctx context.Context, ep endpointConfig) preflightR
 		return preflightResult{Name: ep.Name + " resource sampler", Status: "fail", Detail: "process not found"}
 	}
 	return preflightResult{Name: ep.Name + " resource sampler", Status: "pass", Detail: fmt.Sprintf("host=%s pid=%d rss=%.1fMiB fds=%.0f threads=%.0f", ep.SSHHost, sample.PID, sample.RSSBytes/1024/1024, sample.OpenFDs, sample.Threads)}
+}
+
+func newV2BenchmarkHTTPClient(maxIdleConns, maxIdleConnsPerHost int) *http.Client {
+	if maxIdleConns <= 0 {
+		maxIdleConns = 100
+	}
+	if maxIdleConnsPerHost <= 0 {
+		maxIdleConnsPerHost = 20
+	}
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          maxIdleConns,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+	return &http.Client{Transport: transport}
 }
 
 func startCountedTarget(listen, baseURL string, bodyBytes int) (*countedTarget, error) {
