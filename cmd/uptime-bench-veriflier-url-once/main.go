@@ -451,6 +451,7 @@ func main() {
 		v2PIDPattern       = flag.String("v2-pid-pattern", "^./veriflier2$", "pgrep -f pattern for v2 Veriflier")
 		perHostConcurrency = flag.Int("per-host-concurrency", 1, "planned per-host concurrency for real URL run")
 		globalConcurrency  = flag.Int("global-concurrency", 40, "planned global concurrency for real URL run")
+		skipV1URLs         = flag.Int("skip-v1-urls", 0, "skip the first N selected URLs for the v1-legacy real mode when resuming after a halted run")
 		confirmRealRun     = flag.Bool("confirm-real-run", false, "required with -phase=real to contact real URLs")
 		outDir             = flag.String("out-dir", "", "report output directory")
 	)
@@ -572,7 +573,10 @@ func main() {
 			log.Printf("running real URL one-shot comparison against %d selected URLs", len(selected))
 			resultPath := filepath.Join(*outDir, "results.ndjson")
 			rep.Notes = append(rep.Notes, "Real per-result outcomes are written to results.ndjson without full URLs.")
-			rep.RealResults = runRealURLComparison(ctx, endpoints, modes, cb, selected, *requestTimeout, *drainTimeout, *resourceInterval, *perHostConcurrency, *globalConcurrency, resultPath)
+			if *skipV1URLs > 0 {
+				rep.Notes = append(rep.Notes, fmt.Sprintf("The first %d selected URLs are skipped for v1-legacy only to avoid duplicate v1 checks after an interrupted prior attempt.", *skipV1URLs))
+			}
+			rep.RealResults = runRealURLComparison(ctx, endpoints, modes, cb, selected, *requestTimeout, *drainTimeout, *resourceInterval, *perHostConcurrency, *globalConcurrency, resultPath, *skipV1URLs)
 		}
 	}
 
@@ -639,7 +643,7 @@ func runFixture(ctx context.Context, endpoints []endpointConfig, modes []checkMo
 	return results
 }
 
-func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, sites []siteRow, requestTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string) []modeResult {
+func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, sites []siteRow, requestTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string, skipV1URLs int) []modeResult {
 	checks := make([]urlCheck, 0, len(sites))
 	for i, site := range sites {
 		checks = append(checks, urlCheck{
@@ -657,7 +661,15 @@ func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes
 		if !ok {
 			continue
 		}
-		results = append(results, runRealMode(ctx, ep, mode, checks, cb, requestTimeout, drainTimeout, resourceInterval, perHostConcurrency, globalConcurrency, resultPath))
+		modeChecks := checks
+		if mode.Name == "v1-legacy" && skipV1URLs > 0 {
+			if skipV1URLs >= len(modeChecks) {
+				modeChecks = nil
+			} else {
+				modeChecks = modeChecks[skipV1URLs:]
+			}
+		}
+		results = append(results, runRealMode(ctx, ep, mode, modeChecks, cb, requestTimeout, drainTimeout, resourceInterval, perHostConcurrency, globalConcurrency, resultPath))
 	}
 	return results
 }
@@ -862,7 +874,15 @@ func runRealMode(ctx context.Context, ep endpointConfig, mode checkMode, checks 
 		if err := writeResultRecords(writer, mode, ep, outcome.Checks, outcome.Results); err != nil {
 			result.ErrorsByKind["write_results_ndjson"]++
 		}
+		if processed > 0 && processed%1000 < len(outcome.Checks) {
+			if err := writer.Flush(); err != nil {
+				result.ErrorsByKind["flush_results_ndjson"]++
+			}
+		}
 		if now := time.Now(); now.After(nextProgressLog) {
+			if err := writer.Flush(); err != nil {
+				result.ErrorsByKind["flush_results_ndjson"]++
+			}
 			log.Printf("real mode progress mode=%s endpoint=%s processed=%d/%d completed=%d missing=%d transport_errors=%d",
 				mode.Name, ep.Name, processed, len(checks), result.Completed, result.Missing, result.TransportErrors)
 			nextProgressLog = now.Add(30 * time.Second)
