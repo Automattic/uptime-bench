@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
@@ -91,5 +92,39 @@ func TestMakeHostAwareBatchesHonorsBatchSize(t *testing.T) {
 	batches := makeHostAwareBatches(checks, 2)
 	if got := []int{len(batches[0]), len(batches[1])}; !reflect.DeepEqual(got, []int{2, 1}) {
 		t.Fatalf("batch sizes = %#v, want [2 1]", got)
+	}
+}
+
+func TestLockedTokenSemaphoreAvoidsFragmentedAcquireDeadlock(t *testing.T) {
+	sem := newLockedTokenSemaphore(3)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	releaseA, err := sem.Acquire(ctx, 2)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		releaseB, err := sem.Acquire(ctx, 2)
+		if err == nil {
+			releaseB()
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("second acquire completed before tokens were released: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseA()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("second acquire after release: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("second acquire did not complete after release")
 	}
 }

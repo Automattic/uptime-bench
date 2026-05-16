@@ -208,6 +208,11 @@ type batchOutcome struct {
 	Submitted   int
 }
 
+type lockedTokenSemaphore struct {
+	ch chan struct{}
+	mu sync.Mutex
+}
+
 type callbackRow struct {
 	Row        legacyV1CallbackRow
 	ReceivedAt time.Time
@@ -809,7 +814,7 @@ func runRealMode(ctx context.Context, ep endpointConfig, mode checkMode, checks 
 	if workers < 1 {
 		workers = 1
 	}
-	globalSem := make(chan struct{}, globalConcurrency)
+	globalSem := newLockedTokenSemaphore(globalConcurrency)
 	hostSems := &sync.Map{}
 	batchCh := make(chan []urlCheck)
 	outcomeCh := make(chan batchOutcome, workers)
@@ -847,12 +852,20 @@ func runRealMode(ctx context.Context, ep endpointConfig, mode checkMode, checks 
 		close(outcomeCh)
 	}()
 
+	nextProgressLog := time.Now().Add(30 * time.Second)
+	processed := 0
 	for outcome := range outcomeCh {
+		processed += len(outcome.Checks)
 		result.RPCRequests += outcome.RPCRequests
 		result.Submitted += outcome.Submitted
 		accumulateModeResult(&result, outcome.Results)
 		if err := writeResultRecords(writer, mode, ep, outcome.Checks, outcome.Results); err != nil {
 			result.ErrorsByKind["write_results_ndjson"]++
+		}
+		if now := time.Now(); now.After(nextProgressLog) {
+			log.Printf("real mode progress mode=%s endpoint=%s processed=%d/%d completed=%d missing=%d transport_errors=%d",
+				mode.Name, ep.Name, processed, len(checks), result.Completed, result.Missing, result.TransportErrors)
+			nextProgressLog = now.Add(30 * time.Second)
 		}
 	}
 	if err := writer.Flush(); err != nil {
@@ -971,14 +984,12 @@ func makeHostAwareBatches(checks []urlCheck, batchSize int) [][]urlCheck {
 	return batches
 }
 
-func acquireBatchLimits(ctx context.Context, batch []urlCheck, globalSem chan struct{}, hostSems *sync.Map, perHostConcurrency int) (func(), error) {
+func acquireBatchLimits(ctx context.Context, batch []urlCheck, globalSem *lockedTokenSemaphore, hostSems *sync.Map, perHostConcurrency int) (func(), error) {
 	hosts := uniqueBatchHosts(batch)
 	acquiredHosts := make([]chan struct{}, 0, len(hosts))
-	acquiredGlobal := 0
+	releaseGlobal := func() {}
 	release := func() {
-		for i := 0; i < acquiredGlobal; i++ {
-			<-globalSem
-		}
+		releaseGlobal()
 		for i := len(acquiredHosts) - 1; i >= 0; i-- {
 			<-acquiredHosts[i]
 		}
@@ -991,14 +1002,48 @@ func acquireBatchLimits(ctx context.Context, batch []urlCheck, globalSem chan st
 		}
 		acquiredHosts = append(acquiredHosts, sem)
 	}
-	for i := 0; i < len(batch); i++ {
-		if err := acquireOne(ctx, globalSem); err != nil {
-			release()
-			return nil, err
-		}
-		acquiredGlobal++
+	var err error
+	releaseGlobal, err = globalSem.Acquire(ctx, len(batch))
+	if err != nil {
+		release()
+		return nil, err
 	}
 	return release, nil
+}
+
+func newLockedTokenSemaphore(capacity int) *lockedTokenSemaphore {
+	if capacity <= 0 {
+		capacity = 1
+	}
+	return &lockedTokenSemaphore{ch: make(chan struct{}, capacity)}
+}
+
+func (s *lockedTokenSemaphore) Acquire(ctx context.Context, n int) (func(), error) {
+	if n <= 0 {
+		return func() {}, nil
+	}
+	if n > cap(s.ch) {
+		n = cap(s.ch)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	acquired := 0
+	for acquired < n {
+		select {
+		case s.ch <- struct{}{}:
+			acquired++
+		case <-ctx.Done():
+			for i := 0; i < acquired; i++ {
+				<-s.ch
+			}
+			return nil, ctx.Err()
+		}
+	}
+	return func() {
+		for i := 0; i < n; i++ {
+			<-s.ch
+		}
+	}, nil
 }
 
 func acquireOne(ctx context.Context, sem chan struct{}) error {
