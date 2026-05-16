@@ -12,8 +12,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,6 +35,10 @@ const (
 	defaultOverloadCycles  = 3
 	defaultOverloadHold    = 8 * time.Second
 	defaultOverloadTimeout = 25 * time.Second
+	defaultNonVoteSites    = 3
+	defaultNonVoteFlood    = 7 * time.Minute
+	defaultAuditSSHHost    = "jetmon-service-host-2"
+	defaultAuditJetmonDir  = "/home/jetmon/jetmon"
 )
 
 type report struct {
@@ -234,6 +240,11 @@ func main() {
 		outDir           = flag.String("out-dir", "", "report output directory")
 		monitorTimeout   = flag.Duration("monitor-timeout", defaultMonitorTimeout, "max wait for monitor lifecycle phase")
 		overloadCycles   = flag.Int("overload-cycles", defaultOverloadCycles, "number of overload cycles")
+		monitorNonVote   = flag.Bool("monitor-nonvote", false, "run Monitor-path Veriflier operational non-vote/backoff validation")
+		nonVoteSites     = flag.Int("monitor-nonvote-sites", defaultNonVoteSites, "temporary site count for Monitor non-vote validation")
+		nonVoteFlood     = flag.Duration("monitor-nonvote-flood", defaultNonVoteFlood, "duration to hold direct Veriflier overload during Monitor non-vote validation")
+		auditSSHHost     = flag.String("audit-ssh-host", defaultAuditSSHHost, "SSH host used to capture jetmon2 audit rows for Monitor non-vote validation")
+		auditJetmonDir   = flag.String("audit-jetmon-dir", defaultAuditJetmonDir, "Jetmon checkout directory on audit SSH host")
 		skipMonitor      = flag.Bool("skip-monitor", false, "skip monitor lifecycle phase")
 	)
 	flag.Parse()
@@ -303,6 +314,11 @@ func main() {
 	runPhase("sustained-overload-recovery", func(ctx context.Context) phaseResult {
 		return runOverload(ctx, target, *v2Addr, *v2Token, status, strings.TrimRight(*targetURL, "/"), *targetHost, *overloadCycles)
 	})
+	if *monitorNonVote {
+		runPhase("monitor-overload-nonvote", func(ctx context.Context) phaseResult {
+			return runMonitorOverloadNonVote(ctx, api, target, *v2Addr, *v2Token, status, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *nonVoteSites, *nonVoteFlood, *auditSSHHost, *auditJetmonDir)
+		})
+	}
 	if *skipMonitor {
 		rep.Phases = append(rep.Phases, phaseResult{
 			Name:       "monitor-lifecycle",
@@ -669,6 +685,287 @@ func runOverload(ctx context.Context, target *control.Client, v2Addr, token stri
 	return phase.finish()
 }
 
+func runMonitorOverloadNonVote(ctx context.Context, api apiClient, target *control.Client, v2Addr, token string, status v2Status, targetURL, targetHost string, timeout time.Duration, siteCount int, floodDuration time.Duration, auditSSHHost, auditJetmonDir string) phaseResult {
+	phase := newPhase("monitor-overload-nonvote")
+	if status.Capacity.MaxConcurrency <= 0 || status.Capacity.QueueCapacity <= 0 {
+		phase.skip("capacity", "capacity unavailable", nil)
+		return phase.finish()
+	}
+	if siteCount <= 0 {
+		phase.skip("site-count", "no temporary sites requested", nil)
+		return phase.finish()
+	}
+	if floodDuration < 3*time.Minute {
+		phase.fail("flood-duration", "monitor non-vote validation needs at least 3m of overload", map[string]any{"duration": floodDuration.String()})
+		return phase.finish()
+	}
+
+	startedAt := time.Now().UTC()
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	type tempSite struct {
+		BlogID int64
+		Path   string
+		RunID  string
+		URL    string
+		Event  apiEventListRecord
+	}
+	sites := make([]tempSite, 0, siteCount)
+	baseBlogID := int64(910410000000 + time.Now().UTC().UnixNano()%1000000)
+	cooldown := 0
+	checkTimeout := 2
+	for i := 0; i < siteCount; i++ {
+		blogID := baseBlogID + int64(i)
+		path := fmt.Sprintf("/pr105-nonvote-%s-%02d", newID(), i)
+		siteURL := targetURL + path
+		siteReq := apiSiteCreateRequest{
+			BlogID:               blogID,
+			MonitorURL:           siteURL,
+			MonitorActive:        true,
+			BucketNo:             0,
+			RedirectPolicy:       "follow",
+			RequestMethod:        "HEAD",
+			DetectionProfile:     "legacy",
+			TimeoutSeconds:       &checkTimeout,
+			CustomHeaders:        map[string]string{"X-Uptime-Bench-Test": "veriflier-monitor-nonvote"},
+			AlertCooldownMinutes: &cooldown,
+			CheckInterval:        5,
+		}
+		var site apiSiteResponse
+		if err := api.post(ctx, "/sites", siteReq, &site, map[string]string{"Idempotency-Key": fmt.Sprintf("pr105-nonvote-create-%d-%s", i, newID())}); err != nil {
+			phase.fail(fmt.Sprintf("create-site-%d", i), err.Error(), map[string]any{"blog_id": blogID, "url": siteURL})
+			return phase.finish()
+		}
+		phase.pass(fmt.Sprintf("create-site-%d", i), "created temporary Jetmon site", map[string]any{"blog_id": blogID, "url": siteURL})
+		sites = append(sites, tempSite{BlogID: blogID, Path: path, URL: siteURL})
+		defer func(blogID int64) {
+			if err := api.delete(context.Background(), fmt.Sprintf("/sites/%d", blogID)); err != nil {
+				log.Printf("cleanup site %d: %v", blogID, err)
+			}
+		}(blogID)
+	}
+
+	for i := range sites {
+		if s, err := waitForSiteChecked(waitCtx, api, sites[i].BlogID, startedAt); err != nil {
+			phase.fail(fmt.Sprintf("initial-check-%d", i), err.Error(), map[string]any{"blog_id": sites[i].BlogID})
+			return phase.finish()
+		} else {
+			phase.pass(fmt.Sprintf("initial-check-%d", i), "temporary site entered scheduler and checked healthy", siteData(s))
+		}
+	}
+
+	for i, site := range sites {
+		runID := fmt.Sprintf("pr105-nonvote-site-%d-%s", i, newID())
+		if err := target.Activate(ctx, control.ActivateRequest{
+			RunID: runID,
+			Seed:  site.BlogID,
+			Failure: control.FailureSpec{
+				Type:     "http_status",
+				Host:     targetHost,
+				Path:     site.Path,
+				Duration: timeout + 5*time.Minute,
+				Rate:     1,
+				Params:   map[string]any{"status_code": 503},
+			},
+		}); err != nil {
+			phase.fail(fmt.Sprintf("activate-failure-%d", i), err.Error(), map[string]any{"blog_id": site.BlogID, "path": site.Path})
+			return phase.finish()
+		}
+		defer deactivateFailure(target, runID, "http_status", targetHost, site.Path)
+		sites[i].RunID = runID
+		phase.pass(fmt.Sprintf("activate-failure-%d", i), "target HTTP 503 activated", map[string]any{"blog_id": site.BlogID, "path": site.Path})
+	}
+
+	floodPath := "/pr105-nonvote-flood-" + newID()
+	floodRunID := "pr105-nonvote-flood-" + newID()
+	if err := target.Activate(ctx, control.ActivateRequest{
+		RunID: floodRunID,
+		Seed:  baseBlogID + 9999,
+		Failure: control.FailureSpec{
+			Type:     "http_timeout",
+			Host:     targetHost,
+			Path:     floodPath,
+			Duration: floodDuration + time.Minute,
+			Rate:     1,
+			Params:   map[string]any{"method": "HEAD", "delay": defaultOverloadHold.String()},
+		},
+	}); err != nil {
+		phase.fail("activate-overload-target", err.Error(), map[string]any{"path": floodPath})
+		return phase.finish()
+	}
+	defer deactivateFailure(target, floodRunID, "http_timeout", targetHost, floodPath)
+	phase.pass("activate-overload-target", "target HEAD timeout activated for direct Veriflier flood", map[string]any{"path": floodPath, "duration": floodDuration.String()})
+
+	floodCtx, floodCancel := context.WithCancel(ctx)
+	floodDone := make(chan overloadFloodStats, 1)
+	floodStartedAt := time.Now().UTC()
+	floodFinishedAt := floodStartedAt
+	go func() {
+		floodDone <- sustainV2Overload(floodCtx, v2Addr, token, status, targetURL+floodPath, floodDuration)
+	}()
+	defer floodCancel()
+
+	for i := range sites {
+		event, err := waitForActiveEventAnyState(waitCtx, api, sites[i].BlogID, []string{"Seems Down", "Down"})
+		if err != nil {
+			phase.fail(fmt.Sprintf("wait-event-%d", i), err.Error(), map[string]any{"blog_id": sites[i].BlogID})
+			floodCancel()
+			return phase.finish()
+		}
+		sites[i].Event = event
+		if event.State == "Down" {
+			phase.fail(fmt.Sprintf("pending-nonvote-%d", i), "site reached Down while Veriflier flood was active", eventData(event))
+		} else {
+			phase.pass(fmt.Sprintf("pending-nonvote-%d", i), "site remained Seems Down during Veriflier overload", eventData(event))
+		}
+	}
+
+	select {
+	case stats := <-floodDone:
+		floodFinishedAt = time.Now().UTC()
+		phase.pass("overload-flood", "direct Veriflier flood completed", stats.data())
+	case <-waitCtx.Done():
+		floodCancel()
+		phase.fail("overload-flood", waitCtx.Err().Error(), nil)
+		return phase.finish()
+	}
+
+	if phase.Status == "fail" {
+		return phase.finish()
+	}
+
+	for i := range sites {
+		event, err := waitForEventState(waitCtx, api, sites[i].BlogID, "Down")
+		if err != nil {
+			phase.fail(fmt.Sprintf("wait-down-after-recovery-%d", i), err.Error(), map[string]any{"blog_id": sites[i].BlogID, "event_id": sites[i].Event.ID})
+			continue
+		}
+		detail, err := api.getEvent(ctx, sites[i].BlogID, event.ID)
+		if err != nil {
+			phase.fail(fmt.Sprintf("down-detail-%d", i), err.Error(), eventData(event))
+			continue
+		}
+		confirmedAt, confirmedAtOK := transitionReasonTime(detail.Transitions, "verifier_confirmed")
+		if !hasTransitionReason(detail.Transitions, "verifier_confirmed") {
+			phase.fail(fmt.Sprintf("verifier-resumed-%d", i), "Down event missing verifier_confirmed transition after overload ended", eventDetailData(detail))
+		} else if confirmedAtOK && !confirmedAt.After(floodFinishedAt) {
+			phase.fail(fmt.Sprintf("verifier-resumed-%d", i), "Down was verifier-confirmed before direct overload flood ended", eventDetailData(detail))
+		} else {
+			phase.pass(fmt.Sprintf("verifier-resumed-%d", i), "verification resumed and confirmed Down after overload ended", eventDetailData(detail))
+		}
+	}
+
+	for _, site := range sites {
+		deactivateFailure(target, site.RunID, "http_status", targetHost, site.Path)
+	}
+	for i, site := range sites {
+		closed, err := waitForEventClosed(waitCtx, api, site.BlogID, site.Event.ID)
+		if err != nil {
+			phase.fail(fmt.Sprintf("wait-resolved-%d", i), err.Error(), map[string]any{"blog_id": site.BlogID, "event_id": site.Event.ID})
+			continue
+		}
+		phase.pass(fmt.Sprintf("resolved-%d", i), "site recovered after target failure deactivation", eventDetailData(closed))
+	}
+
+	for i, site := range sites {
+		auditText, err := captureAuditRows(ctx, auditSSHHost, auditJetmonDir, site.BlogID, startedAt.Add(-time.Minute), time.Now().UTC().Add(time.Minute))
+		if err != nil {
+			phase.fail(fmt.Sprintf("audit-capture-%d", i), err.Error(), map[string]any{"blog_id": site.BlogID})
+			continue
+		}
+		data := map[string]any{
+			"blog_id":                        site.BlogID,
+			"has_verifier_decision_deferred": strings.Contains(auditText, "verifier decision deferred"),
+			"has_verifier_retry_deferred":    strings.Contains(auditText, "verifier retry deferred"),
+			"has_agent_overloaded_non_vote":  strings.Contains(auditText, "agent_overloaded"),
+			"has_wpcom_before_verifier_down": false,
+			"audit_excerpt":                  trimForReport(auditText, 3500),
+		}
+		if !data["has_verifier_decision_deferred"].(bool) || !data["has_agent_overloaded_non_vote"].(bool) {
+			phase.fail(fmt.Sprintf("audit-nonvote-%d", i), "audit rows did not show expected verifier operational non-vote deferral", data)
+		} else if !data["has_verifier_retry_deferred"].(bool) {
+			phase.skip(fmt.Sprintf("audit-retry-deferred-%d", i), "decision deferral observed, but retry-deferred audit row was not observed in this live timing window", data)
+		} else {
+			phase.pass(fmt.Sprintf("audit-nonvote-%d", i), "audit rows captured verifier decision and retry deferral", data)
+		}
+	}
+
+	return phase.finish()
+}
+
+type overloadFloodStats struct {
+	Cycles        int64
+	Requests      int64
+	HTTP200       int64
+	Overloaded503 int64
+	Other         int64
+	Elapsed       time.Duration
+}
+
+func (s overloadFloodStats) data() map[string]any {
+	return map[string]any{
+		"cycles":          s.Cycles,
+		"requests":        s.Requests,
+		"http_200":        s.HTTP200,
+		"overloaded_503":  s.Overloaded503,
+		"other":           s.Other,
+		"elapsed_seconds": s.Elapsed.Seconds(),
+	}
+}
+
+func sustainV2Overload(ctx context.Context, addr, token string, status v2Status, checkURL string, duration time.Duration) overloadFloodStats {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, duration)
+	defer cancel()
+	total := status.Capacity.MaxConcurrency + status.Capacity.QueueCapacity + 200
+	if total < 10 {
+		total = 10
+	}
+	var stats overloadFloodStats
+	for ctx.Err() == nil {
+		cycle := stats.Cycles + 1
+		var wg sync.WaitGroup
+		var ok200, overloaded503, other atomic.Int64
+		for i := 0; i < total; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				req := v2BatchRequest{
+					BatchID:    fmt.Sprintf("monitor-nonvote-c%d-%d-%s", cycle, i, newID()),
+					DeadlineMS: 15000,
+					Requests: []v2CheckRequest{{
+						RequestID:        fmt.Sprintf("monitor-nonvote-c%d-%d-%s", cycle, i, newID()),
+						BlogID:           int64(910419000000 + cycle*100000 + int64(i)),
+						URL:              checkURL,
+						Method:           "HEAD",
+						DetectionProfile: "legacy",
+						TimeoutMS:        10000,
+					}},
+				}
+				code, outcome, err := sendV2RawBatch(ctx, addr, token, req, 20*time.Second)
+				if err == nil && code == http.StatusOK {
+					ok200.Add(1)
+					return
+				}
+				if code == http.StatusServiceUnavailable && outcome == "agent_overloaded" {
+					overloaded503.Add(1)
+					return
+				}
+				other.Add(1)
+			}(i)
+		}
+		wg.Wait()
+		stats.Cycles++
+		stats.Requests += int64(total)
+		stats.HTTP200 += ok200.Load()
+		stats.Overloaded503 += overloaded503.Load()
+		stats.Other += other.Load()
+	}
+	stats.Elapsed = time.Since(started)
+	return stats
+}
+
 func runMonitorLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration) phaseResult {
 	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
 		PhaseName:      "monitor-lifecycle",
@@ -866,6 +1163,31 @@ func waitForEventState(ctx context.Context, api apiClient, blogID int64, state s
 	}
 }
 
+func waitForActiveEventAnyState(ctx context.Context, api apiClient, blogID int64, states []string) (apiEventListRecord, error) {
+	want := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		want[state] = struct{}{}
+	}
+	tick := time.NewTicker(10 * time.Second)
+	defer tick.Stop()
+	for {
+		events, err := api.listEvents(ctx, blogID, true)
+		if err != nil {
+			return apiEventListRecord{}, err
+		}
+		for _, event := range events {
+			if _, ok := want[event.State]; ok {
+				return event, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return apiEventListRecord{}, fmt.Errorf("timed out waiting for active event states %s", strings.Join(states, ","))
+		case <-tick.C:
+		}
+	}
+}
+
 func waitForEventClosed(ctx context.Context, api apiClient, blogID, eventID int64) (apiEventResponse, error) {
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
@@ -883,6 +1205,20 @@ func waitForEventClosed(ctx context.Context, api apiClient, blogID, eventID int6
 		case <-tick.C:
 		}
 	}
+}
+
+func transitionReasonTime(transitions []apiTransition, reason string) (time.Time, bool) {
+	for _, transition := range transitions {
+		if transition.Reason != reason {
+			continue
+		}
+		changedAt, err := time.Parse(time.RFC3339Nano, transition.ChangedAt)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return changedAt.UTC(), true
+	}
+	return time.Time{}, false
 }
 
 func waitForSiteCondition(ctx context.Context, api apiClient, blogID int64, interval time.Duration, pred func(apiSiteResponse) (bool, error)) (apiSiteResponse, error) {
@@ -1086,6 +1422,36 @@ func deactivateFailure(target *control.Client, runID, failureType, host, path st
 		Host:        host,
 		Path:        path,
 	})
+}
+
+func captureAuditRows(ctx context.Context, host, dir string, blogID int64, since, until time.Time) (string, error) {
+	if strings.TrimSpace(host) == "" || strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("audit SSH host and Jetmon dir are required")
+	}
+	args := []string{
+		host,
+		"cd " + shellQuote(dir) + " && ./bin/jetmon2 audit --blog-id " + strconv.FormatInt(blogID, 10) +
+			" --since " + shellQuote(since.UTC().Format(time.RFC3339)) +
+			" --until " + shellQuote(until.UTC().Format(time.RFC3339)),
+	}
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("capture audit rows: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func trimForReport(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "...[truncated]"
 }
 
 type phaseBuilder struct {
