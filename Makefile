@@ -9,6 +9,7 @@ BINARY_DOCKERSTATS_EXPORTER = $(BIN_DIR)/uptime-bench-dockerstats-exporter
 BINARY_TARGETLOAD = $(BIN_DIR)/uptime-bench-targetload
 BINARY_JETMON_CAPACITY = $(BIN_DIR)/uptime-bench-jetmon-capacity
 BINARY_JETMON_CAPACITY_RUN = $(BIN_DIR)/uptime-bench-jetmon-capacity-run
+BINARY_VERIFLIER_URL_ONCE = $(BIN_DIR)/uptime-bench-veriflier-url-once
 BINARY_PREFLIGHT = $(BIN_DIR)/uptime-bench-preflight
 BINARY_FINALIZE = $(BIN_DIR)/uptime-bench-finalize
 BINARY_CLEANUP = $(BIN_DIR)/uptime-bench-cleanup
@@ -21,7 +22,7 @@ BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_JETMON_CAPACITY) $(BINARY_JETMON_CAPACITY_RUN) $(BINARY_PREFLIGHT) $(BINARY_FINALIZE) $(BINARY_CLEANUP) $(BINARY_PROBE_IPS_REFRESH)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_JETMON_CAPACITY) $(BINARY_JETMON_CAPACITY_RUN) $(BINARY_VERIFLIER_URL_ONCE) $(BINARY_PREFLIGHT) $(BINARY_FINALIZE) $(BINARY_CLEANUP) $(BINARY_PROBE_IPS_REFRESH)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -62,6 +63,10 @@ $(BINARY_JETMON_CAPACITY): $(shell find cmd/uptime-bench-jetmon-capacity interna
 $(BINARY_JETMON_CAPACITY_RUN): $(shell find cmd/uptime-bench-jetmon-capacity-run internal/jetmoncapacity internal/capacitybench -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/uptime-bench-jetmon-capacity-run
+
+$(BINARY_VERIFLIER_URL_ONCE): $(shell find cmd/uptime-bench-veriflier-url-once -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-veriflier-url-once
 
 $(BINARY_PREFLIGHT): $(shell find cmd/uptime-bench-preflight internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
