@@ -3,6 +3,7 @@ package main
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestParseInsertValuesLine(t *testing.T) {
@@ -44,7 +45,7 @@ func TestParseInsertValuesLineDetectsUnterminatedRows(t *testing.T) {
 
 func TestDryRunPlanRequestCounts(t *testing.T) {
 	modes := defaultModes()
-	plan := buildDryRunPlan(17, modes, 1, 40, 25, 8)
+	plan := buildDryRunPlan(17, modes, 1, 40, 25, 8*time.Second)
 	if plan.ExpectedTotalRequests != 68 {
 		t.Fatalf("ExpectedTotalRequests = %d, want 68", plan.ExpectedTotalRequests)
 	}
@@ -56,5 +57,39 @@ func TestDryRunPlanRequestCounts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(plan.ExpectedRequestsByMode, want) {
 		t.Fatalf("ExpectedRequestsByMode = %#v, want %#v", plan.ExpectedRequestsByMode, want)
+	}
+}
+
+func TestMakeHostAwareBatchesAvoidsDuplicateHostsWithinBatch(t *testing.T) {
+	checks := []urlCheck{
+		{SyntheticBlogID: 1, Host: "a.example"},
+		{SyntheticBlogID: 2, Host: "b.example"},
+		{SyntheticBlogID: 3, Host: "a.example"},
+		{SyntheticBlogID: 4, Host: "c.example"},
+	}
+	batches := makeHostAwareBatches(checks, 3)
+	if len(batches) != 2 {
+		t.Fatalf("batch count = %d, want 2", len(batches))
+	}
+	for _, batch := range batches {
+		seen := map[string]bool{}
+		for _, check := range batch {
+			if seen[check.Host] {
+				t.Fatalf("duplicate host %q in batch %#v", check.Host, batch)
+			}
+			seen[check.Host] = true
+		}
+	}
+}
+
+func TestMakeHostAwareBatchesHonorsBatchSize(t *testing.T) {
+	checks := []urlCheck{
+		{SyntheticBlogID: 1, Host: "a.example"},
+		{SyntheticBlogID: 2, Host: "b.example"},
+		{SyntheticBlogID: 3, Host: "c.example"},
+	}
+	batches := makeHostAwareBatches(checks, 2)
+	if got := []int{len(batches[0]), len(batches[1])}; !reflect.DeepEqual(got, []int{2, 1}) {
+		t.Fatalf("batch sizes = %#v, want [2 1]", got)
 	}
 }

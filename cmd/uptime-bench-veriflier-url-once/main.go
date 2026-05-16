@@ -180,6 +180,34 @@ type checkResult struct {
 	Overloaded   bool          `json:"overloaded,omitempty"`
 }
 
+type resultRecord struct {
+	SyntheticBlogID  int64  `json:"synthetic_blog_id"`
+	OriginalBlogID   int64  `json:"original_blog_id,omitempty"`
+	URLHash          string `json:"url_hash"`
+	Scheme           string `json:"scheme,omitempty"`
+	Host             string `json:"host,omitempty"`
+	Mode             string `json:"mode"`
+	Endpoint         string `json:"endpoint"`
+	Method           string `json:"method,omitempty"`
+	DetectionProfile string `json:"detection_profile,omitempty"`
+	Success          bool   `json:"success"`
+	Outcome          string `json:"outcome,omitempty"`
+	HTTPCode         int    `json:"http_code,omitempty"`
+	ErrorCode        int    `json:"error_code,omitempty"`
+	ProbeRTTMS       int64  `json:"probe_rtt_ms,omitempty"`
+	EndToEndMS       int64  `json:"end_to_end_ms,omitempty"`
+	TransportError   string `json:"transport_error,omitempty"`
+	Missing          bool   `json:"missing,omitempty"`
+	Overloaded       bool   `json:"overloaded,omitempty"`
+}
+
+type batchOutcome struct {
+	Checks      []urlCheck
+	Results     []checkResult
+	RPCRequests int
+	Submitted   int
+}
+
 type callbackRow struct {
 	Row        legacyV1CallbackRow
 	ReceivedAt time.Time
@@ -537,7 +565,9 @@ func main() {
 		}
 		if *phase == "real" {
 			log.Printf("running real URL one-shot comparison against %d selected URLs", len(selected))
-			rep.RealResults = runRealURLComparison(ctx, endpoints, modes, cb, selected, *requestTimeout, *drainTimeout, *resourceInterval)
+			resultPath := filepath.Join(*outDir, "results.ndjson")
+			rep.Notes = append(rep.Notes, "Real per-result outcomes are written to results.ndjson without full URLs.")
+			rep.RealResults = runRealURLComparison(ctx, endpoints, modes, cb, selected, *requestTimeout, *drainTimeout, *resourceInterval, *perHostConcurrency, *globalConcurrency, resultPath)
 		}
 	}
 
@@ -604,7 +634,7 @@ func runFixture(ctx context.Context, endpoints []endpointConfig, modes []checkMo
 	return results
 }
 
-func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, sites []siteRow, requestTimeout, drainTimeout, resourceInterval time.Duration) []modeResult {
+func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, sites []siteRow, requestTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string) []modeResult {
 	checks := make([]urlCheck, 0, len(sites))
 	for i, site := range sites {
 		checks = append(checks, urlCheck{
@@ -622,7 +652,7 @@ func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes
 		if !ok {
 			continue
 		}
-		results = append(results, runMode(ctx, ep, mode, checks, cb, requestTimeout, drainTimeout, resourceInterval))
+		results = append(results, runRealMode(ctx, ep, mode, checks, cb, requestTimeout, drainTimeout, resourceInterval, perHostConcurrency, globalConcurrency, resultPath))
 	}
 	return results
 }
@@ -732,6 +762,325 @@ func runMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []ur
 	result.EndToEndLatencyMS = finalizeStat(result.EndToEndLatencyMS)
 	result.ProbeRTTMS = finalizeStat(result.ProbeRTTMS)
 	return result
+}
+
+func runRealMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []urlCheck, cb *callbackServer, requestTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string) modeResult {
+	start := time.Now().UTC()
+	batchSize := ep.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	if perHostConcurrency <= 0 {
+		perHostConcurrency = 1
+	}
+	if globalConcurrency <= 0 {
+		globalConcurrency = 1
+	}
+	sampler := newResourceSampler(ep, resourceInterval)
+	sampler.start(ctx)
+	defer sampler.stopAndWait()
+
+	result := modeResult{
+		Mode:             mode.Name,
+		Endpoint:         ep.Name,
+		Method:           mode.Method,
+		DetectionProfile: mode.DetectionProfile,
+		Start:            start,
+		URLCount:         len(checks),
+		BatchSize:        batchSize,
+		ErrorsByKind:     map[string]int{},
+	}
+	resultFile, err := os.OpenFile(resultPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		result.ErrorsByKind["open_results_ndjson:"+err.Error()]++
+		result.End = time.Now().UTC()
+		result.ResourceSummary = summarizeResources(sampler.samplesCopy(), sampler.errorsCopy())
+		return result
+	}
+	defer resultFile.Close()
+	writer := bufio.NewWriterSize(resultFile, 1024*1024)
+	defer writer.Flush()
+
+	batches := makeHostAwareBatches(checks, min(batchSize, globalConcurrency))
+	workers := globalConcurrency
+	if workers > len(batches) {
+		workers = len(batches)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	globalSem := make(chan struct{}, globalConcurrency)
+	hostSems := &sync.Map{}
+	batchCh := make(chan []urlCheck)
+	outcomeCh := make(chan batchOutcome, workers)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for batch := range batchCh {
+				release, err := acquireBatchLimits(ctx, batch, globalSem, hostSems, perHostConcurrency)
+				if err != nil {
+					outcomeCh <- batchOutcome{Checks: batch, Results: transportFailures(batch, classifyTransportErr(err))}
+					continue
+				}
+				outcome := executeBatch(ctx, ep, mode, batch, cb, requestTimeout, drainTimeout)
+				release()
+				outcomeCh <- outcome
+			}
+		}()
+	}
+	go func() {
+		for _, batch := range batches {
+			select {
+			case batchCh <- batch:
+			case <-ctx.Done():
+				close(batchCh)
+				wg.Wait()
+				close(outcomeCh)
+				return
+			}
+		}
+		close(batchCh)
+		wg.Wait()
+		close(outcomeCh)
+	}()
+
+	for outcome := range outcomeCh {
+		result.RPCRequests += outcome.RPCRequests
+		result.Submitted += outcome.Submitted
+		accumulateModeResult(&result, outcome.Results)
+		if err := writeResultRecords(writer, mode, ep, outcome.Checks, outcome.Results); err != nil {
+			result.ErrorsByKind["write_results_ndjson"]++
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		result.ErrorsByKind["flush_results_ndjson"]++
+	}
+	sampler.stopAndWait()
+	result.End = time.Now().UTC()
+	result.ResourceSummary = summarizeResources(sampler.samplesCopy(), sampler.errorsCopy())
+	finalizeModeResult(&result)
+	return result
+}
+
+func executeBatch(ctx context.Context, ep endpointConfig, mode checkMode, batch []urlCheck, cb *callbackServer, requestTimeout, drainTimeout time.Duration) batchOutcome {
+	out := batchOutcome{Checks: batch, RPCRequests: 1}
+	subCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	switch ep.Name {
+	case "v1":
+		if cb != nil {
+			cb.ForgetIDs(checkIDs(batch))
+		}
+		if err := sendV1Batch(subCtx, ep.Addr, ep.Token, batch); err != nil {
+			out.Results = transportFailures(batch, classifyTransportErr(err))
+			return out
+		}
+		out.Submitted = len(batch)
+		if cb == nil {
+			out.Results = transportFailures(batch, "callback_server_missing")
+			return out
+		}
+		rows := cb.ResultsForIDs(checkIDs(batch), drainTimeout)
+		out.Results = convertV1Rows(batch, rows)
+	case "v2":
+		out.Results = sendV2Batch(subCtx, ep, mode, batch, requestTimeout)
+		for _, item := range out.Results {
+			if item.TransportErr == "" {
+				out.Submitted++
+			}
+		}
+	default:
+		out.Results = transportFailures(batch, "unsupported_endpoint")
+	}
+	return out
+}
+
+func accumulateModeResult(result *modeResult, items []checkResult) {
+	for _, res := range items {
+		if res.TransportErr != "" {
+			result.TransportErrors++
+			result.ErrorsByKind[res.TransportErr]++
+			continue
+		}
+		if res.Overloaded {
+			result.OverloadResponses++
+			result.ErrorsByKind["overload"]++
+		}
+		if res.Missing {
+			result.Missing++
+			result.ErrorsByKind["missing_result"]++
+			continue
+		}
+		result.Completed++
+		if res.Success {
+			result.ExpectedMatches++
+		} else {
+			result.Unexpected++
+		}
+		if res.EndToEnd > 0 {
+			result.EndToEndLatencyMS = appendStat(result.EndToEndLatencyMS, float64(res.EndToEnd)/float64(time.Millisecond))
+		}
+		if res.ProbeRTT > 0 {
+			result.ProbeRTTMS = appendStat(result.ProbeRTTMS, float64(res.ProbeRTT)/float64(time.Millisecond))
+		}
+	}
+}
+
+func finalizeModeResult(result *modeResult) {
+	elapsed := result.End.Sub(result.Start).Seconds()
+	if elapsed > 0 {
+		result.ChecksPerSecond = float64(result.Completed) / elapsed
+	}
+	if result.URLCount > 0 {
+		result.CompletionRate = float64(result.Completed) / float64(result.URLCount)
+		result.UnexpectedRate = float64(result.Unexpected) / float64(result.URLCount)
+		result.TransportRate = float64(result.TransportErrors) / float64(result.URLCount)
+	}
+	result.EndToEndLatencyMS = finalizeStat(result.EndToEndLatencyMS)
+	result.ProbeRTTMS = finalizeStat(result.ProbeRTTMS)
+	result.ErrorsByKind = copyStringInt(result.ErrorsByKind)
+}
+
+func makeHostAwareBatches(checks []urlCheck, batchSize int) [][]urlCheck {
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	var batches [][]urlCheck
+	var cur []urlCheck
+	hosts := map[string]bool{}
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		batches = append(batches, cur)
+		cur = nil
+		hosts = map[string]bool{}
+	}
+	for _, check := range checks {
+		host := hostKey(check)
+		if len(cur) >= batchSize || hosts[host] {
+			flush()
+		}
+		cur = append(cur, check)
+		hosts[host] = true
+	}
+	flush()
+	return batches
+}
+
+func acquireBatchLimits(ctx context.Context, batch []urlCheck, globalSem chan struct{}, hostSems *sync.Map, perHostConcurrency int) (func(), error) {
+	hosts := uniqueBatchHosts(batch)
+	acquiredHosts := make([]chan struct{}, 0, len(hosts))
+	acquiredGlobal := 0
+	release := func() {
+		for i := 0; i < acquiredGlobal; i++ {
+			<-globalSem
+		}
+		for i := len(acquiredHosts) - 1; i >= 0; i-- {
+			<-acquiredHosts[i]
+		}
+	}
+	for _, host := range hosts {
+		sem := hostSemaphore(hostSems, host, perHostConcurrency)
+		if err := acquireOne(ctx, sem); err != nil {
+			release()
+			return nil, err
+		}
+		acquiredHosts = append(acquiredHosts, sem)
+	}
+	for i := 0; i < len(batch); i++ {
+		if err := acquireOne(ctx, globalSem); err != nil {
+			release()
+			return nil, err
+		}
+		acquiredGlobal++
+	}
+	return release, nil
+}
+
+func acquireOne(ctx context.Context, sem chan struct{}) error {
+	select {
+	case sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func hostSemaphore(hostSems *sync.Map, host string, perHostConcurrency int) chan struct{} {
+	if sem, ok := hostSems.Load(host); ok {
+		return sem.(chan struct{})
+	}
+	created := make(chan struct{}, perHostConcurrency)
+	actual, _ := hostSems.LoadOrStore(host, created)
+	return actual.(chan struct{})
+}
+
+func uniqueBatchHosts(batch []urlCheck) []string {
+	seen := map[string]bool{}
+	for _, check := range batch {
+		seen[hostKey(check)] = true
+	}
+	hosts := make([]string, 0, len(seen))
+	for host := range seen {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
+func hostKey(check urlCheck) string {
+	if check.Host != "" {
+		return check.Host
+	}
+	return "urlhash:" + check.URLHash
+}
+
+func writeResultRecords(w *bufio.Writer, mode checkMode, ep endpointConfig, checks []urlCheck, results []checkResult) error {
+	byID := make(map[int64]checkResult, len(results))
+	for _, result := range results {
+		byID[result.BlogID] = result
+	}
+	for _, check := range checks {
+		result, ok := byID[check.SyntheticBlogID]
+		if !ok {
+			result = checkResult{BlogID: check.SyntheticBlogID, Missing: true}
+		}
+		record := resultRecord{
+			SyntheticBlogID:  check.SyntheticBlogID,
+			OriginalBlogID:   check.OriginalBlogID,
+			URLHash:          check.URLHash,
+			Scheme:           check.Scheme,
+			Host:             check.Host,
+			Mode:             mode.Name,
+			Endpoint:         ep.Name,
+			Method:           mode.Method,
+			DetectionProfile: mode.DetectionProfile,
+			Success:          result.Success,
+			Outcome:          result.Outcome,
+			HTTPCode:         result.HTTPCode,
+			ErrorCode:        result.ErrorCode,
+			ProbeRTTMS:       int64(result.ProbeRTT / time.Millisecond),
+			EndToEndMS:       int64(result.EndToEnd / time.Millisecond),
+			TransportError:   result.TransportErr,
+			Missing:          result.Missing,
+			Overloaded:       result.Overloaded,
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(data); err != nil {
+			return err
+		}
+		if err := w.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func appendResults(dst *[]checkResult, items []checkResult, errorsByKind map[string]int) {
