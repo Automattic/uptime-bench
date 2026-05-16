@@ -833,10 +833,6 @@ func runMonitorOverloadNonVote(ctx context.Context, api apiClient, target *contr
 		return phase.finish()
 	}
 
-	if phase.Status == "fail" {
-		return phase.finish()
-	}
-
 	for i := range sites {
 		event, err := waitForEventState(waitCtx, api, sites[i].BlogID, "Down")
 		if err != nil {
