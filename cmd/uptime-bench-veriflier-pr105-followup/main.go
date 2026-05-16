@@ -38,7 +38,8 @@ const (
 	defaultNonVoteSites    = 3
 	defaultNonVoteFlood    = 7 * time.Minute
 	defaultAuditSSHHost    = "jetmon-service-host-2"
-	defaultAuditJetmonDir  = "/home/jetmon/jetmon"
+	defaultAuditJetmonDir  = "/opt/jetmon2"
+	defaultAuditEnvFile    = "/opt/jetmon2/config/jetmon2.env"
 )
 
 type report struct {
@@ -244,7 +245,8 @@ func main() {
 		nonVoteSites     = flag.Int("monitor-nonvote-sites", defaultNonVoteSites, "temporary site count for Monitor non-vote validation")
 		nonVoteFlood     = flag.Duration("monitor-nonvote-flood", defaultNonVoteFlood, "duration to hold direct Veriflier overload during Monitor non-vote validation")
 		auditSSHHost     = flag.String("audit-ssh-host", defaultAuditSSHHost, "SSH host used to capture jetmon2 audit rows for Monitor non-vote validation")
-		auditJetmonDir   = flag.String("audit-jetmon-dir", defaultAuditJetmonDir, "Jetmon checkout directory on audit SSH host")
+		auditJetmonDir   = flag.String("audit-jetmon-dir", defaultAuditJetmonDir, "Jetmon deployment directory on audit SSH host")
+		auditEnvFile     = flag.String("audit-env-file", defaultAuditEnvFile, "Jetmon environment file sourced before running audit capture")
 		skipMonitor      = flag.Bool("skip-monitor", false, "skip monitor lifecycle phase")
 	)
 	flag.Parse()
@@ -316,7 +318,7 @@ func main() {
 	})
 	if *monitorNonVote {
 		runPhase("monitor-overload-nonvote", func(ctx context.Context) phaseResult {
-			return runMonitorOverloadNonVote(ctx, api, target, *v2Addr, *v2Token, status, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *nonVoteSites, *nonVoteFlood, *auditSSHHost, *auditJetmonDir)
+			return runMonitorOverloadNonVote(ctx, api, target, *v2Addr, *v2Token, status, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *nonVoteSites, *nonVoteFlood, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
 		})
 	}
 	if *skipMonitor {
@@ -685,7 +687,7 @@ func runOverload(ctx context.Context, target *control.Client, v2Addr, token stri
 	return phase.finish()
 }
 
-func runMonitorOverloadNonVote(ctx context.Context, api apiClient, target *control.Client, v2Addr, token string, status v2Status, targetURL, targetHost string, timeout time.Duration, siteCount int, floodDuration time.Duration, auditSSHHost, auditJetmonDir string) phaseResult {
+func runMonitorOverloadNonVote(ctx context.Context, api apiClient, target *control.Client, v2Addr, token string, status v2Status, targetURL, targetHost string, timeout time.Duration, siteCount int, floodDuration time.Duration, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
 	phase := newPhase("monitor-overload-nonvote")
 	if status.Capacity.MaxConcurrency <= 0 || status.Capacity.QueueCapacity <= 0 {
 		phase.skip("capacity", "capacity unavailable", nil)
@@ -869,7 +871,7 @@ func runMonitorOverloadNonVote(ctx context.Context, api apiClient, target *contr
 	}
 
 	for i, site := range sites {
-		auditText, err := captureAuditRows(ctx, auditSSHHost, auditJetmonDir, site.BlogID, startedAt.Add(-time.Minute), time.Now().UTC().Add(time.Minute))
+		auditText, err := captureAuditRows(ctx, auditSSHHost, auditJetmonDir, auditEnvFile, site.BlogID, startedAt.Add(-time.Minute), time.Now().UTC().Add(time.Minute))
 		if err != nil {
 			phase.fail(fmt.Sprintf("audit-capture-%d", i), err.Error(), map[string]any{"blog_id": site.BlogID})
 			continue
@@ -1424,15 +1426,23 @@ func deactivateFailure(target *control.Client, runID, failureType, host, path st
 	})
 }
 
-func captureAuditRows(ctx context.Context, host, dir string, blogID int64, since, until time.Time) (string, error) {
+func captureAuditRows(ctx context.Context, host, dir, envFile string, blogID int64, since, until time.Time) (string, error) {
 	if strings.TrimSpace(host) == "" || strings.TrimSpace(dir) == "" {
 		return "", fmt.Errorf("audit SSH host and Jetmon dir are required")
 	}
+	if strings.TrimSpace(envFile) == "" {
+		return "", fmt.Errorf("audit env file is required")
+	}
+	remote := "cd " + shellQuote(dir) +
+		" && set -a" +
+		" && . " + shellQuote(envFile) +
+		" && set +a" +
+		" && JETMON_CONFIG=${JETMON_CONFIG:-/opt/jetmon2/config/config.json} ./jetmon2 audit --blog-id " + strconv.FormatInt(blogID, 10) +
+		" --since " + shellQuote(since.UTC().Format(time.RFC3339)) +
+		" --until " + shellQuote(until.UTC().Format(time.RFC3339))
 	args := []string{
 		host,
-		"cd " + shellQuote(dir) + " && ./bin/jetmon2 audit --blog-id " + strconv.FormatInt(blogID, 10) +
-			" --since " + shellQuote(since.UTC().Format(time.RFC3339)) +
-			" --until " + shellQuote(until.UTC().Format(time.RFC3339)),
+		remote,
 	}
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	out, err := cmd.CombinedOutput()
