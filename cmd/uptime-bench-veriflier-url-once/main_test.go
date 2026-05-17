@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -126,5 +127,127 @@ func TestLockedTokenSemaphoreAvoidsFragmentedAcquireDeadlock(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("second acquire did not complete after release")
+	}
+}
+
+func TestSummarizeResourcesIncludesNetworkTotalsAndInterfaces(t *testing.T) {
+	samples := []resourceSample{
+		{
+			TimeNS:           int64(1 * time.Second),
+			ClockTicks:       100,
+			HostTotalJiffies: 1000,
+			HostIdleJiffies:  700,
+			ProcJiffies:      100,
+			RSSBytes:         100 * 1024 * 1024,
+			OpenFDs:          10,
+			Threads:          4,
+			ReadBytes:        1000,
+			WriteBytes:       2000,
+			NetRXBytes:       1000,
+			NetTXBytes:       2000,
+			NetCounterSource: "/proc/net/dev",
+			NetInterfaces:    []string{"eth1", "eth0"},
+			NetExcluded:      []string{"lo"},
+		},
+		{
+			TimeNS:           int64(6 * time.Second),
+			ClockTicks:       100,
+			HostTotalJiffies: 2000,
+			HostIdleJiffies:  1300,
+			ProcJiffies:      150,
+			RSSBytes:         110 * 1024 * 1024,
+			OpenFDs:          12,
+			Threads:          4,
+			ReadBytes:        1500,
+			WriteBytes:       2600,
+			NetRXBytes:       2500,
+			NetTXBytes:       4300,
+			NetCounterSource: "/proc/net/dev",
+			NetInterfaces:    []string{"eth0"},
+			NetExcluded:      []string{"lo", "docker0"},
+		},
+		{
+			TimeNS:           int64(11 * time.Second),
+			ClockTicks:       100,
+			HostTotalJiffies: 3000,
+			HostIdleJiffies:  1900,
+			ProcJiffies:      180,
+			RSSBytes:         120 * 1024 * 1024,
+			OpenFDs:          14,
+			Threads:          5,
+			ReadBytes:        1700,
+			WriteBytes:       3200,
+			NetRXBytes:       4000,
+			NetTXBytes:       6000,
+			NetCounterSource: "/proc/net/dev",
+			NetInterfaces:    []string{"eth1"},
+			NetExcluded:      []string{"lo"},
+		},
+	}
+
+	got := summarizeResources(samples, nil)
+	if got.NetCounterSource != "/proc/net/dev" {
+		t.Fatalf("NetCounterSource = %q", got.NetCounterSource)
+	}
+	if !reflect.DeepEqual(got.NetInterfaces, []string{"eth0", "eth1"}) {
+		t.Fatalf("NetInterfaces = %#v", got.NetInterfaces)
+	}
+	if !reflect.DeepEqual(got.NetExcluded, []string{"docker0", "lo"}) {
+		t.Fatalf("NetExcluded = %#v", got.NetExcluded)
+	}
+	if got.HostNetRXBytesTotal != 3000 {
+		t.Fatalf("HostNetRXBytesTotal = %v, want 3000", got.HostNetRXBytesTotal)
+	}
+	if got.HostNetTXBytesTotal != 4000 {
+		t.Fatalf("HostNetTXBytesTotal = %v, want 4000", got.HostNetTXBytesTotal)
+	}
+	if got.HostNetRXBytesPerSecond.Count != 2 {
+		t.Fatalf("HostNetRXBytesPerSecond.Count = %d, want 2", got.HostNetRXBytesPerSecond.Count)
+	}
+}
+
+func TestRenderMarkdownIncludesRealResourceNetworkSummary(t *testing.T) {
+	rep := urlOnceReport{
+		StartedAt:      time.Date(2026, 5, 17, 1, 2, 3, 0, time.UTC),
+		FinishedAt:     time.Date(2026, 5, 17, 1, 7, 3, 0, time.UTC),
+		Phase:          "real",
+		TargetLocality: "test",
+		Notes:          []string{"direct Veriflier calls only"},
+		RealResults: []modeResult{
+			{
+				Mode:                   "v2-get-full",
+				Endpoint:               "v2",
+				URLCount:               10,
+				Completed:              10,
+				ChecksPerSecond:        2,
+				HostNetRXBytesPerCheck: 123.4,
+				HostNetTXBytesPerCheck: 56.7,
+				ResourceSummary: resourceSummary{
+					Samples:                 3,
+					NetCounterSource:        "/proc/net/dev",
+					NetInterfaces:           []string{"eth0"},
+					HostNetRXBytesTotal:     1234,
+					HostNetTXBytesTotal:     567,
+					HostNetRXBytesPerSecond: statBlock{Avg: 1000},
+					HostNetTXBytesPerSecond: statBlock{Avg: 500},
+					RSSBytes:                statBlock{Avg: 100 * 1024 * 1024, P95: 110 * 1024 * 1024, Max: 120 * 1024 * 1024},
+					OpenFDs:                 statBlock{Avg: 10, P95: 11, Max: 12},
+					Threads:                 statBlock{Avg: 4, P95: 4, Max: 4},
+				},
+			},
+		},
+	}
+
+	md := renderMarkdown(rep)
+	for _, want := range []string{
+		"## Real URL Resource Samples",
+		"Net RX/TX total MiB",
+		"Net RX/TX per completed check B",
+		"/proc/net/dev",
+		"`eth0`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("rendered markdown does not contain %q:\n%s", want, md)
+		}
 	}
 }

@@ -301,11 +301,17 @@ type resourceSample struct {
 	WriteBytes       float64   `json:"write_bytes,omitempty"`
 	NetRXBytes       float64   `json:"net_rx_bytes,omitempty"`
 	NetTXBytes       float64   `json:"net_tx_bytes,omitempty"`
+	NetCounterSource string    `json:"net_counter_source,omitempty"`
+	NetInterfaces    []string  `json:"net_interfaces,omitempty"`
+	NetExcluded      []string  `json:"net_excluded_interfaces,omitempty"`
 }
 
 type resourceSummary struct {
 	Samples                    int       `json:"samples"`
 	Error                      string    `json:"error,omitempty"`
+	NetCounterSource           string    `json:"net_counter_source,omitempty"`
+	NetInterfaces              []string  `json:"net_interfaces,omitempty"`
+	NetExcluded                []string  `json:"net_excluded_interfaces,omitempty"`
 	ProcessCPUPercentCore      statBlock `json:"process_cpu_percent_core"`
 	HostCPUPercent             statBlock `json:"host_cpu_percent"`
 	RSSBytes                   statBlock `json:"rss_bytes"`
@@ -315,6 +321,8 @@ type resourceSummary struct {
 	ProcessWriteBytesPerSecond statBlock `json:"process_write_bytes_per_second"`
 	HostNetRXBytesPerSecond    statBlock `json:"host_net_rx_bytes_per_second"`
 	HostNetTXBytesPerSecond    statBlock `json:"host_net_tx_bytes_per_second"`
+	HostNetRXBytesTotal        float64   `json:"host_net_rx_bytes_total,omitempty"`
+	HostNetTXBytesTotal        float64   `json:"host_net_tx_bytes_total,omitempty"`
 }
 
 type statBlock struct {
@@ -358,6 +366,8 @@ type modeResult struct {
 	EndToEndLatencyMS      statBlock          `json:"end_to_end_latency_ms"`
 	ProbeRTTMS             statBlock          `json:"probe_rtt_ms"`
 	ResourceSummary        resourceSummary    `json:"resource_summary"`
+	HostNetRXBytesPerCheck float64            `json:"host_net_rx_bytes_per_completed_check,omitempty"`
+	HostNetTXBytesPerCheck float64            `json:"host_net_tx_bytes_per_completed_check,omitempty"`
 	TargetObservation      *targetObservation `json:"target_observation,omitempty"`
 	TargetObservationError string             `json:"target_observation_error,omitempty"`
 	ErrorsByKind           map[string]int     `json:"errors_by_kind,omitempty"`
@@ -594,7 +604,15 @@ func main() {
 					rep.Notes = append(rep.Notes, fmt.Sprintf("The first %d selected URLs are skipped for %s to avoid duplicate checks after an interrupted prior attempt.", modeSkips[mode.Name], mode.Name))
 				}
 			}
-			rep.RealResults = runRealURLComparison(ctx, endpoints, modes, cb, selected, *requestTimeout, *v2RPCTimeout, *drainTimeout, *resourceInterval, *perHostConcurrency, *globalConcurrency, resultPath, modeSkips)
+			var realResults []modeResult
+			rep.RealResults = realResults
+			rep.RealResults = runRealURLComparison(ctx, endpoints, modes, cb, selected, *requestTimeout, *v2RPCTimeout, *drainTimeout, *resourceInterval, *perHostConcurrency, *globalConcurrency, resultPath, modeSkips, func(result modeResult) {
+				realResults = append(realResults, result)
+				rep.RealResults = append([]modeResult(nil), realResults...)
+				if err := writeReports(*outDir, rep); err != nil {
+					log.Printf("write incremental real report after mode=%s: %v", result.Mode, err)
+				}
+			})
 		}
 	}
 
@@ -661,7 +679,7 @@ func runFixture(ctx context.Context, endpoints []endpointConfig, modes []checkMo
 	return results
 }
 
-func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, sites []siteRow, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string, modeSkips map[string]int) []modeResult {
+func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, sites []siteRow, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string, modeSkips map[string]int, onModeResult func(modeResult)) []modeResult {
 	checks := make([]urlCheck, 0, len(sites))
 	for i, site := range sites {
 		checks = append(checks, urlCheck{
@@ -687,7 +705,11 @@ func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes
 				modeChecks = modeChecks[skipURLs:]
 			}
 		}
-		results = append(results, runRealMode(ctx, ep, mode, modeChecks, cb, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval, perHostConcurrency, globalConcurrency, resultPath))
+		result := runRealMode(ctx, ep, mode, modeChecks, cb, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval, perHostConcurrency, globalConcurrency, resultPath)
+		results = append(results, result)
+		if onModeResult != nil {
+			onModeResult(result)
+		}
 	}
 	return results
 }
@@ -991,6 +1013,10 @@ func finalizeModeResult(result *modeResult) {
 		result.CompletionRate = float64(result.Completed) / float64(result.URLCount)
 		result.UnexpectedRate = float64(result.Unexpected) / float64(result.URLCount)
 		result.TransportRate = float64(result.TransportErrors) / float64(result.URLCount)
+	}
+	if result.Completed > 0 {
+		result.HostNetRXBytesPerCheck = result.ResourceSummary.HostNetRXBytesTotal / float64(result.Completed)
+		result.HostNetTXBytesPerCheck = result.ResourceSummary.HostNetTXBytesTotal / float64(result.Completed)
 	}
 	result.EndToEndLatencyMS = finalizeStat(result.EndToEndLatencyMS)
 	result.ProbeRTTMS = finalizeStat(result.ProbeRTTMS)
@@ -2116,7 +2142,7 @@ func buildDryRunPlan(urlCount int, modes []checkMode, perHostConcurrency, global
 		BatchSize:               batchSize,
 		RandomizationStrategy:   "stream active http/https rows from the SQL dump, hash blog_id+url with the configured seed, sort by hash, then take -max-urls if set",
 		ResourceMeasurement:     "SSH /proc sampler on each Veriflier host captures process CPU jiffies, RSS, FD count, threads, /proc/<pid>/io read/write bytes, and host CPU jiffies",
-		NetworkMeasurement:      "SSH /proc/net/dev deltas on non-loopback/non-container interfaces capture host RX/TX bytes for the Veriflier host over each mode window",
+		NetworkMeasurement:      "SSH /proc/net/dev deltas on included host interfaces capture RX/TX bytes over each mode window; report.json records the counter source plus included and excluded interface names",
 		TimeoutPolicy:           fmt.Sprintf("one Veriflier check attempt per URL per mode with %s per-check timeout; v1 callbacks drain for the configured drain timeout", timeout),
 		RetryPolicy:             "zero retries; transport failures and missing callbacks are recorded as first-attempt outcomes",
 		OutputSchema: []string{
@@ -2228,7 +2254,7 @@ sudo -n awk '{print "proc_jiffies=" $14+$15}' /proc/$pid/stat
 sudo -n awk '/VmRSS:/{print "rss_bytes=" $2*1024} /Threads:/{print "threads=" $2}' /proc/$pid/status
 echo open_fds=$(sudo -n find /proc/$pid/fd -maxdepth 1 -type l 2>/dev/null | wc -l)
 sudo -n awk '/^read_bytes:/{print "read_bytes=" $2} /^write_bytes:/{print "write_bytes=" $2}' /proc/$pid/io
-awk -F'[: ]+' 'BEGIN{rx=0;tx=0} $2 != "" {dev=$2; if (dev !~ /^(lo|docker|veth|br-|virbr|tailscale|wwan|wlp)/) {rx+=$3; tx+=$11}} END{print "net_rx_bytes=" rx; print "net_tx_bytes=" tx}' /proc/net/dev
+awk 'BEGIN{rx=0;tx=0;included="";excluded=""} /^[[:space:]]*[^|]+:/ {split($0,line,":"); dev=line[1]; gsub(/^[ \t]+|[ \t]+$/, "", dev); data=line[2]; gsub(/^[ \t]+/, "", data); split(data, fields, /[[:space:]]+/); if (dev !~ /^(lo|docker|veth|br-|virbr|tailscale|wwan|wlp)/) {rx+=fields[1]; tx+=fields[9]; included=(included==""?dev:included "," dev)} else {excluded=(excluded==""?dev:excluded "," dev)}} END{print "net_counter_source=/proc/net/dev"; print "net_interfaces=" included; print "net_excluded_interfaces=" excluded; print "net_rx_bytes=" rx; print "net_tx_bytes=" tx}' /proc/net/dev
 `, shellQuote(ep.PIDPattern))
 	cmd := exec.CommandContext(ctx, "ssh", ep.SSHHost, "bash -lc "+shellQuote(script))
 	out, err := cmd.CombinedOutput()
@@ -2272,6 +2298,12 @@ awk -F'[: ]+' 'BEGIN{rx=0;tx=0} $2 != "" {dev=$2; if (dev !~ /^(lo|docker|veth|b
 			sample.NetRXBytes = f
 		case "net_tx_bytes":
 			sample.NetTXBytes = f
+		case "net_counter_source":
+			sample.NetCounterSource = strings.TrimSpace(val)
+		case "net_interfaces":
+			sample.NetInterfaces = splitCSV(val)
+		case "net_excluded_interfaces":
+			sample.NetExcluded = splitCSV(val)
 		}
 	}
 	return sample, nil
@@ -2285,7 +2317,26 @@ func summarizeResources(samples []resourceSample, errs []string) resourceSummary
 	if len(samples) == 0 {
 		return out
 	}
+	interfaceSeen := map[string]bool{}
+	excludedSeen := map[string]bool{}
 	for _, sample := range samples {
+		if sample.NetCounterSource != "" && out.NetCounterSource == "" {
+			out.NetCounterSource = sample.NetCounterSource
+		}
+		for _, iface := range sample.NetInterfaces {
+			if iface == "" || interfaceSeen[iface] {
+				continue
+			}
+			interfaceSeen[iface] = true
+			out.NetInterfaces = append(out.NetInterfaces, iface)
+		}
+		for _, iface := range sample.NetExcluded {
+			if iface == "" || excludedSeen[iface] {
+				continue
+			}
+			excludedSeen[iface] = true
+			out.NetExcluded = append(out.NetExcluded, iface)
+		}
 		if !sample.Missing {
 			out.RSSBytes = appendStat(out.RSSBytes, sample.RSSBytes)
 			out.OpenFDs = appendStat(out.OpenFDs, sample.OpenFDs)
@@ -2316,12 +2367,18 @@ func summarizeResources(samples []resourceSample, errs []string) resourceSummary
 			out.ProcessWriteBytesPerSecond = appendStat(out.ProcessWriteBytesPerSecond, (cur.WriteBytes-prev.WriteBytes)/elapsed)
 		}
 		if cur.NetRXBytes >= prev.NetRXBytes {
-			out.HostNetRXBytesPerSecond = appendStat(out.HostNetRXBytesPerSecond, (cur.NetRXBytes-prev.NetRXBytes)/elapsed)
+			delta := cur.NetRXBytes - prev.NetRXBytes
+			out.HostNetRXBytesTotal += delta
+			out.HostNetRXBytesPerSecond = appendStat(out.HostNetRXBytesPerSecond, delta/elapsed)
 		}
 		if cur.NetTXBytes >= prev.NetTXBytes {
-			out.HostNetTXBytesPerSecond = appendStat(out.HostNetTXBytesPerSecond, (cur.NetTXBytes-prev.NetTXBytes)/elapsed)
+			delta := cur.NetTXBytes - prev.NetTXBytes
+			out.HostNetTXBytesTotal += delta
+			out.HostNetTXBytesPerSecond = appendStat(out.HostNetTXBytesPerSecond, delta/elapsed)
 		}
 	}
+	sort.Strings(out.NetInterfaces)
+	sort.Strings(out.NetExcluded)
 	out.ProcessCPUPercentCore = finalizeStat(out.ProcessCPUPercentCore)
 	out.HostCPUPercent = finalizeStat(out.HostCPUPercent)
 	out.RSSBytes = finalizeStat(out.RSSBytes)
@@ -2511,6 +2568,23 @@ func renderMarkdown(rep urlOnceReport) string {
 		for _, r := range rep.RealResults {
 			fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %d | %.2f | %.0f | %.0f |\n", r.Mode, r.Endpoint, r.URLCount, r.Completed, r.Missing, r.TransportErrors, r.ChecksPerSecond, r.EndToEndLatencyMS.P95, r.ProbeRTTMS.P95)
 		}
+
+		fmt.Fprintf(&b, "\n## Real URL Resource Samples\n\n")
+		fmt.Fprintf(&b, "| Mode | Endpoint | Samples | Net source | Included interfaces | CPU avg/p95/max %%core | RSS avg/p95/max MiB | FDs avg/p95/max | Threads avg/p95/max | Net RX/TX avg KiB/s | Net RX/TX total MiB | Net RX/TX per completed check B | I/O read/write avg KiB/s |\n|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+		for _, r := range rep.RealResults {
+			rs := r.ResourceSummary
+			fmt.Fprintf(&b, "| %s | %s | %d | %s | %s | %.1f / %.1f / %.1f | %.1f / %.1f / %.1f | %.0f / %.0f / %.0f | %.0f / %.0f / %.0f | %.1f / %.1f | %.2f / %.2f | %.1f / %.1f | %.1f / %.1f |\n",
+				r.Mode, r.Endpoint, rs.Samples, firstNonEmpty(rs.NetCounterSource, "-"), renderStringList(rs.NetInterfaces),
+				rs.ProcessCPUPercentCore.Avg, rs.ProcessCPUPercentCore.P95, rs.ProcessCPUPercentCore.Max,
+				bytesToMiB(rs.RSSBytes.Avg), bytesToMiB(rs.RSSBytes.P95), bytesToMiB(rs.RSSBytes.Max),
+				rs.OpenFDs.Avg, rs.OpenFDs.P95, rs.OpenFDs.Max,
+				rs.Threads.Avg, rs.Threads.P95, rs.Threads.Max,
+				bytesToKiB(rs.HostNetRXBytesPerSecond.Avg), bytesToKiB(rs.HostNetTXBytesPerSecond.Avg),
+				bytesToMiB(rs.HostNetRXBytesTotal), bytesToMiB(rs.HostNetTXBytesTotal),
+				r.HostNetRXBytesPerCheck, r.HostNetTXBytesPerCheck,
+				bytesToKiB(rs.ProcessReadBytesPerSecond.Avg), bytesToKiB(rs.ProcessWriteBytesPerSecond.Avg))
+		}
+		fmt.Fprintf(&b, "\nNetwork counters are host-level `/proc/net/dev` deltas over the Veriflier host interfaces listed above. Excluded interfaces are preserved in `report.json` as `net_excluded_interfaces`.\n")
 	}
 	return b.String()
 }
@@ -2594,6 +2668,28 @@ func safePathPart(value string) string {
 		return "unnamed"
 	}
 	return out
+}
+
+func splitCSV(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func renderStringList(values []string) string {
+	if len(values) == 0 {
+		return "-"
+	}
+	return "`" + strings.Join(values, ",") + "`"
 }
 
 func copyStringInt(in map[string]int) map[string]int {
