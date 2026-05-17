@@ -818,6 +818,10 @@ func runMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []ur
 	}
 	result.EndToEndLatencyMS = finalizeStat(result.EndToEndLatencyMS)
 	result.ProbeRTTMS = finalizeStat(result.ProbeRTTMS)
+	if result.Completed > 0 {
+		result.HostNetRXBytesPerCheck = result.ResourceSummary.HostNetRXBytesTotal / float64(result.Completed)
+		result.HostNetTXBytesPerCheck = result.ResourceSummary.HostNetTXBytesTotal / float64(result.Completed)
+	}
 	return result
 }
 
@@ -2509,18 +2513,21 @@ func renderMarkdown(rep urlOnceReport) string {
 		}
 
 		fmt.Fprintf(&b, "\n## Fixture Resource Samples\n\n")
-		fmt.Fprintf(&b, "| Mode | Endpoint | CPU avg/p95/max %%core | RSS avg/p95/max MiB | FDs avg/p95/max | Threads avg/p95/max | Net RX/TX avg KiB/s | I/O read/write avg KiB/s |\n|---|---|---:|---:|---:|---:|---:|---:|\n")
+		fmt.Fprintf(&b, "| Mode | Endpoint | Samples | Net source | Included interfaces | CPU avg/p95/max %%core | RSS avg/p95/max MiB | FDs avg/p95/max | Threads avg/p95/max | Net RX/TX avg KiB/s | Net RX/TX total MiB | Net RX/TX per completed check B | I/O read/write avg KiB/s |\n|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 		for _, r := range rep.FixtureResults {
 			rs := r.ResourceSummary
-			fmt.Fprintf(&b, "| %s | %s | %.1f / %.1f / %.1f | %.1f / %.1f / %.1f | %.0f / %.0f / %.0f | %.0f / %.0f / %.0f | %.1f / %.1f | %.1f / %.1f |\n",
-				r.Mode, r.Endpoint,
+			fmt.Fprintf(&b, "| %s | %s | %d | %s | %s | %.1f / %.1f / %.1f | %.1f / %.1f / %.1f | %.0f / %.0f / %.0f | %.0f / %.0f / %.0f | %.1f / %.1f | %.2f / %.2f | %.1f / %.1f | %.1f / %.1f |\n",
+				r.Mode, r.Endpoint, rs.Samples, firstNonEmpty(rs.NetCounterSource, "-"), renderStringList(rs.NetInterfaces),
 				rs.ProcessCPUPercentCore.Avg, rs.ProcessCPUPercentCore.P95, rs.ProcessCPUPercentCore.Max,
 				bytesToMiB(rs.RSSBytes.Avg), bytesToMiB(rs.RSSBytes.P95), bytesToMiB(rs.RSSBytes.Max),
 				rs.OpenFDs.Avg, rs.OpenFDs.P95, rs.OpenFDs.Max,
 				rs.Threads.Avg, rs.Threads.P95, rs.Threads.Max,
 				bytesToKiB(rs.HostNetRXBytesPerSecond.Avg), bytesToKiB(rs.HostNetTXBytesPerSecond.Avg),
+				bytesToMiB(rs.HostNetRXBytesTotal), bytesToMiB(rs.HostNetTXBytesTotal),
+				r.HostNetRXBytesPerCheck, r.HostNetTXBytesPerCheck,
 				bytesToKiB(rs.ProcessReadBytesPerSecond.Avg), bytesToKiB(rs.ProcessWriteBytesPerSecond.Avg))
 		}
+		fmt.Fprintf(&b, "\nNetwork counters are host-level `/proc/net/dev` deltas over the Veriflier host interfaces listed above. Excluded interfaces are preserved in `report.json` as `net_excluded_interfaces`.\n")
 	}
 
 	if rep.DatasetSummary != nil {

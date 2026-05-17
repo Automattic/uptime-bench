@@ -213,6 +213,29 @@ func TestRenderMarkdownIncludesRealResourceNetworkSummary(t *testing.T) {
 		Phase:          "real",
 		TargetLocality: "test",
 		Notes:          []string{"direct Veriflier calls only"},
+		FixtureResults: []modeResult{
+			{
+				Mode:                   "v2-get-simple_http",
+				Endpoint:               "v2",
+				URLCount:               10,
+				Completed:              10,
+				ChecksPerSecond:        2,
+				HostNetRXBytesPerCheck: 200,
+				HostNetTXBytesPerCheck: 100,
+				ResourceSummary: resourceSummary{
+					Samples:                 2,
+					NetCounterSource:        "/proc/net/dev",
+					NetInterfaces:           []string{"eth0"},
+					HostNetRXBytesTotal:     2000,
+					HostNetTXBytesTotal:     1000,
+					HostNetRXBytesPerSecond: statBlock{Avg: 1500},
+					HostNetTXBytesPerSecond: statBlock{Avg: 700},
+					RSSBytes:                statBlock{Avg: 90 * 1024 * 1024, P95: 95 * 1024 * 1024, Max: 100 * 1024 * 1024},
+					OpenFDs:                 statBlock{Avg: 8, P95: 9, Max: 10},
+					Threads:                 statBlock{Avg: 4, P95: 4, Max: 4},
+				},
+			},
+		},
 		RealResults: []modeResult{
 			{
 				Mode:                   "v2-get-full",
@@ -240,6 +263,7 @@ func TestRenderMarkdownIncludesRealResourceNetworkSummary(t *testing.T) {
 
 	md := renderMarkdown(rep)
 	for _, want := range []string{
+		"## Fixture Resource Samples",
 		"## Real URL Resource Samples",
 		"Net RX/TX total MiB",
 		"Net RX/TX per completed check B",
