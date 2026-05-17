@@ -437,6 +437,7 @@ func main() {
 		v2MaxIdleConns     = flag.Int("v2-max-idle-conns", 100, "max idle connections for v2 HTTP transport")
 		v2MaxIdlePerHost   = flag.Int("v2-max-idle-conns-per-host", 20, "max idle connections per host for v2 HTTP transport")
 		requestTimeout     = flag.Duration("request-timeout", 8*time.Second, "per-check request timeout")
+		v2RPCTimeout       = flag.Duration("v2-rpc-timeout", 15*time.Second, "overall timeout for each v2 batch RPC; should exceed -request-timeout so slow per-check results can be returned")
 		drainTimeout       = flag.Duration("drain-timeout", 45*time.Second, "time to wait for v1 callbacks")
 		callbackListen     = flag.String("callback-listen", ":7800", "TLS callback listen address for v1 results")
 		countedListen      = flag.String("counted-target-listen", ":18081", "listen address for internal counted fixture target")
@@ -452,6 +453,9 @@ func main() {
 		perHostConcurrency = flag.Int("per-host-concurrency", 1, "planned per-host concurrency for real URL run")
 		globalConcurrency  = flag.Int("global-concurrency", 40, "planned global concurrency for real URL run")
 		skipV1URLs         = flag.Int("skip-v1-urls", 0, "skip the first N selected URLs for the v1-legacy real mode when resuming after a halted run")
+		skipV2HeadURLs     = flag.Int("skip-v2-head-legacy-urls", 0, "skip the first N selected URLs for the v2-head-legacy real mode when resuming after a halted run")
+		skipV2SimpleURLs   = flag.Int("skip-v2-get-simple-http-urls", 0, "skip the first N selected URLs for the v2-get-simple_http real mode when resuming after a halted run")
+		skipV2FullURLs     = flag.Int("skip-v2-get-full-urls", 0, "skip the first N selected URLs for the v2-get-full real mode when resuming after a halted run")
 		confirmRealRun     = flag.Bool("confirm-real-run", false, "required with -phase=real to contact real URLs")
 		outDir             = flag.String("out-dir", "", "report output directory")
 	)
@@ -478,6 +482,12 @@ func main() {
 	}
 	if *perHostConcurrency <= 0 || *globalConcurrency <= 0 {
 		log.Fatal("concurrency limits must be positive")
+	}
+	if *v2RPCTimeout <= 0 {
+		log.Fatal("-v2-rpc-timeout must be positive")
+	}
+	if *v2RPCTimeout < *requestTimeout {
+		log.Fatal("-v2-rpc-timeout must be greater than or equal to -request-timeout")
 	}
 	if *phase == "real" && !*confirmRealRun {
 		log.Fatal("-phase=real requires -confirm-real-run")
@@ -552,7 +562,7 @@ func main() {
 		rep.TargetLocality = "internal-only counted HTTP fixture target served by uptime-bench and reached by private LAN address"
 		rep.Preflight = append(rep.Preflight, preflightTarget(ctx, counter.URLFor("preflight", "fixture", "HEAD", "legacy"), true))
 		log.Printf("running internal fixture against %d URLs per mode", *fixtureURLs)
-		rep.FixtureResults = runFixture(ctx, endpoints, modes, cb, counter, *fixtureURLs, *requestTimeout, *drainTimeout, *resourceInterval)
+		rep.FixtureResults = runFixture(ctx, endpoints, modes, cb, counter, *fixtureURLs, *requestTimeout, *v2RPCTimeout, *drainTimeout, *resourceInterval)
 		if err := writeReports(*outDir, rep); err != nil {
 			log.Printf("write interim report: %v", err)
 		}
@@ -573,10 +583,18 @@ func main() {
 			log.Printf("running real URL one-shot comparison against %d selected URLs", len(selected))
 			resultPath := filepath.Join(*outDir, "results.ndjson")
 			rep.Notes = append(rep.Notes, "Real per-result outcomes are written to results.ndjson without full URLs.")
-			if *skipV1URLs > 0 {
-				rep.Notes = append(rep.Notes, fmt.Sprintf("The first %d selected URLs are skipped for v1-legacy only to avoid duplicate v1 checks after an interrupted prior attempt.", *skipV1URLs))
+			modeSkips := map[string]int{
+				"v1-legacy":          *skipV1URLs,
+				"v2-head-legacy":     *skipV2HeadURLs,
+				"v2-get-simple_http": *skipV2SimpleURLs,
+				"v2-get-full":        *skipV2FullURLs,
 			}
-			rep.RealResults = runRealURLComparison(ctx, endpoints, modes, cb, selected, *requestTimeout, *drainTimeout, *resourceInterval, *perHostConcurrency, *globalConcurrency, resultPath, *skipV1URLs)
+			for _, mode := range modes {
+				if modeSkips[mode.Name] > 0 {
+					rep.Notes = append(rep.Notes, fmt.Sprintf("The first %d selected URLs are skipped for %s to avoid duplicate checks after an interrupted prior attempt.", modeSkips[mode.Name], mode.Name))
+				}
+			}
+			rep.RealResults = runRealURLComparison(ctx, endpoints, modes, cb, selected, *requestTimeout, *v2RPCTimeout, *drainTimeout, *resourceInterval, *perHostConcurrency, *globalConcurrency, resultPath, modeSkips)
 		}
 	}
 
@@ -608,7 +626,7 @@ func phaseNeedsV1(phase string) bool {
 	return phase == "fixture" || phase == "fixture-plan" || phase == "real"
 }
 
-func runFixture(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, counter fixtureCounter, count int, requestTimeout, drainTimeout, resourceInterval time.Duration) []modeResult {
+func runFixture(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, counter fixtureCounter, count int, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval time.Duration) []modeResult {
 	var results []modeResult
 	for _, mode := range modes {
 		ep, ok := endpointByName(endpoints, mode.Endpoint)
@@ -627,7 +645,7 @@ func runFixture(ctx context.Context, endpoints []endpointConfig, modes []checkMo
 				Host:            hostOf(urlValue),
 			})
 		}
-		result := runMode(ctx, ep, mode, checks, cb, requestTimeout, drainTimeout, resourceInterval)
+		result := runMode(ctx, ep, mode, checks, cb, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval)
 		obs, err := counter.Observation(path, count)
 		if err != nil {
 			result.TargetObservationError = err.Error()
@@ -643,7 +661,7 @@ func runFixture(ctx context.Context, endpoints []endpointConfig, modes []checkMo
 	return results
 }
 
-func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, sites []siteRow, requestTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string, skipV1URLs int) []modeResult {
+func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, sites []siteRow, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string, modeSkips map[string]int) []modeResult {
 	checks := make([]urlCheck, 0, len(sites))
 	for i, site := range sites {
 		checks = append(checks, urlCheck{
@@ -662,19 +680,19 @@ func runRealURLComparison(ctx context.Context, endpoints []endpointConfig, modes
 			continue
 		}
 		modeChecks := checks
-		if mode.Name == "v1-legacy" && skipV1URLs > 0 {
-			if skipV1URLs >= len(modeChecks) {
+		if skipURLs := modeSkips[mode.Name]; skipURLs > 0 {
+			if skipURLs >= len(modeChecks) {
 				modeChecks = nil
 			} else {
-				modeChecks = modeChecks[skipV1URLs:]
+				modeChecks = modeChecks[skipURLs:]
 			}
 		}
-		results = append(results, runRealMode(ctx, ep, mode, modeChecks, cb, requestTimeout, drainTimeout, resourceInterval, perHostConcurrency, globalConcurrency, resultPath))
+		results = append(results, runRealMode(ctx, ep, mode, modeChecks, cb, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval, perHostConcurrency, globalConcurrency, resultPath))
 	}
 	return results
 }
 
-func runMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []urlCheck, cb *callbackServer, requestTimeout, drainTimeout, resourceInterval time.Duration) modeResult {
+func runMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []urlCheck, cb *callbackServer, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval time.Duration) modeResult {
 	start := time.Now().UTC()
 	batchSize := ep.BatchSize
 	if batchSize <= 0 {
@@ -692,9 +710,9 @@ func runMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []ur
 	)
 	for _, batch := range makeBatches(checks, batchSize) {
 		rpcRequests++
-		subCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 		switch ep.Name {
 		case "v1":
+			subCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 			if cb != nil {
 				cb.ForgetIDs(checkIDs(batch))
 			}
@@ -712,6 +730,7 @@ func runMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []ur
 			rows := cb.ResultsForIDs(checkIDs(batch), drainTimeout)
 			appendResults(&allResults, convertV1Rows(batch, rows), errorsByKind)
 		case "v2":
+			subCtx, cancel := context.WithTimeout(ctx, v2RPCTimeout)
 			res := sendV2Batch(subCtx, ep, mode, batch, requestTimeout)
 			cancel()
 			for _, item := range res {
@@ -721,7 +740,6 @@ func runMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []ur
 			}
 			appendResults(&allResults, res, errorsByKind)
 		default:
-			cancel()
 			appendResults(&allResults, transportFailures(batch, "unsupported_endpoint"), errorsByKind)
 		}
 	}
@@ -781,7 +799,7 @@ func runMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []ur
 	return result
 }
 
-func runRealMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []urlCheck, cb *callbackServer, requestTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string) modeResult {
+func runRealMode(ctx context.Context, ep endpointConfig, mode checkMode, checks []urlCheck, cb *callbackServer, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval time.Duration, perHostConcurrency, globalConcurrency int, resultPath string) modeResult {
 	start := time.Now().UTC()
 	batchSize := ep.BatchSize
 	if batchSize <= 0 {
@@ -842,7 +860,7 @@ func runRealMode(ctx context.Context, ep endpointConfig, mode checkMode, checks 
 					outcomeCh <- batchOutcome{Checks: batch, Results: transportFailures(batch, classifyTransportErr(err))}
 					continue
 				}
-				outcome := executeBatch(ctx, ep, mode, batch, cb, requestTimeout, drainTimeout)
+				outcome := executeBatch(ctx, ep, mode, batch, cb, requestTimeout, v2RPCTimeout, drainTimeout)
 				release()
 				outcomeCh <- outcome
 			}
@@ -898,12 +916,12 @@ func runRealMode(ctx context.Context, ep endpointConfig, mode checkMode, checks 
 	return result
 }
 
-func executeBatch(ctx context.Context, ep endpointConfig, mode checkMode, batch []urlCheck, cb *callbackServer, requestTimeout, drainTimeout time.Duration) batchOutcome {
+func executeBatch(ctx context.Context, ep endpointConfig, mode checkMode, batch []urlCheck, cb *callbackServer, requestTimeout, v2RPCTimeout, drainTimeout time.Duration) batchOutcome {
 	out := batchOutcome{Checks: batch, RPCRequests: 1}
-	subCtx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
 	switch ep.Name {
 	case "v1":
+		subCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+		defer cancel()
 		if cb != nil {
 			cb.ForgetIDs(checkIDs(batch))
 		}
@@ -919,6 +937,8 @@ func executeBatch(ctx context.Context, ep endpointConfig, mode checkMode, batch 
 		rows := cb.ResultsForIDs(checkIDs(batch), drainTimeout)
 		out.Results = convertV1Rows(batch, rows)
 	case "v2":
+		subCtx, cancel := context.WithTimeout(ctx, v2RPCTimeout)
+		defer cancel()
 		out.Results = sendV2Batch(subCtx, ep, mode, batch, requestTimeout)
 		for _, item := range out.Results {
 			if item.TransportErr == "" {
