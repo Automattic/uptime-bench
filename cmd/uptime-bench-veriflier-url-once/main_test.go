@@ -62,6 +62,34 @@ func TestDryRunPlanRequestCounts(t *testing.T) {
 	}
 }
 
+func TestSelectModesFiltersAndDeduplicates(t *testing.T) {
+	modes, err := selectModes(defaultModes(), "v2-get-full, v2-head-legacy, v2-get-full")
+	if err != nil {
+		t.Fatalf("selectModes returned error: %v", err)
+	}
+	got := []string{modes[0].Name, modes[1].Name}
+	want := []string{"v2-get-full", "v2-head-legacy"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("selected modes = %#v, want %#v", got, want)
+	}
+	if modesNeedEndpoint(modes, "v1") {
+		t.Fatal("v2-only mode selection should not need v1")
+	}
+	if !modesNeedEndpoint(modes, "v2") {
+		t.Fatal("v2 mode selection should need v2")
+	}
+	endpoints := filterEndpointsForModes([]endpointConfig{{Name: "v1"}, {Name: "v2"}}, modes)
+	if len(endpoints) != 1 || endpoints[0].Name != "v2" {
+		t.Fatalf("filtered endpoints = %#v, want only v2", endpoints)
+	}
+}
+
+func TestSelectModesRejectsUnknownMode(t *testing.T) {
+	if _, err := selectModes(defaultModes(), "v2-get-full,nope"); err == nil {
+		t.Fatal("expected unknown mode error")
+	}
+}
+
 func TestMakeHostAwareBatchesAvoidsDuplicateHostsWithinBatch(t *testing.T) {
 	checks := []urlCheck{
 		{SyntheticBlogID: 1, Host: "a.example"},

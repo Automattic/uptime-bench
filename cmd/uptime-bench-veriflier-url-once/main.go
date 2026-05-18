@@ -466,6 +466,7 @@ func main() {
 		skipV2HeadURLs     = flag.Int("skip-v2-head-legacy-urls", 0, "skip the first N selected URLs for the v2-head-legacy real mode when resuming after a halted run")
 		skipV2SimpleURLs   = flag.Int("skip-v2-get-simple-http-urls", 0, "skip the first N selected URLs for the v2-get-simple_http real mode when resuming after a halted run")
 		skipV2FullURLs     = flag.Int("skip-v2-get-full-urls", 0, "skip the first N selected URLs for the v2-get-full real mode when resuming after a halted run")
+		modeNames          = flag.String("modes", "", "comma-separated mode names to run; default runs all modes")
 		confirmRealRun     = flag.Bool("confirm-real-run", false, "required with -phase=real to contact real URLs")
 		outDir             = flag.String("out-dir", "", "report output directory")
 	)
@@ -478,14 +479,24 @@ func main() {
 		return
 	}
 
-	if *v1Token == "" {
+	modes, err := selectModes(defaultModes(), *modeNames)
+	if err != nil {
+		log.Fatal(err)
+	}
+	needsV1 := modesNeedEndpoint(modes, "v1")
+	needsV2 := modesNeedEndpoint(modes, "v2")
+
+	if needsV1 && *v1Token == "" {
 		*v1Token = firstNonEmpty(os.Getenv("V1_VERIFLIER_TOKEN"), os.Getenv("VERIFLIER_AUTH_TOKEN"))
 	}
-	if *v2Token == "" {
+	if needsV2 && *v2Token == "" {
 		*v2Token = firstNonEmpty(os.Getenv("V2_VERIFLIER_TOKEN"), os.Getenv("VERIFLIER_AUTH_TOKEN"))
 	}
-	if *v1Token == "" || *v2Token == "" {
-		log.Fatal("set v1/v2 Veriflier tokens via flags, V1_VERIFLIER_TOKEN/V2_VERIFLIER_TOKEN, or VERIFLIER_AUTH_TOKEN")
+	if needsV1 && *v1Token == "" {
+		log.Fatal("set v1 Veriflier token via -v1-token, V1_VERIFLIER_TOKEN, or VERIFLIER_AUTH_TOKEN")
+	}
+	if needsV2 && *v2Token == "" {
+		log.Fatal("set v2 Veriflier token via -v2-token, V2_VERIFLIER_TOKEN, or VERIFLIER_AUTH_TOKEN")
 	}
 	if *fixtureURLs <= 0 {
 		log.Fatal("-fixture-urls must be positive")
@@ -509,11 +520,11 @@ func main() {
 		log.Fatalf("create report dir: %v", err)
 	}
 
-	modes := defaultModes()
-	endpoints := []endpointConfig{
+	allEndpoints := []endpointConfig{
 		{Name: "v1", Protocol: "v1-legacy-tls-callback", Addr: *v1Addr, Token: *v1Token, SSHHost: *v1SSHHost, PIDPattern: *v1PIDPattern, BatchSize: *v1BatchSize},
 		{Name: "v2", Protocol: "v2-json-http", Addr: *v2Addr, Token: *v2Token, SSHHost: *v2SSHHost, PIDPattern: *v2PIDPattern, BatchSize: *v2BatchSize, HTTPClient: newV2BenchmarkHTTPClient(*v2MaxIdleConns, *v2MaxIdlePerHost)},
 	}
+	endpoints := filterEndpointsForModes(allEndpoints, modes)
 
 	started := time.Now().UTC()
 	rep := urlOnceReport{
@@ -543,7 +554,7 @@ func main() {
 	}
 
 	var cb *callbackServer
-	if phaseNeedsV1(*phase) {
+	if phaseNeedsV1(*phase, modes) {
 		var err error
 		cb, err = startCallbackServer(*callbackListen)
 		if err != nil {
@@ -632,6 +643,60 @@ func defaultModes() []checkMode {
 	}
 }
 
+func selectModes(all []checkMode, names string) ([]checkMode, error) {
+	if strings.TrimSpace(names) == "" {
+		return append([]checkMode(nil), all...), nil
+	}
+	byName := make(map[string]checkMode, len(all))
+	for _, mode := range all {
+		byName[mode.Name] = mode
+	}
+	var selected []checkMode
+	seen := map[string]bool{}
+	for _, part := range strings.Split(names, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		mode, ok := byName[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown mode %q", name)
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		selected = append(selected, mode)
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("no modes selected")
+	}
+	return selected, nil
+}
+
+func modesNeedEndpoint(modes []checkMode, endpoint string) bool {
+	for _, mode := range modes {
+		if mode.Endpoint == endpoint {
+			return true
+		}
+	}
+	return false
+}
+
+func filterEndpointsForModes(endpoints []endpointConfig, modes []checkMode) []endpointConfig {
+	needed := map[string]bool{}
+	for _, mode := range modes {
+		needed[mode.Endpoint] = true
+	}
+	var out []endpointConfig
+	for _, ep := range endpoints {
+		if needed[ep.Name] {
+			out = append(out, ep)
+		}
+	}
+	return out
+}
+
 func phaseHasFixture(phase string) bool {
 	return phase == "fixture" || phase == "fixture-plan"
 }
@@ -640,8 +705,8 @@ func phaseHasPlan(phase string) bool {
 	return phase == "plan" || phase == "fixture-plan"
 }
 
-func phaseNeedsV1(phase string) bool {
-	return phase == "fixture" || phase == "fixture-plan" || phase == "real"
+func phaseNeedsV1(phase string, modes []checkMode) bool {
+	return (phase == "fixture" || phase == "fixture-plan" || phase == "real") && modesNeedEndpoint(modes, "v1")
 }
 
 func runFixture(ctx context.Context, endpoints []endpointConfig, modes []checkMode, cb *callbackServer, counter fixtureCounter, count int, requestTimeout, v2RPCTimeout, drainTimeout, resourceInterval time.Duration) []modeResult {
