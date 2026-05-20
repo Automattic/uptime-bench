@@ -43,16 +43,18 @@ const (
 )
 
 type report struct {
-	GeneratedAt    time.Time     `json:"generated_at"`
-	StartedAt      time.Time     `json:"started_at"`
-	FinishedAt     time.Time     `json:"finished_at"`
-	UptimeBenchCWD string        `json:"uptime_bench_cwd"`
-	APIBaseURL     string        `json:"api_base_url"`
-	V2Addr         string        `json:"v2_addr"`
-	TargetURL      string        `json:"target_url"`
-	TargetControl  string        `json:"target_control_url"`
-	Phases         []phaseResult `json:"phases"`
-	Summary        summary       `json:"summary"`
+	GeneratedAt          time.Time        `json:"generated_at"`
+	StartedAt            time.Time        `json:"started_at"`
+	FinishedAt           time.Time        `json:"finished_at"`
+	UptimeBenchCWD       string           `json:"uptime_bench_cwd"`
+	APIBaseURL           string           `json:"api_base_url"`
+	V2Addr               string           `json:"v2_addr"`
+	TargetURL            string           `json:"target_url"`
+	TargetControl        string           `json:"target_control_url"`
+	ExpectedJetmonCommit string           `json:"expected_jetmon_commit,omitempty"`
+	NotificationPlan     notificationPlan `json:"notification_plan"`
+	Phases               []phaseResult    `json:"phases"`
+	Summary              summary          `json:"summary"`
 }
 
 type summary struct {
@@ -61,6 +63,13 @@ type summary struct {
 	Failed   int    `json:"failed"`
 	Skipped  int    `json:"skipped"`
 	Warnings int    `json:"warnings"`
+}
+
+type notificationPlan struct {
+	Classification          string `json:"classification"`
+	ExpectedAttempts        bool   `json:"expected_attempts"`
+	CustomerVisibleDisabled bool   `json:"customer_visible_disabled"`
+	RealWPCOMContactAllowed bool   `json:"real_wpcom_contact_allowed"`
 }
 
 type phaseResult struct {
@@ -230,24 +239,27 @@ type apiClient struct {
 
 func main() {
 	var (
-		apiBaseURL       = flag.String("api-base-url", defaultAPIBaseURL, "Jetmon v2 API base URL")
-		apiToken         = flag.String("api-token", "", "Jetmon API token; prefer JETMON_API_TOKEN")
-		v2Addr           = flag.String("v2-addr", defaultV2Addr, "Jetmon v2 Veriflier address")
-		v2Token          = flag.String("v2-token", "", "Jetmon v2 Veriflier auth token; prefer V2_VERIFLIER_TOKEN")
-		targetToken      = flag.String("target-token", "", "target control auth token; prefer TARGET_CONTROL_TOKEN")
-		targetURL        = flag.String("target-url", defaultTargetURL, "target base URL to check")
-		targetHost       = flag.String("target-host", defaultTargetHost, "target host used for failure injection")
-		targetControlURL = flag.String("target-control-url", defaultTargetControl, "target control base URL")
-		outDir           = flag.String("out-dir", "", "report output directory")
-		monitorTimeout   = flag.Duration("monitor-timeout", defaultMonitorTimeout, "max wait for monitor lifecycle phase")
-		overloadCycles   = flag.Int("overload-cycles", defaultOverloadCycles, "number of overload cycles")
-		monitorNonVote   = flag.Bool("monitor-nonvote", false, "run Monitor-path Veriflier operational non-vote/backoff validation")
-		nonVoteSites     = flag.Int("monitor-nonvote-sites", defaultNonVoteSites, "temporary site count for Monitor non-vote validation")
-		nonVoteFlood     = flag.Duration("monitor-nonvote-flood", defaultNonVoteFlood, "duration to hold direct Veriflier overload during Monitor non-vote validation")
-		auditSSHHost     = flag.String("audit-ssh-host", defaultAuditSSHHost, "SSH host used to capture jetmon2 audit rows for Monitor non-vote validation")
-		auditJetmonDir   = flag.String("audit-jetmon-dir", defaultAuditJetmonDir, "Jetmon deployment directory on audit SSH host")
-		auditEnvFile     = flag.String("audit-env-file", defaultAuditEnvFile, "Jetmon environment file sourced before running audit capture")
-		skipMonitor      = flag.Bool("skip-monitor", false, "skip monitor lifecycle phase")
+		apiBaseURL        = flag.String("api-base-url", defaultAPIBaseURL, "Jetmon v2 API base URL")
+		apiToken          = flag.String("api-token", "", "Jetmon API token; prefer JETMON_API_TOKEN")
+		v2Addr            = flag.String("v2-addr", defaultV2Addr, "Jetmon v2 Veriflier address")
+		v2Token           = flag.String("v2-token", "", "Jetmon v2 Veriflier auth token; prefer V2_VERIFLIER_TOKEN")
+		targetToken       = flag.String("target-token", "", "target control auth token; prefer TARGET_CONTROL_TOKEN")
+		targetURL         = flag.String("target-url", defaultTargetURL, "target base URL to check")
+		targetHost        = flag.String("target-host", defaultTargetHost, "target host used for failure injection")
+		targetControlURL  = flag.String("target-control-url", defaultTargetControl, "target control base URL")
+		outDir            = flag.String("out-dir", "", "report output directory")
+		monitorTimeout    = flag.Duration("monitor-timeout", defaultMonitorTimeout, "max wait for monitor lifecycle phase")
+		overloadCycles    = flag.Int("overload-cycles", defaultOverloadCycles, "number of overload cycles")
+		monitorNonVote    = flag.Bool("monitor-nonvote", false, "run Monitor-path Veriflier operational non-vote/backoff validation")
+		nonVoteSites      = flag.Int("monitor-nonvote-sites", defaultNonVoteSites, "temporary site count for Monitor non-vote validation")
+		nonVoteFlood      = flag.Duration("monitor-nonvote-flood", defaultNonVoteFlood, "duration to hold direct Veriflier overload during Monitor non-vote validation")
+		auditSSHHost      = flag.String("audit-ssh-host", defaultAuditSSHHost, "SSH host used to capture jetmon2 audit rows for Monitor non-vote validation")
+		auditJetmonDir    = flag.String("audit-jetmon-dir", defaultAuditJetmonDir, "Jetmon deployment directory on audit SSH host")
+		auditEnvFile      = flag.String("audit-env-file", defaultAuditEnvFile, "Jetmon environment file sourced before running audit capture")
+		expectedCommit    = flag.String("expected-jetmon-commit", "", "expected Jetmon/Veriflier commit SHA or prefix to assert from /v2/status when available")
+		notificationClass = flag.String("wpcom-notification-classification", "disabled_by_test_plan", "WPCOM notification expectation: disabled_by_test_plan, enabled_no_relevant_events, enabled_expected_attempts_seen, or enabled_expected_attempts_missing")
+		quickSmoke        = flag.Bool("quick-reporting-smoke", false, "run only preflight, transport contract, notification posture, and the three requested lifecycle reporting cases")
+		skipMonitor       = flag.Bool("skip-monitor", false, "skip monitor lifecycle phase")
 	)
 	flag.Parse()
 
@@ -282,13 +294,20 @@ func main() {
 	target := control.NewClient(strings.TrimRight(*targetControlURL, "/"), *targetToken, httpClient)
 
 	rep := report{
-		GeneratedAt:    started,
-		StartedAt:      started,
-		UptimeBenchCWD: mustGetwd(),
-		APIBaseURL:     *apiBaseURL,
-		V2Addr:         *v2Addr,
-		TargetURL:      strings.TrimRight(*targetURL, "/"),
-		TargetControl:  *targetControlURL,
+		GeneratedAt:          started,
+		StartedAt:            started,
+		UptimeBenchCWD:       mustGetwd(),
+		APIBaseURL:           *apiBaseURL,
+		V2Addr:               *v2Addr,
+		TargetURL:            strings.TrimRight(*targetURL, "/"),
+		TargetControl:        *targetControlURL,
+		ExpectedJetmonCommit: strings.TrimSpace(*expectedCommit),
+		NotificationPlan: notificationPlan{
+			Classification:          strings.TrimSpace(*notificationClass),
+			ExpectedAttempts:        notificationExpectedAttempts(*notificationClass),
+			CustomerVisibleDisabled: strings.TrimSpace(*notificationClass) == "disabled_by_test_plan",
+			RealWPCOMContactAllowed: false,
+		},
 	}
 
 	runPhase := func(name string, fn func(context.Context) phaseResult) {
@@ -300,13 +319,37 @@ func main() {
 
 	var status v2Status
 	runPhase("preflight", func(ctx context.Context) phaseResult {
-		phase, st := runPreflight(ctx, api, *v2Addr, *targetControlURL, *targetToken)
+		phase, st := runPreflight(ctx, api, *v2Addr, *targetControlURL, *targetToken, *expectedCommit)
 		status = st
 		return phase
 	})
 	runPhase("transport-contract", func(ctx context.Context) phaseResult {
 		return runTransportContract(ctx, *v2Addr, *v2Token)
 	})
+	runPhase("notification-posture", func(ctx context.Context) phaseResult {
+		return runNotificationPosture(ctx, *notificationClass, *auditSSHHost, *auditEnvFile)
+	})
+	if *quickSmoke {
+		runPhase("monitor-head-legacy-http-503-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorHeadLegacyHTTP503Lifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
+		runPhase("monitor-get-simple-http-503-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorGETSimpleHTTP503Lifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
+		runPhase("monitor-get-full-body-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorGETFullBodyLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
+		rep.FinishedAt = time.Now().UTC()
+		rep.Summary = summarize(rep.Phases)
+		if err := writeReports(*outDir, rep); err != nil {
+			log.Fatalf("write reports: %v", err)
+		}
+		if rep.Summary.Status != "pass" {
+			log.Fatalf("follow-up test status=%s report_dir=%s", rep.Summary.Status, *outDir)
+		}
+		log.Printf("follow-up test status=pass report_dir=%s", *outDir)
+		return
+	}
 	runPhase("auth-and-input-security", func(ctx context.Context) phaseResult {
 		return runSecurityChecks(ctx, *v2Addr, *v2Token)
 	})
@@ -331,10 +374,10 @@ func main() {
 		})
 	} else {
 		runPhase("monitor-lifecycle", func(ctx context.Context) phaseResult {
-			return runMonitorLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout)
+			return runMonitorLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
 		})
 		runPhase("monitor-timeout-lifecycle", func(ctx context.Context) phaseResult {
-			return runMonitorTimeoutLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout)
+			return runMonitorTimeoutLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
 		})
 	}
 
@@ -349,7 +392,7 @@ func main() {
 	log.Printf("follow-up test status=pass report_dir=%s", *outDir)
 }
 
-func runPreflight(ctx context.Context, api apiClient, v2Addr, targetControlURL, targetToken string) (phaseResult, v2Status) {
+func runPreflight(ctx context.Context, api apiClient, v2Addr, targetControlURL, targetToken, expectedCommit string) (phaseResult, v2Status) {
 	phase := newPhase("preflight")
 	var status v2Status
 	if err := api.get(ctx, "/health", nil); err != nil {
@@ -375,6 +418,18 @@ func runPreflight(ctx context.Context, api apiClient, v2Addr, targetControlURL, 
 			"max_concurrency": status.Capacity.MaxConcurrency, "queue_capacity": status.Capacity.QueueCapacity,
 			"protocols": strings.Join(status.Protocols, ","),
 		})
+		if strings.TrimSpace(expectedCommit) != "" {
+			data := map[string]any{
+				"expected_commit": expectedCommit,
+				"expected_prefix": shortCommit(expectedCommit),
+				"status_version":  status.Version,
+			}
+			if versionMatchesCommit(status.Version, expectedCommit) {
+				phase.pass("v2-version-commit", "/v2/status version matches expected commit prefix", data)
+			} else {
+				phase.fail("v2-version-commit", "/v2/status version does not match expected commit prefix", data)
+			}
+		}
 	}
 	targetClient := &http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(targetControlURL, "/")+"/status", nil)
@@ -394,6 +449,40 @@ func runPreflight(ctx context.Context, api apiClient, v2Addr, targetControlURL, 
 		}
 	}
 	return phase.finish(), status
+}
+
+func runNotificationPosture(ctx context.Context, classification, auditSSHHost, auditEnvFile string) phaseResult {
+	phase := newPhase("notification-posture")
+	classification = strings.TrimSpace(classification)
+	if classification == "" {
+		classification = "disabled_by_test_plan"
+	}
+	data := map[string]any{
+		"classification":             classification,
+		"expected_attempts":          notificationExpectedAttempts(classification),
+		"customer_visible_disabled":  classification == "disabled_by_test_plan",
+		"real_wpcom_contact_allowed": false,
+	}
+	if posture, err := captureWPCOMConfigPosture(ctx, auditSSHHost, auditEnvFile); err != nil {
+		data["config_posture_available"] = false
+		data["config_capture_error"] = err.Error()
+	} else {
+		data["config_posture_available"] = true
+		for k, v := range posture {
+			data[k] = v
+		}
+	}
+	switch classification {
+	case "disabled_by_test_plan":
+		phase.pass("wpcom-notifications", "WPCOM notifications are classified as disabled_by_test_plan; zero attempts are expected for this internal-only run", data)
+	case "enabled_no_relevant_events":
+		phase.pass("wpcom-notifications", "WPCOM notifications are enabled by plan, but this run does not expect relevant notification attempts", data)
+	case "enabled_expected_attempts_seen", "enabled_expected_attempts_missing":
+		phase.pass("wpcom-notifications", "WPCOM notification expectation is explicit for report classification", data)
+	default:
+		phase.fail("wpcom-notifications", "unknown WPCOM notification classification", data)
+	}
+	return phase.finish()
 }
 
 func runTransportContract(ctx context.Context, v2Addr, token string) phaseResult {
@@ -978,63 +1067,146 @@ func sustainV2Overload(ctx context.Context, addr, token string, status v2Status,
 	return stats
 }
 
-func runMonitorLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration) phaseResult {
+func runMonitorLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
 	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
-		PhaseName:      "monitor-lifecycle",
-		BlogIDBase:     910408000000,
-		PathPrefix:     "/pr105-lifecycle-",
-		TargetURL:      targetURL,
-		TargetHost:     targetHost,
-		Timeout:        timeout,
-		CheckTimeout:   5,
-		FailureType:    "http_status",
-		FailureParams:  map[string]any{"status_code": 503},
-		FailurePass:    "activate-http-503",
-		FailureDetail:  "target failure activated",
-		CleanupPass:    "deactivate-http-503",
-		CleanupDetail:  "target failure deactivated",
-		CustomHeaderID: "veriflier-pr105-followup",
+		PhaseName:                  "monitor-lifecycle",
+		BlogIDBase:                 910408000000,
+		PathPrefix:                 "/pr105-lifecycle-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               5,
+		RequestMethod:              "HEAD",
+		DetectionProfile:           "legacy",
+		FailureType:                "http_status",
+		FailureParams:              map[string]any{"status_code": 503},
+		FailurePass:                "activate-http-503",
+		FailureDetail:              "target failure activated",
+		CleanupPass:                "deactivate-http-503",
+		CleanupDetail:              "target failure deactivated",
+		CustomHeaderID:             "veriflier-pr105-followup",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
 	})
 }
 
-func runMonitorTimeoutLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration) phaseResult {
+func runMonitorHeadLegacyHTTP503Lifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
+	return runMonitorLifecycle(ctx, api, target, targetURL, targetHost, timeout, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile)
+}
+
+func runMonitorGETSimpleHTTP503Lifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
 	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
-		PhaseName:      "monitor-timeout-lifecycle",
-		BlogIDBase:     910409000000,
-		PathPrefix:     "/pr105-timeout-lifecycle-",
-		TargetURL:      targetURL,
-		TargetHost:     targetHost,
-		Timeout:        timeout,
-		CheckTimeout:   2,
-		FailureType:    "http_timeout",
-		FailureParams:  map[string]any{"method": "HEAD", "delay": "8s"},
-		FailurePass:    "activate-http-timeout",
-		FailureDetail:  "target HEAD timeout activated",
-		CleanupPass:    "deactivate-http-timeout",
-		CleanupDetail:  "target HEAD timeout deactivated",
-		CustomHeaderID: "veriflier-pr105-timeout-followup",
+		PhaseName:                  "monitor-get-simple-http-503-lifecycle",
+		BlogIDBase:                 910411000000,
+		PathPrefix:                 "/pr105-simple-http-503-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               5,
+		RequestMethod:              "GET",
+		DetectionProfile:           "simple_http",
+		FailureType:                "http_method_status",
+		FailureParams:              map[string]any{"method": "GET", "status_code": 503},
+		FailurePass:                "activate-get-503",
+		FailureDetail:              "target GET 503 activated",
+		CleanupPass:                "deactivate-get-503",
+		CleanupDetail:              "target GET 503 deactivated",
+		CustomHeaderID:             "veriflier-pr105-simple-http-lifecycle",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
+	})
+}
+
+func runMonitorGETFullBodyLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
+	forbidden := "DARKLOCK RANSOMWARE"
+	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
+		PhaseName:                  "monitor-get-full-body-lifecycle",
+		BlogIDBase:                 910412000000,
+		PathPrefix:                 "/pr105-full-body-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               5,
+		RequestMethod:              "GET",
+		DetectionProfile:           "full",
+		ForbiddenKeyword:           &forbidden,
+		FailureType:                "http_body",
+		FailureParams:              map[string]any{"method": "GET", "content": "keyword_injected", "keyword": forbidden},
+		FailurePass:                "activate-body-keyword",
+		FailureDetail:              "target body keyword failure activated",
+		CleanupPass:                "deactivate-body-keyword",
+		CleanupDetail:              "target body keyword failure deactivated",
+		CustomHeaderID:             "veriflier-pr105-full-body-lifecycle",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
+	})
+}
+
+func runMonitorTimeoutLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
+	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
+		PhaseName:                  "monitor-timeout-lifecycle",
+		BlogIDBase:                 910409000000,
+		PathPrefix:                 "/pr105-timeout-lifecycle-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               2,
+		RequestMethod:              "HEAD",
+		DetectionProfile:           "legacy",
+		FailureType:                "http_timeout",
+		FailureParams:              map[string]any{"method": "HEAD", "delay": "8s"},
+		FailurePass:                "activate-http-timeout",
+		FailureDetail:              "target HEAD timeout activated",
+		CleanupPass:                "deactivate-http-timeout",
+		CleanupDetail:              "target HEAD timeout deactivated",
+		CustomHeaderID:             "veriflier-pr105-timeout-followup",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
 	})
 }
 
 type monitorLifecycleCase struct {
-	PhaseName      string
-	BlogIDBase     int64
-	PathPrefix     string
-	TargetURL      string
-	TargetHost     string
-	Timeout        time.Duration
-	CheckTimeout   int
-	FailureType    string
-	FailureParams  map[string]any
-	FailurePass    string
-	FailureDetail  string
-	CleanupPass    string
-	CleanupDetail  string
-	CustomHeaderID string
+	PhaseName                  string
+	BlogIDBase                 int64
+	PathPrefix                 string
+	TargetURL                  string
+	TargetHost                 string
+	Timeout                    time.Duration
+	CheckTimeout               int
+	RequestMethod              string
+	DetectionProfile           string
+	CheckKeyword               *string
+	ForbiddenKeyword           *string
+	ForbiddenKeywords          []string
+	FailureType                string
+	FailureParams              map[string]any
+	FailurePass                string
+	FailureDetail              string
+	CleanupPass                string
+	CleanupDetail              string
+	CustomHeaderID             string
+	NotificationClassification string
+	AuditSSHHost               string
+	AuditJetmonDir             string
+	AuditEnvFile               string
 }
 
 func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control.Client, cfg monitorLifecycleCase) phaseResult {
 	phase := newPhase(cfg.PhaseName)
+	if cfg.RequestMethod == "" {
+		cfg.RequestMethod = "HEAD"
+	}
+	if cfg.DetectionProfile == "" {
+		cfg.DetectionProfile = "legacy"
+	}
 	blogID := cfg.BlogIDBase + time.Now().UTC().UnixNano()%1000000
 	path := cfg.PathPrefix + newID()
 	siteURL := cfg.TargetURL + path
@@ -1044,9 +1216,12 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 		MonitorURL:           siteURL,
 		MonitorActive:        true,
 		BucketNo:             0,
+		CheckKeyword:         cfg.CheckKeyword,
+		ForbiddenKeyword:     cfg.ForbiddenKeyword,
+		ForbiddenKeywords:    cfg.ForbiddenKeywords,
 		RedirectPolicy:       "follow",
-		RequestMethod:        "HEAD",
-		DetectionProfile:     "legacy",
+		RequestMethod:        cfg.RequestMethod,
+		DetectionProfile:     cfg.DetectionProfile,
 		TimeoutSeconds:       &cfg.CheckTimeout,
 		CustomHeaders:        map[string]string{"X-Uptime-Bench-Test": cfg.CustomHeaderID},
 		AlertCooldownMinutes: &cooldown,
@@ -1093,6 +1268,17 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 	defer deactivateFailure(target, runID, cfg.FailureType, cfg.TargetHost, path)
 	phase.pass(cfg.FailurePass, cfg.FailureDetail, map[string]any{"path": path, "activated_at": activatedAt.Format(time.RFC3339)})
 
+	seemsDownEvent, err := waitForActiveEventAnyState(waitCtx, api, blogID, []string{"Seems Down", "Down"})
+	if err != nil {
+		phase.fail("seems-down-opened", err.Error(), nil)
+		return phase.finish()
+	}
+	if seemsDownEvent.State == "Seems Down" {
+		phase.pass("seems-down-opened", "controlled failure opened a Seems Down event before verifier confirmation", eventData(seemsDownEvent))
+	} else {
+		phase.pass("seems-down-opened", "controlled failure event was already Down when polled; transition counts verify whether it opened as Seems Down", eventData(seemsDownEvent))
+	}
+
 	downEvent, err := waitForEventState(waitCtx, api, blogID, "Down")
 	if err != nil {
 		phase.fail("wait-down", err.Error(), nil)
@@ -1107,6 +1293,8 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 		phase.fail("verifier-confirmed-transition", "Down event did not include verifier_confirmed transition", eventDetailData(downDetail))
 	} else if !transitionMetadataContains(downDetail.Transitions, "verifier_confirmed", "vantage_id") {
 		phase.fail("verifier-v2-evidence", "verifier_confirmed metadata did not include v2 vantage evidence", eventDetailData(downDetail))
+	} else if lifecycleCount(downDetail, "seems_down_openings") < 1 || lifecycleCount(downDetail, "verifier_confirmed_down_promotions") < 1 {
+		phase.fail("event-lifecycle-counts", "event transition counts did not prove Seems Down opening and verifier-confirmed Down promotion", eventDetailData(downDetail))
 	} else {
 		phase.pass("verifier-confirmed-transition", "same event promoted to Down with v2 Veriflier evidence", eventDetailData(downDetail))
 	}
@@ -1126,9 +1314,13 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 		phase.fail("resolution-reason", "closed event is missing resolution_reason", eventDetailData(closed))
 	} else if !hasTransitionReason(closed.Transitions, "verifier_cleared") && !hasTransitionReason(closed.Transitions, "probe_cleared") {
 		phase.fail("recovery-transition", "closed event missing verifier_cleared/probe_cleared transition", eventDetailData(closed))
+	} else if lifecycleCount(closed, "verifier_cleared_recoveries") < 1 && lifecycleCount(closed, "probe_cleared_recoveries") < 1 {
+		phase.fail("event-lifecycle-recovery-counts", "event transition counts did not prove verifier/probe recovery closure", eventDetailData(closed))
 	} else {
 		phase.pass("recovery-transition", "same event resolved after target recovery", eventDetailData(closed))
 	}
+
+	classifyWPCOMForLifecycle(ctx, &phase, cfg, blogID, activatedAt.Add(-time.Minute), time.Now().UTC().Add(time.Minute))
 
 	var projection apiSiteResponse
 	if err := api.get(ctx, fmt.Sprintf("/sites/%d", blogID), &projection); err != nil {
@@ -1462,6 +1654,104 @@ func captureAuditRows(ctx context.Context, host, dir, envFile string, blogID int
 	return string(out), nil
 }
 
+func captureWPCOMConfigPosture(ctx context.Context, host, envFile string) (map[string]string, error) {
+	if strings.TrimSpace(host) == "" || strings.TrimSpace(envFile) == "" {
+		return nil, fmt.Errorf("audit SSH host and env file are required")
+	}
+	remote := "if [ -r " + shellQuote(envFile) + " ]; then " +
+		"awk -F= '/^(WPCOM_NOTIFY_ENABLE|WPCOM_NOTIFY_MODE|CHECK_TARGET_SAFETY_MODE)=/ {print $1\"=\"$2}' " + shellQuote(envFile) +
+		"; else echo unavailable; fi"
+	cmd := exec.CommandContext(ctx, "ssh", host, remote)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("capture WPCOM config posture: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	posture := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "unavailable" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "WPCOM_NOTIFY_ENABLE", "WPCOM_NOTIFY_MODE", "CHECK_TARGET_SAFETY_MODE":
+			posture[strings.ToLower(key)] = value
+		}
+	}
+	if len(posture) == 0 {
+		posture["wpcom_config_posture"] = "unavailable"
+	}
+	return posture, nil
+}
+
+func classifyWPCOMForLifecycle(ctx context.Context, phase *phaseBuilder, cfg monitorLifecycleCase, blogID int64, since, until time.Time) {
+	classification := strings.TrimSpace(cfg.NotificationClassification)
+	if classification == "" {
+		classification = "disabled_by_test_plan"
+	}
+	data := map[string]any{
+		"blog_id":                    blogID,
+		"classification":             classification,
+		"expected_attempts":          notificationExpectedAttempts(classification),
+		"customer_visible_disabled":  classification == "disabled_by_test_plan",
+		"real_wpcom_contact_allowed": false,
+	}
+	auditText, err := captureAuditRows(ctx, cfg.AuditSSHHost, cfg.AuditJetmonDir, cfg.AuditEnvFile, blogID, since, until)
+	if err != nil {
+		data["audit_available"] = false
+		data["audit_capture_error"] = err.Error()
+		if classification == "disabled_by_test_plan" {
+			phase.fail("wpcom-notification-classification", "could not capture audit rows needed to prove zero WPCOM attempts", data)
+		} else {
+			phase.skip("wpcom-notification-classification", "could not capture audit rows for WPCOM attempt classification", data)
+		}
+		return
+	}
+	attempts := countWPCOMAuditAttempts(auditText)
+	data["audit_available"] = true
+	data["observed_attempts"] = attempts
+	data["audit_excerpt"] = trimForReport(auditText, 1200)
+	switch classification {
+	case "disabled_by_test_plan":
+		if attempts == 0 {
+			phase.pass("wpcom-notification-classification", "WPCOM notifications disabled_by_test_plan; observed attempts=0 as expected", data)
+		} else {
+			phase.fail("wpcom-notification-classification", "WPCOM notifications were disabled by the test plan, but WPCOM audit attempts were observed", data)
+		}
+	case "enabled_no_relevant_events":
+		if attempts == 0 {
+			phase.pass("wpcom-notification-classification", "notifications enabled by plan but no relevant attempts expected; observed attempts=0", data)
+		} else {
+			phase.pass("wpcom-notification-classification", "notifications enabled by plan; attempts were observed even though none were required", data)
+		}
+	case "enabled_expected_attempts_seen":
+		if attempts > 0 {
+			phase.pass("wpcom-notification-classification", "expected WPCOM attempts were observed", data)
+		} else {
+			phase.fail("wpcom-notification-classification", "expected WPCOM attempts were not observed", data)
+		}
+	case "enabled_expected_attempts_missing":
+		if attempts == 0 {
+			phase.fail("wpcom-notification-classification", "expected WPCOM attempts are missing", data)
+		} else {
+			phase.pass("wpcom-notification-classification", "expected WPCOM attempts were observed", data)
+		}
+	default:
+		phase.fail("wpcom-notification-classification", "unknown WPCOM notification classification", data)
+	}
+}
+
+func countWPCOMAuditAttempts(auditText string) int {
+	count := 0
+	for _, needle := range []string{"wpcom_sent", "wpcom_retry", "wpcom_failure"} {
+		count += strings.Count(auditText, needle)
+	}
+	return count
+}
+
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
@@ -1472,6 +1762,29 @@ func trimForReport(s string, max int) string {
 		return s
 	}
 	return s[:max] + "...[truncated]"
+}
+
+func notificationExpectedAttempts(classification string) bool {
+	switch strings.TrimSpace(classification) {
+	case "enabled_expected_attempts_seen", "enabled_expected_attempts_missing":
+		return true
+	default:
+		return false
+	}
+}
+
+func shortCommit(commit string) string {
+	commit = strings.TrimSpace(commit)
+	if len(commit) > 7 {
+		return commit[:7]
+	}
+	return commit
+}
+
+func versionMatchesCommit(version, commit string) bool {
+	version = strings.TrimSpace(version)
+	commit = shortCommit(commit)
+	return version != "" && commit != "" && (strings.HasPrefix(commit, version) || strings.HasPrefix(version, commit))
 }
 
 type phaseBuilder struct {
@@ -1547,6 +1860,15 @@ func renderMarkdown(rep report) string {
 	fmt.Fprintf(&b, "- API: `%s`\n", rep.APIBaseURL)
 	fmt.Fprintf(&b, "- v2 Veriflier: `%s`\n", rep.V2Addr)
 	fmt.Fprintf(&b, "- Target URL: `%s`\n\n", rep.TargetURL)
+	if rep.ExpectedJetmonCommit != "" {
+		fmt.Fprintf(&b, "- Expected Jetmon commit: `%s`\n", rep.ExpectedJetmonCommit)
+	}
+	fmt.Fprintf(&b, "- WPCOM notifications: `%s` (expected_attempts=%t, customer_visible_disabled=%t, real_wpcom_contact_allowed=%t)\n\n",
+		rep.NotificationPlan.Classification,
+		rep.NotificationPlan.ExpectedAttempts,
+		rep.NotificationPlan.CustomerVisibleDisabled,
+		rep.NotificationPlan.RealWPCOMContactAllowed,
+	)
 	fmt.Fprintf(&b, "## Summary\n\n")
 	fmt.Fprintf(&b, "| Passed | Failed | Skipped | Warnings |\n|---:|---:|---:|---:|\n")
 	fmt.Fprintf(&b, "| %d | %d | %d | %d |\n\n", rep.Summary.Passed, rep.Summary.Failed, rep.Summary.Skipped, rep.Summary.Warnings)
@@ -1591,6 +1913,13 @@ func compactData(data map[string]any) string {
 		switch v := value.(type) {
 		case json.RawMessage:
 			parts = append(parts, fmt.Sprintf("%s=%s", key, string(v)))
+		case map[string]any, []any, []string:
+			encoded, err := json.Marshal(v)
+			if err != nil {
+				parts = append(parts, fmt.Sprintf("%s=%v", key, value))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s=%s", key, string(encoded)))
+			}
 		default:
 			parts = append(parts, fmt.Sprintf("%s=%v", key, value))
 		}
@@ -1653,7 +1982,173 @@ func eventDetailData(event apiEventResponse) map[string]any {
 		reasons = append(reasons, transition.Reason)
 	}
 	out["transition_reasons"] = strings.Join(reasons, ",")
+	for key, value := range eventLifecycleCounts(event) {
+		out[key] = value
+	}
+	if evidence := verifierVoteEvidence(event); len(evidence) > 0 {
+		out["verifier_vote_evidence"] = evidence
+	}
 	return out
+}
+
+func eventLifecycleCounts(event apiEventResponse) map[string]int {
+	counts := map[string]int{
+		"seems_down_openings":                0,
+		"verifier_confirmed_down_promotions": 0,
+		"verifier_cleared_recoveries":        0,
+		"probe_cleared_recoveries":           0,
+	}
+	for _, transition := range event.Transitions {
+		switch transition.Reason {
+		case "opened":
+			if transition.StateAfter != nil && *transition.StateAfter == "Seems Down" {
+				counts["seems_down_openings"]++
+			}
+		case "verifier_confirmed":
+			if transition.StateAfter == nil || *transition.StateAfter == "Down" {
+				counts["verifier_confirmed_down_promotions"]++
+			}
+		case "verifier_cleared":
+			counts["verifier_cleared_recoveries"]++
+		case "probe_cleared":
+			counts["probe_cleared_recoveries"]++
+		}
+	}
+	return counts
+}
+
+func lifecycleCount(event apiEventResponse, key string) int {
+	return eventLifecycleCounts(event)[key]
+}
+
+func verifierVoteEvidence(event apiEventResponse) map[string]any {
+	var chosen map[string]any
+	for _, transition := range event.Transitions {
+		if transition.Reason != "verifier_confirmed" || len(transition.Metadata) == 0 {
+			continue
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(transition.Metadata, &meta); err != nil {
+			continue
+		}
+		chosen = meta
+		break
+	}
+	if len(chosen) == 0 {
+		return nil
+	}
+	evidence := map[string]any{}
+	for _, key := range []string{
+		"verifier_quorum",
+		"verifier_min_healthy",
+		"verifier_healthy",
+		"verifier_confirmed",
+		"verifier_disagreed",
+		"verifier_duplicate_votes",
+	} {
+		if value, ok := chosen[key]; ok {
+			evidence[key] = normalizeJSONNumber(value)
+		}
+	}
+	results, _ := chosen["verifier_results"].([]any)
+	vantages := make(map[string]bool)
+	missingOutcome := 0
+	malformedOutcome := 0
+	transportErrors := 0
+	for _, item := range results {
+		row, ok := item.(map[string]any)
+		if !ok {
+			malformedOutcome++
+			continue
+		}
+		if vantageID, _ := row["vantage_id"].(string); strings.TrimSpace(vantageID) != "" {
+			vantages[vantageID] = true
+		}
+		outcome, _ := row["outcome"].(string)
+		if strings.TrimSpace(outcome) == "" {
+			missingOutcome++
+		} else if !knownVerifierOutcome(outcome) {
+			malformedOutcome++
+		}
+		if isVerifierTransportError(row) {
+			transportErrors++
+		}
+	}
+	healthy := anyInt(chosen["verifier_healthy"])
+	confirmed := anyInt(chosen["verifier_confirmed"])
+	counted := len(vantages)
+	evidence["configured_or_healthy_vantages"] = healthy
+	evidence["counted_vantages"] = counted
+	evidence["missing_votes"] = maxInt(healthy-counted, 0)
+	evidence["stale_votes"] = "not_recorded_in_transition_metadata"
+	evidence["missing_outcomes"] = missingOutcome
+	evidence["malformed_outcomes"] = malformedOutcome
+	evidence["transport_errors"] = transportErrors
+	if healthy > 0 {
+		evidence["agreement_ratio"] = fmt.Sprintf("%.3f", float64(confirmed)/float64(healthy))
+	}
+	if len(vantages) > 0 {
+		names := make([]string, 0, len(vantages))
+		for name := range vantages {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		evidence["vantage_ids"] = names
+	}
+	return evidence
+}
+
+func normalizeJSONNumber(value any) any {
+	switch v := value.(type) {
+	case float64:
+		if v == float64(int64(v)) {
+			return int64(v)
+		}
+		return v
+	default:
+		return value
+	}
+}
+
+func anyInt(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		i, _ := v.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
+func knownVerifierOutcome(outcome string) bool {
+	switch outcome {
+	case "up", "down", "probe_error", "agent_overloaded", "timeout", "transport_error":
+		return true
+	default:
+		return false
+	}
+}
+
+func isVerifierTransportError(row map[string]any) bool {
+	outcome, _ := row["outcome"].(string)
+	if outcome == "agent_overloaded" || outcome == "transport_error" || outcome == "timeout" {
+		return true
+	}
+	success, _ := row["success"].(bool)
+	return !success && anyInt(row["http_code"]) == 0
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func hasTransitionReason(transitions []apiTransition, reason string) bool {
