@@ -227,10 +227,11 @@ type callbackServer struct {
 }
 
 type countedTargetConfig struct {
-	Listen    string `json:"listen"`
-	BaseURL   string `json:"base_url"`
-	BodyBytes int    `json:"body_bytes"`
-	RunID     string `json:"run_id"`
+	Listen         string `json:"listen"`
+	BaseURL        string `json:"base_url"`
+	ControlBaseURL string `json:"control_base_url,omitempty"`
+	BodyBytes      int    `json:"body_bytes"`
+	RunID          string `json:"run_id"`
 }
 
 type countedTarget struct {
@@ -245,6 +246,7 @@ type countedTarget struct {
 type fixtureCounter interface {
 	URLFor(endpoint, tier, method, profile string) string
 	URLAndPathFor(endpoint, tier, method, profile string) (string, string)
+	PreflightURLFor(endpoint, tier, method, profile string) string
 	Observation(path string, expected int) (*targetObservation, error)
 	Config() countedTargetConfig
 	Close()
@@ -452,6 +454,7 @@ func main() {
 		callbackListen     = flag.String("callback-listen", ":7800", "TLS callback listen address for v1 results")
 		countedListen      = flag.String("counted-target-listen", ":18081", "listen address for internal counted fixture target")
 		countedBaseURL     = flag.String("counted-target-base-url", "", "base URL Verifliers can reach for counted fixture target")
+		countedControlURL  = flag.String("counted-target-control-base-url", "", "base URL the controller can reach for external counted target stats/preflight; defaults to counted-target-base-url")
 		externalCounter    = flag.Bool("external-counted-target", false, "use an already-running counted target at -counted-target-base-url")
 		countedBodyBytes   = flag.Int("counted-target-body-bytes", 64, "response body bytes served by counted target GET requests")
 		fixtureURLs        = flag.Int("fixture-urls", 4, "URLs per mode for the internal fixture")
@@ -569,7 +572,7 @@ func main() {
 			if *countedBaseURL == "" {
 				log.Fatal("-external-counted-target requires -counted-target-base-url")
 			}
-			counter = newRemoteCountedTarget(*countedBaseURL, *countedBodyBytes)
+			counter = newRemoteCountedTarget(*countedBaseURL, *countedControlURL, *countedBodyBytes)
 		} else {
 			var err error
 			counter, err = startCountedTarget(*countedListen, *countedBaseURL, *countedBodyBytes)
@@ -581,7 +584,7 @@ func main() {
 		cfgCopy := counter.Config()
 		rep.CountedTarget = &cfgCopy
 		rep.TargetLocality = "internal-only counted HTTP fixture target served by uptime-bench and reached by private LAN address"
-		rep.Preflight = append(rep.Preflight, preflightTarget(ctx, counter.URLFor("preflight", "fixture", "HEAD", "legacy"), true))
+		rep.Preflight = append(rep.Preflight, preflightTarget(ctx, counter.PreflightURLFor("preflight", "fixture", "HEAD", "legacy"), true))
 		log.Printf("running internal fixture against %d URLs per mode", *fixtureURLs)
 		rep.FixtureResults = runFixture(ctx, endpoints, modes, cb, counter, *fixtureURLs, *requestTimeout, *v2RPCTimeout, *drainTimeout, *resourceInterval)
 		if err := writeReports(*outDir, rep); err != nil {
@@ -1899,6 +1902,10 @@ func (c *countedTarget) URLAndPathFor(endpoint, tier, method, profile string) (s
 	return c.cfg.BaseURL + path, path
 }
 
+func (c *countedTarget) PreflightURLFor(endpoint, tier, method, profile string) string {
+	return c.URLFor(endpoint, tier, method, profile)
+}
+
 func (c *countedTarget) add(path, method string, bytesWritten int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1933,13 +1940,19 @@ func (c *countedTarget) Close() {
 	_ = c.srv.Shutdown(ctx)
 }
 
-func newRemoteCountedTarget(baseURL string, bodyBytes int) *remoteCountedTarget {
+func newRemoteCountedTarget(baseURL, controlBaseURL string, bodyBytes int) *remoteCountedTarget {
+	baseURL = strings.TrimRight(baseURL, "/")
+	controlBaseURL = strings.TrimRight(controlBaseURL, "/")
+	if controlBaseURL == "" {
+		controlBaseURL = baseURL
+	}
 	return &remoteCountedTarget{
 		cfg: countedTargetConfig{
-			Listen:    "external",
-			BaseURL:   strings.TrimRight(baseURL, "/"),
-			BodyBytes: bodyBytes,
-			RunID:     time.Now().UTC().Format("20060102T150405Z") + "-" + newID(),
+			Listen:         "external",
+			BaseURL:        baseURL,
+			ControlBaseURL: controlBaseURL,
+			BodyBytes:      bodyBytes,
+			RunID:          time.Now().UTC().Format("20060102T150405Z") + "-" + newID(),
 		},
 		client: &http.Client{Timeout: 5 * time.Second},
 	}
@@ -1955,8 +1968,13 @@ func (r *remoteCountedTarget) URLAndPathFor(endpoint, tier, method, profile stri
 	return r.cfg.BaseURL + path, path
 }
 
+func (r *remoteCountedTarget) PreflightURLFor(endpoint, tier, method, profile string) string {
+	path := "/veriflier-url-once/" + r.cfg.RunID + "/" + safePathPart(endpoint) + "/" + safePathPart(tier) + "/" + safePathPart(method+"-"+profile)
+	return r.cfg.ControlBaseURL + path
+}
+
 func (r *remoteCountedTarget) Observation(path string, expected int) (*targetObservation, error) {
-	resp, err := r.client.Get(r.cfg.BaseURL + "/_uptime_bench_counted_stats")
+	resp, err := r.client.Get(r.cfg.ControlBaseURL + "/_uptime_bench_counted_stats")
 	if err != nil {
 		return nil, err
 	}
