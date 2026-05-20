@@ -14,6 +14,7 @@ BINARY_PREFLIGHT = $(BIN_DIR)/uptime-bench-preflight
 BINARY_FINALIZE = $(BIN_DIR)/uptime-bench-finalize
 BINARY_CLEANUP = $(BIN_DIR)/uptime-bench-cleanup
 BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
+BINARY_REPORT_SCAN = $(BIN_DIR)/uptime-bench-report-scan
 
 .DEFAULT_GOAL := build
 
@@ -22,7 +23,7 @@ BINARY_PROBE_IPS_REFRESH = $(BIN_DIR)/probe-ips-refresh
 # ---------------------------------------------------------------------------
 
 .PHONY: build
-build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_JETMON_CAPACITY) $(BINARY_JETMON_CAPACITY_RUN) $(BINARY_VERIFLIER_URL_ONCE) $(BINARY_PREFLIGHT) $(BINARY_FINALIZE) $(BINARY_CLEANUP) $(BINARY_PROBE_IPS_REFRESH)
+build: $(BINARY_HARNESS) $(BINARY_TARGET) $(BINARY_DNS) $(BINARY_CERTMINT) $(BINARY_REPORT) $(BINARY_CAPACITY) $(BINARY_DOCKERSTATS_EXPORTER) $(BINARY_TARGETLOAD) $(BINARY_JETMON_CAPACITY) $(BINARY_JETMON_CAPACITY_RUN) $(BINARY_VERIFLIER_URL_ONCE) $(BINARY_PREFLIGHT) $(BINARY_FINALIZE) $(BINARY_CLEANUP) $(BINARY_PROBE_IPS_REFRESH) $(BINARY_REPORT_SCAN)
 
 $(BINARY_HARNESS): $(shell find cmd/harness internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -83,6 +84,10 @@ $(BINARY_CLEANUP): $(shell find cmd/uptime-bench-cleanup internal -name '*.go' 2
 $(BINARY_PROBE_IPS_REFRESH): $(shell find cmd/probe-ips-refresh internal/probeips -name '*.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
 	go build -o $@ ./cmd/probe-ips-refresh
+
+$(BINARY_REPORT_SCAN): $(shell find cmd/uptime-bench-report-scan internal/reportsafety -name '*.go' 2>/dev/null)
+	@mkdir -p $(BIN_DIR)
+	go build -o $@ ./cmd/uptime-bench-report-scan
 
 .PHONY: clean
 clean:
@@ -343,6 +348,8 @@ help:
 	@echo "    [CAPACITY_PROMETHEUS_URL=http://prometheus.example.com:9090] [CAPACITY_INSTANCES=jetmon-v1.example.com,jetmon-v2.example.com]"
 	@echo "  make provider-cleanup Dry-run stale provider resource cleanup"
 	@echo "    [CLEANUP_FLEET=fleet.toml] [CLEANUP_SERVICES=services.toml] [CLEANUP_DRY_RUN=true]"
+	@echo "  bin/uptime-bench-report-scan -dir=reports/<...>"
+	@echo "    Scan a report bundle for real endpoints and credential-shaped values"
 	@echo "  make capacity-metrics Summarize Jetmon v1/v2 Prometheus capacity metrics"
 	@echo "    [PROMETHEUS_URL=http://prometheus.example.com:9090] [CAPACITY_DURATION=15m] [CAPACITY_FORMAT=table|json]"
 	@echo "  make capacity-capture-run CAPACITY_RUN_DIR=reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>"

@@ -111,6 +111,19 @@ controller artifacts and durable database/report artifacts land in one bundle.
 The finalizer scans the report directory before writing `manifest.json`, so
 pre-existing controller artifacts are included in the final manifest.
 
+Before marking ad-hoc or long-running validation bundles complete, run a local
+artifact scan over the final report directory:
+
+```bash
+bin/uptime-bench-report-scan \
+  -dir=/home/gaarai/code/uptime-bench/reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION> \
+  -out=/home/gaarai/code/uptime-bench/reports/<START_TIMESTAMP>-<DURATION>-<DESCRIPTION>/90-artifact-scan-final.txt
+```
+
+The scanner looks for real WPCOM/SVN endpoints and credential-shaped values
+without failing on prose-only safety statements in `report.md`. It skips prior
+`90-artifact-scan-*.txt` files so repeated scans do not self-match.
+
 ## Capacity Artifacts
 
 Any run that includes Jetmon v1, Jetmon v2, Gatus, Uptime Kuma, or other
