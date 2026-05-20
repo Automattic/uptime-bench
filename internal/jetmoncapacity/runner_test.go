@@ -1494,7 +1494,9 @@ func (c *fakeTargetObserverClient) Summary(ctx context.Context, baseURL, token s
 func (e *fakeSQLExecutor) ExecuteSQL(ctx context.Context, dsn string, sqlText string) (SQLExecutionResult, error) {
 	e.calls = append(e.calls, fakeSQLCall{dsn: dsn, sql: sqlText})
 	switch {
-	case strings.Contains(sqlText, "monitor_url") && strings.Contains(sqlText, "monitor_active = 1"):
+	case strings.Contains(sqlText, "SELECT\n  blog_id,\n  bucket_no,\n  monitor_url") &&
+		strings.Contains(sqlText, "WHERE blog_id IN") &&
+		strings.Contains(sqlText, "ORDER BY blog_id ASC"):
 		return e.activeURLSamples(dsn), nil
 	case strings.Contains(sqlText, "COUNT(*) AS total_rows"):
 		return singleRowResult([]string{"total_rows", "matching_url_rows"}, []string{intString(e.seedTotal), intString(e.seedMatching)}), nil

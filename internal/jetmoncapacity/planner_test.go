@@ -29,6 +29,7 @@ func TestWriteSeedSQLV2BatchesRows(t *testing.T) {
 	assertContains(t, sql, "INSERT INTO jetpack_monitor_event_transitions")
 	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_runtime WHERE blog_id BETWEEN 8000001000000000 AND 8000001000000002")
 	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_check_config WHERE blog_id BETWEEN 8000001000000000 AND 8000001000000002")
+	assertContains(t, sql, "DELETE FROM jetpack_monitor_check_targets WHERE blog_id BETWEEN 8000001000000000 AND 8000001000000002")
 	assertContains(t, sql, "DELETE FROM jetpack_monitor_sites WHERE blog_id BETWEEN 8000001000000000 AND 8000001000000002;")
 	assertContains(t, sql, "(8000001000000000, 7, 'http://site-0000001.load.example.test/'")
 	assertContains(t, sql, "(8000001000000001, 8, 'http://site-0000002.load.example.test/'")
@@ -36,6 +37,7 @@ func TestWriteSeedSQLV2BatchesRows(t *testing.T) {
 	assertNotContains(t, sql, "jetmon_events")
 	assertNotContains(t, sql, "jetmon_site_runtime")
 	assertNotContains(t, sql, "jetmon_site_check_config")
+	assertNotContains(t, sql, "jetmon_check_targets")
 	if got := strings.Count(sql, "INSERT INTO jetpack_monitor_sites"); got != 2 {
 		t.Fatalf("insert batches = %d, want 2", got)
 	}
@@ -108,6 +110,12 @@ func TestWriteActivateSQL(t *testing.T) {
 	assertContains(t, sql, "last_checked_at = NULL,\n       next_check_at = NULL,\n       last_alert_sent_at = NULL")
 	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_runtime WHERE blog_id BETWEEN 100 AND 109")
 	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_check_config WHERE blog_id BETWEEN 100 AND 102")
+	assertContains(t, sql, "DELETE FROM jetpack_monitor_check_targets WHERE blog_id BETWEEN 100 AND 102")
+	assertContains(t, sql, "INSERT INTO jetpack_monitor_check_targets")
+	assertContains(t, sql, "(blog_id, source_site_id, bucket_no, monitor_url, monitor_active, check_interval_sec, phase_slot_sec, config_hash)")
+	assertContains(t, sql, "FROM jetpack_monitor_sites s")
+	assertContains(t, sql, "AND s.blog_id BETWEEN 100 AND 102")
+	assertContains(t, sql, "INSERT IGNORE INTO jetpack_monitor_site_runtime (blog_id)")
 }
 
 func TestWriteActivateSQLV2AppliesExplicitCheckPolicy(t *testing.T) {
@@ -172,6 +180,7 @@ func TestWriteDeactivateSQLV2ResetsSchedulerState(t *testing.T) {
 	sql := out.String()
 	assertContains(t, sql, "last_checked_at = NULL,\n       next_check_at = NULL,\n       last_alert_sent_at = NULL")
 	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_runtime WHERE blog_id BETWEEN 100 AND 109")
+	assertContains(t, sql, "DELETE FROM jetpack_monitor_check_targets WHERE blog_id BETWEEN 100 AND 109")
 	assertContains(t, sql, "-- Deactivate every benchmark-owned site row. Do this before closing events.")
 	assertContains(t, sql, "DO SLEEP(5);")
 	assertContains(t, sql, "DO SLEEP(2);")

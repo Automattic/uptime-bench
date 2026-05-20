@@ -33,6 +33,7 @@ const (
 
 	v2TableSiteRuntime      = "jetpack_monitor_site_runtime"
 	v2TableSiteCheckConfig  = "jetpack_monitor_site_check_config"
+	v2TableCheckTargets     = "jetpack_monitor_check_targets"
 	v2TableEvents           = "jetpack_monitor_events"
 	v2TableEventTransitions = "jetpack_monitor_event_transitions"
 	v2TableCheckHistory     = "jetpack_monitor_check_history"
@@ -332,6 +333,7 @@ func writeSeedSQL(w io.Writer, c Config) error {
 		writeCloseOpenEventsSQL(w, c, "capacity benchmark seed reset")
 		writeDeleteOptionalV2SidecarRangeSQL(w, v2TableSiteRuntime, c.BlogIDStart, c.BlogIDEnd())
 		writeDeleteOptionalV2SidecarRangeSQL(w, v2TableSiteCheckConfig, c.BlogIDStart, c.BlogIDEnd())
+		writeDeleteOptionalV2SidecarRangeSQL(w, v2TableCheckTargets, c.BlogIDStart, c.BlogIDEnd())
 	}
 	fmt.Fprintln(w, "-- Recreate only the benchmark-owned site rows.")
 	fmt.Fprintf(w, "DELETE FROM jetpack_monitor_sites WHERE blog_id BETWEEN %d AND %d;\n", c.BlogIDStart, c.BlogIDEnd())
@@ -578,8 +580,11 @@ DEALLOCATE PREPARE uptime_bench_stmt;
 `, sqlString(legacyUpdate), sqlString(baseUpdate))
 	writeDeleteOptionalV2SidecarRangeSQL(w, v2TableSiteRuntime, start, end)
 	writeDeleteOptionalV2SidecarRangeSQL(w, v2TableSiteCheckConfig, start, end)
+	writeDeleteOptionalV2SidecarRangeSQL(w, v2TableCheckTargets, start, end)
 	if activeValue == 1 {
 		writeInsertOptionalV2CheckConfigRangeSQL(w, c, start, end)
+		writeSyncOptionalV2CheckTargetsRangeSQL(w, start, end)
+		writeInsertOptionalV2RuntimeRangeSQL(w, start, end)
 	}
 }
 
@@ -643,6 +648,67 @@ func renderV2CheckConfigInsertSQL(c Config, start, end int64) string {
 	}
 	fmt.Fprint(&b, "ON DUPLICATE KEY UPDATE request_method = VALUES(request_method), detection_profile = VALUES(detection_profile)")
 	return b.String()
+}
+
+func writeSyncOptionalV2CheckTargetsRangeSQL(w io.Writer, start, end int64) {
+	if start > end {
+		return
+	}
+	insertSQL := fmt.Sprintf(`INSERT INTO %s
+  (blog_id, source_site_id, bucket_no, monitor_url, monitor_active, check_interval_sec, phase_slot_sec, config_hash)
+SELECT s.blog_id,
+       s.jetpack_monitor_site_id,
+       s.bucket_no,
+       s.monitor_url,
+       s.monitor_active,
+       GREATEST(s.check_interval, 1) * 60,
+       MOD(s.jetpack_monitor_site_id, GREATEST(s.check_interval, 1) * 60),
+       SHA2(CONCAT_WS('|', s.blog_id, s.jetpack_monitor_site_id, s.monitor_url, s.monitor_active, s.check_interval), 256)
+  FROM jetpack_monitor_sites s
+ WHERE s.monitor_active = 1
+   AND s.blog_id BETWEEN %d AND %d
+ON DUPLICATE KEY UPDATE
+       blog_id = VALUES(blog_id),
+       bucket_no = VALUES(bucket_no),
+       monitor_url = VALUES(monitor_url),
+       monitor_active = VALUES(monitor_active),
+       check_interval_sec = VALUES(check_interval_sec),
+       phase_slot_sec = VALUES(phase_slot_sec),
+       config_hash = VALUES(config_hash),
+       last_config_sync_at = CURRENT_TIMESTAMP(3)`, v2TableCheckTargets, start, end)
+	fmt.Fprintf(w, `SET @uptime_bench_check_targets_table_exists := (
+  SELECT COUNT(*)
+  FROM INFORMATION_SCHEMA.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = %s
+);
+SET @uptime_bench_sql := IF(@uptime_bench_check_targets_table_exists > 0, %s, 'DO 0');
+PREPARE uptime_bench_stmt FROM @uptime_bench_sql;
+EXECUTE uptime_bench_stmt;
+DEALLOCATE PREPARE uptime_bench_stmt;
+`, sqlString(v2TableCheckTargets), sqlString(insertSQL))
+}
+
+func writeInsertOptionalV2RuntimeRangeSQL(w io.Writer, start, end int64) {
+	if start > end {
+		return
+	}
+	insertSQL := fmt.Sprintf(`INSERT IGNORE INTO %s (blog_id)
+SELECT s.blog_id
+  FROM jetpack_monitor_sites s
+ WHERE s.monitor_active = 1
+   AND s.blog_id BETWEEN %d AND %d`, v2TableSiteRuntime, start, end)
+	fmt.Fprintf(w, `SET @uptime_bench_site_runtime_table_exists := (
+  SELECT COUNT(*)
+  FROM INFORMATION_SCHEMA.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = %s
+);
+SET @uptime_bench_sql := IF(@uptime_bench_site_runtime_table_exists > 0, %s, 'DO 0');
+PREPARE uptime_bench_stmt FROM @uptime_bench_sql;
+EXECUTE uptime_bench_stmt;
+DEALLOCATE PREPARE uptime_bench_stmt;
+`, sqlString(v2TableSiteRuntime), sqlString(insertSQL))
 }
 
 func (c Config) hasV2CheckPolicy() bool {
