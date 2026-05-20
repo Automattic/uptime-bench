@@ -30,6 +30,12 @@ const (
 	defaultBatchSize            = 1000
 	defaultFreshSinceMinutes    = 5
 	maxInt64                    = int64(1<<63 - 1)
+
+	v2TableSiteRuntime      = "jetpack_monitor_site_runtime"
+	v2TableSiteCheckConfig  = "jetpack_monitor_site_check_config"
+	v2TableEvents           = "jetpack_monitor_events"
+	v2TableEventTransitions = "jetpack_monitor_event_transitions"
+	v2TableCheckHistory     = "jetpack_monitor_check_history"
 )
 
 // Operation is a benchmark site lifecycle action.
@@ -324,8 +330,8 @@ func writeSeedSQL(w io.Writer, c Config) error {
 	fmt.Fprintln(w, "START TRANSACTION;")
 	if c.Schema == SchemaV2 {
 		writeCloseOpenEventsSQL(w, c, "capacity benchmark seed reset")
-		writeDeleteOptionalV2SidecarRangeSQL(w, "jetmon_site_runtime", c.BlogIDStart, c.BlogIDEnd())
-		writeDeleteOptionalV2SidecarRangeSQL(w, "jetmon_site_check_config", c.BlogIDStart, c.BlogIDEnd())
+		writeDeleteOptionalV2SidecarRangeSQL(w, v2TableSiteRuntime, c.BlogIDStart, c.BlogIDEnd())
+		writeDeleteOptionalV2SidecarRangeSQL(w, v2TableSiteCheckConfig, c.BlogIDStart, c.BlogIDEnd())
 	}
 	fmt.Fprintln(w, "-- Recreate only the benchmark-owned site rows.")
 	fmt.Fprintf(w, "DELETE FROM jetpack_monitor_sites WHERE blog_id BETWEEN %d AND %d;\n", c.BlogIDStart, c.BlogIDEnd())
@@ -447,19 +453,19 @@ FROM uptime_bench_active_freshness;`)
 	fmt.Fprintln(w, "-- Open events remaining in the benchmark-owned range.")
 	fmt.Fprintf(w, `SELECT
   COUNT(*) AS open_events
-FROM jetmon_events
+FROM %s
 WHERE blog_id BETWEEN %d AND %d
   AND ended_at IS NULL;
-`, c.BlogIDStart, c.BlogIDEnd())
+`, v2TableEvents, c.BlogIDStart, c.BlogIDEnd())
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "-- Recent check history volume for the benchmark-owned range.")
 	fmt.Fprintf(w, `SELECT
   COUNT(*) AS recent_check_history_rows
-FROM jetmon_check_history
+FROM %s
 WHERE blog_id BETWEEN %d AND %d
   AND checked_at >= @uptime_bench_freshness_cutoff;
-`, c.BlogIDStart, c.BlogIDEnd())
+`, v2TableCheckHistory, c.BlogIDStart, c.BlogIDEnd())
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "-- Freshness lag percentiles for active checked rows in the benchmark-owned range.")
@@ -570,8 +576,8 @@ PREPARE uptime_bench_stmt FROM @uptime_bench_sql;
 EXECUTE uptime_bench_stmt;
 DEALLOCATE PREPARE uptime_bench_stmt;
 `, sqlString(legacyUpdate), sqlString(baseUpdate))
-	writeDeleteOptionalV2SidecarRangeSQL(w, "jetmon_site_runtime", start, end)
-	writeDeleteOptionalV2SidecarRangeSQL(w, "jetmon_site_check_config", start, end)
+	writeDeleteOptionalV2SidecarRangeSQL(w, v2TableSiteRuntime, start, end)
+	writeDeleteOptionalV2SidecarRangeSQL(w, v2TableSiteCheckConfig, start, end)
 	if activeValue == 1 {
 		writeInsertOptionalV2CheckConfigRangeSQL(w, c, start, end)
 	}
@@ -601,9 +607,9 @@ func writeInsertOptionalV2CheckConfigRangeSQL(w io.Writer, c Config, start, end 
   SELECT COUNT(*)
   FROM INFORMATION_SCHEMA.TABLES
   WHERE TABLE_SCHEMA = DATABASE()
-    AND TABLE_NAME = 'jetmon_site_check_config'
+    AND TABLE_NAME = %s
 );
-`)
+`, sqlString(v2TableSiteCheckConfig))
 	for batchStart := start; batchStart <= end; {
 		batchEnd := batchStart + int64(c.BatchSize) - 1
 		if batchEnd > end {
@@ -621,7 +627,7 @@ DEALLOCATE PREPARE uptime_bench_stmt;
 
 func renderV2CheckConfigInsertSQL(c Config, start, end int64) string {
 	var b strings.Builder
-	fmt.Fprintln(&b, "INSERT INTO jetmon_site_check_config")
+	fmt.Fprintf(&b, "INSERT INTO %s\n", v2TableSiteCheckConfig)
 	fmt.Fprintln(&b, "  (blog_id, request_method, detection_profile)")
 	fmt.Fprintln(&b, "VALUES")
 	for blogID := start; blogID <= end; blogID++ {
@@ -656,7 +662,7 @@ SELECT
     ELSE 0
   END AS is_stale
 FROM jetpack_monitor_sites s
-LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 WHERE s.blog_id BETWEEN %d AND %d
   AND s.monitor_active = 1`, c.BlogIDStart, c.BlogIDEnd())
 	legacySelect := fmt.Sprintf(`CREATE TEMPORARY TABLE uptime_bench_active_freshness AS
@@ -677,13 +683,13 @@ WHERE blog_id BETWEEN %d AND %d
   SELECT COUNT(*)
   FROM INFORMATION_SCHEMA.TABLES
   WHERE TABLE_SCHEMA = DATABASE()
-    AND TABLE_NAME = 'jetmon_site_runtime'
+    AND TABLE_NAME = %s
 );
 SET @uptime_bench_sql := IF(@uptime_bench_site_runtime_table_exists > 0, %s, %s);
 PREPARE uptime_bench_stmt FROM @uptime_bench_sql;
 EXECUTE uptime_bench_stmt;
 DEALLOCATE PREPARE uptime_bench_stmt;
-`, sqlString(sidecarSelect), sqlString(legacySelect))
+`, sqlString(v2TableSiteRuntime), sqlString(sidecarSelect), sqlString(legacySelect))
 }
 
 func writeCloseOpenEventsSQL(w io.Writer, c Config, note string) {
@@ -695,19 +701,19 @@ CREATE TEMPORARY TABLE uptime_bench_capacity_events_to_close (
 
 INSERT IGNORE INTO uptime_bench_capacity_events_to_close (id)
 SELECT id
-FROM jetmon_events
+FROM %s
 WHERE blog_id BETWEEN %d AND %d
   AND ended_at IS NULL;
 
-INSERT INTO jetmon_event_transitions
+INSERT INTO %s
   (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata)
 SELECT e.id, e.blog_id, e.severity, NULL, e.state, 'Resolved', 'manual_override', 'uptime-bench-capacity',
        JSON_OBJECT('note', %s, 'source', 'uptime-bench-capacity')
-FROM jetmon_events e
+FROM %s e
 JOIN uptime_bench_capacity_events_to_close pending ON pending.id = e.id
 WHERE e.ended_at IS NULL;
 
-UPDATE jetmon_events e
+UPDATE %s e
 JOIN uptime_bench_capacity_events_to_close pending ON pending.id = e.id
    SET e.ended_at = CURRENT_TIMESTAMP(3),
        e.resolution_reason = 'manual_override'
@@ -715,7 +721,7 @@ JOIN uptime_bench_capacity_events_to_close pending ON pending.id = e.id
 
 DROP TEMPORARY TABLE uptime_bench_capacity_events_to_close;
 
-`, c.BlogIDStart, c.BlogIDEnd(), sqlString(note))
+`, v2TableEvents, c.BlogIDStart, c.BlogIDEnd(), v2TableEventTransitions, sqlString(note), v2TableEvents, v2TableEvents)
 }
 
 func formatMonitorURL(pattern string, number int64) (string, error) {

@@ -478,12 +478,12 @@ func (r Runner) collectV2ReplayEvents(ctx context.Context, service ServiceLifecy
   CASE WHEN ended_at IS NULL THEN NULL ELSE DATE_FORMAT(ended_at, '%%Y-%%m-%%dT%%H:%%i:%%s.%%fZ') END AS ended_at,
   COALESCE(resolution_reason, '') AS resolution_reason,
   CAST(metadata AS CHAR) AS metadata
-FROM jetmon_events
+FROM %s
 WHERE blog_id IN (%s)
   AND started_at < %s
   AND (ended_at IS NULL OR ended_at >= %s)
 ORDER BY blog_id ASC, started_at ASC, id ASC;
-`, strings.Join(ids, ", "), sqlString(mysqlTimeLiteral(until)), sqlString(mysqlTimeLiteral(since)))
+`, v2TableEvents, strings.Join(ids, ", "), sqlString(mysqlTimeLiteral(until)), sqlString(mysqlTimeLiteral(since)))
 	result, err := r.execServiceSQL(ctx, service, sqlText)
 	if err != nil {
 		return nil, err

@@ -26,13 +26,16 @@ func TestWriteSeedSQLV2BatchesRows(t *testing.T) {
 		t.Fatalf("WriteSQL: %v", err)
 	}
 	sql := out.String()
-	assertContains(t, sql, "INSERT INTO jetmon_event_transitions")
-	assertContains(t, sql, "DELETE FROM jetmon_site_runtime WHERE blog_id BETWEEN 8000001000000000 AND 8000001000000002")
-	assertContains(t, sql, "DELETE FROM jetmon_site_check_config WHERE blog_id BETWEEN 8000001000000000 AND 8000001000000002")
+	assertContains(t, sql, "INSERT INTO jetpack_monitor_event_transitions")
+	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_runtime WHERE blog_id BETWEEN 8000001000000000 AND 8000001000000002")
+	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_check_config WHERE blog_id BETWEEN 8000001000000000 AND 8000001000000002")
 	assertContains(t, sql, "DELETE FROM jetpack_monitor_sites WHERE blog_id BETWEEN 8000001000000000 AND 8000001000000002;")
 	assertContains(t, sql, "(8000001000000000, 7, 'http://site-0000001.load.example.test/'")
 	assertContains(t, sql, "(8000001000000001, 8, 'http://site-0000002.load.example.test/'")
 	assertContains(t, sql, "(8000001000000002, 7, 'http://site-0000003.load.example.test/'")
+	assertNotContains(t, sql, "jetmon_events")
+	assertNotContains(t, sql, "jetmon_site_runtime")
+	assertNotContains(t, sql, "jetmon_site_check_config")
 	if got := strings.Count(sql, "INSERT INTO jetpack_monitor_sites"); got != 2 {
 		t.Fatalf("insert batches = %d, want 2", got)
 	}
@@ -103,8 +106,8 @@ func TestWriteActivateSQL(t *testing.T) {
 	assertContains(t, sql, "monitor_active = 1")
 	assertContains(t, sql, "check_interval = 5")
 	assertContains(t, sql, "last_checked_at = NULL,\n       next_check_at = NULL,\n       last_alert_sent_at = NULL")
-	assertContains(t, sql, "DELETE FROM jetmon_site_runtime WHERE blog_id BETWEEN 100 AND 109")
-	assertContains(t, sql, "DELETE FROM jetmon_site_check_config WHERE blog_id BETWEEN 100 AND 102")
+	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_runtime WHERE blog_id BETWEEN 100 AND 109")
+	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_check_config WHERE blog_id BETWEEN 100 AND 102")
 }
 
 func TestWriteActivateSQLV2AppliesExplicitCheckPolicy(t *testing.T) {
@@ -127,13 +130,13 @@ func TestWriteActivateSQLV2AppliesExplicitCheckPolicy(t *testing.T) {
 		t.Fatalf("WriteSQL: %v", err)
 	}
 	sql := out.String()
-	assertContains(t, sql, "INSERT INTO jetmon_site_check_config")
+	assertContains(t, sql, "INSERT INTO jetpack_monitor_site_check_config")
 	assertContains(t, sql, "(blog_id, request_method, detection_profile)")
 	assertContains(t, sql, "(100, ''GET'', ''full''),")
 	assertContains(t, sql, "(101, ''GET'', ''full'')")
 	assertContains(t, sql, "(102, ''GET'', ''full'')")
 	assertContains(t, sql, "ON DUPLICATE KEY UPDATE request_method = VALUES(request_method), detection_profile = VALUES(detection_profile)")
-	if got := strings.Count(sql, "INSERT INTO jetmon_site_check_config"); got != 2 {
+	if got := strings.Count(sql, "INSERT INTO jetpack_monitor_site_check_config"); got != 2 {
 		t.Fatalf("check config insert batches = %d, want 2", got)
 	}
 }
@@ -168,15 +171,15 @@ func TestWriteDeactivateSQLV2ResetsSchedulerState(t *testing.T) {
 	}
 	sql := out.String()
 	assertContains(t, sql, "last_checked_at = NULL,\n       next_check_at = NULL,\n       last_alert_sent_at = NULL")
-	assertContains(t, sql, "DELETE FROM jetmon_site_runtime WHERE blog_id BETWEEN 100 AND 109")
+	assertContains(t, sql, "DELETE FROM jetpack_monitor_site_runtime WHERE blog_id BETWEEN 100 AND 109")
 	assertContains(t, sql, "-- Deactivate every benchmark-owned site row. Do this before closing events.")
 	assertContains(t, sql, "DO SLEEP(5);")
 	assertContains(t, sql, "DO SLEEP(2);")
-	if got := strings.Count(sql, "INSERT INTO jetmon_event_transitions"); got != 2 {
+	if got := strings.Count(sql, "INSERT INTO jetpack_monitor_event_transitions"); got != 2 {
 		t.Fatalf("event close passes = %d, want 2", got)
 	}
 	deactivateIndex := strings.Index(sql, "UPDATE jetpack_monitor_sites")
-	closeIndex := strings.Index(sql, "INSERT INTO jetmon_event_transitions")
+	closeIndex := strings.Index(sql, "INSERT INTO jetpack_monitor_event_transitions")
 	if deactivateIndex < 0 || closeIndex < 0 {
 		t.Fatalf("missing deactivate or close SQL")
 	}
@@ -204,7 +207,7 @@ func TestWriteVerifySQLV2UsesStableFreshnessSnapshot(t *testing.T) {
 	assertContains(t, sql, "SET @uptime_bench_now := UTC_TIMESTAMP();")
 	assertContains(t, sql, "SET @uptime_bench_freshness_cutoff := @uptime_bench_now - INTERVAL 7 MINUTE;")
 	assertContains(t, sql, "CREATE TEMPORARY TABLE uptime_bench_active_freshness AS")
-	assertContains(t, sql, "LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id")
+	assertContains(t, sql, "LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id")
 	assertContains(t, sql, "CASE\n    WHEN r.last_checked_at IS NULL OR r.last_checked_at < @uptime_bench_freshness_cutoff THEN 1")
 	assertContains(t, sql, "COALESCE(SUM(is_stale), 0) AS stale_active_sites")
 	assertContains(t, sql, "FROM uptime_bench_active_freshness")
