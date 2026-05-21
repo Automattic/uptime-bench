@@ -184,6 +184,13 @@ type apiSiteCreateRequest struct {
 	CheckInterval        int               `json:"check_interval"`
 }
 
+type apiSiteUpdateRequest struct {
+	MonitorURL           *string           `json:"monitor_url,omitempty"`
+	CustomHeaders        map[string]string `json:"custom_headers,omitempty"`
+	AlertCooldownMinutes *int              `json:"alert_cooldown_minutes,omitempty"`
+	CheckInterval        *int              `json:"check_interval,omitempty"`
+}
+
 type rolloutSeedRequest struct {
 	RunID     string `json:"run_id,omitempty"`
 	BucketMin int    `json:"bucket_min"`
@@ -395,6 +402,9 @@ func main() {
 		runPhase("monitor-lifecycle", func(ctx context.Context) phaseResult {
 			return runMonitorLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
 		})
+		runPhase("monitor-get-simple-http-403-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorGETSimpleHTTP403Lifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
 		runPhase("monitor-timeout-lifecycle", func(ctx context.Context) phaseResult {
 			return runMonitorTimeoutLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
 		})
@@ -603,6 +613,41 @@ func runStagedPolicy(ctx context.Context, target *control.Client, v2Addr, token,
 		phase.fail("get-simple-http-status", "GET simple_http should detect GET 503", resultData(res))
 	} else {
 		phase.pass("get-simple-http-status", "GET simple_http detected GET 503", resultData(res))
+	}
+
+	forbiddenPath := "/pr105-policy-http-403-" + newID()
+	forbiddenRunID := "pr105-policy-http-403-" + newID()
+	if err := target.Activate(ctx, control.ActivateRequest{
+		RunID: forbiddenRunID,
+		Seed:  910406008,
+		Failure: control.FailureSpec{
+			Type:     "http_method_status",
+			Host:     targetHost,
+			Path:     forbiddenPath,
+			Duration: 2 * time.Minute,
+			Rate:     1,
+			Params:   map[string]any{"method": "GET", "status_code": 403},
+		},
+	}); err != nil {
+		phase.fail("activate-http-403", err.Error(), nil)
+	} else {
+		defer deactivateFailure(target, forbiddenRunID, "http_method_status", targetHost, forbiddenPath)
+		time.Sleep(300 * time.Millisecond)
+		forbiddenStatus := v2CheckRequest{
+			RequestID:        "get-simple-http-403-" + newID(),
+			BlogID:           910406009,
+			URL:              targetURL + forbiddenPath,
+			Method:           "GET",
+			DetectionProfile: "simple_http",
+			TimeoutMS:        5000,
+		}
+		if res, err := sendV2Check(ctx, v2Addr, token, forbiddenStatus); err != nil {
+			phase.fail("get-simple-http-403", err.Error(), nil)
+		} else if res.Success || res.HTTPCode != 403 || res.Outcome != "down" {
+			phase.fail("get-simple-http-403", "GET simple_http should detect GET 403", resultData(res))
+		} else {
+			phase.pass("get-simple-http-403", "GET simple_http detected GET 403", resultData(res))
+		}
 	}
 
 	keywordPath := "/pr105-policy-keyword-" + newID()
@@ -1140,6 +1185,31 @@ func runMonitorGETSimpleHTTP503Lifecycle(ctx context.Context, api apiClient, tar
 	})
 }
 
+func runMonitorGETSimpleHTTP403Lifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
+	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
+		PhaseName:                  "monitor-get-simple-http-403-lifecycle",
+		BlogIDBase:                 910413000000,
+		PathPrefix:                 "/pr105-simple-http-403-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               5,
+		RequestMethod:              "GET",
+		DetectionProfile:           "simple_http",
+		FailureType:                "http_method_status",
+		FailureParams:              map[string]any{"method": "GET", "status_code": 403},
+		FailurePass:                "activate-get-403",
+		FailureDetail:              "target GET 403 activated",
+		CleanupPass:                "deactivate-get-403",
+		CleanupDetail:              "target GET 403 deactivated",
+		CustomHeaderID:             "veriflier-pr105-simple-http-403-lifecycle",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
+	})
+}
+
 func runMonitorGETFullBodyLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
 	forbidden := "DARKLOCK RANSOMWARE"
 	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
@@ -1257,6 +1327,24 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 			log.Printf("cleanup site %d: %v", blogID, err)
 		}
 	}()
+
+	updateInterval := 1
+	updateReq := apiSiteUpdateRequest{
+		MonitorURL:           &siteURL,
+		CustomHeaders:        map[string]string{"X-Uptime-Bench-Test": cfg.CustomHeaderID, "X-Uptime-Bench-Updated": "true"},
+		AlertCooldownMinutes: &cooldown,
+		CheckInterval:        &updateInterval,
+	}
+	var updated apiSiteResponse
+	if err := api.patch(ctx, fmt.Sprintf("/sites/%d", blogID), updateReq, &updated, map[string]string{"Idempotency-Key": "pr105-followup-update-" + newID()}); err != nil {
+		phase.fail("update-site", err.Error(), map[string]any{"blog_id": blogID, "url": siteURL})
+		return phase.finish()
+	} else if updated.MonitorURL != siteURL || !updated.MonitorActive {
+		phase.fail("update-site", "updated site projection did not preserve expected URL and active state", siteData(updated))
+		return phase.finish()
+	}
+	phase.pass("update-site", "updated temporary site through API before lifecycle checks", siteData(updated))
+
 	if syncResult, err := syncStreamingTargetsForBucket(ctx, api, siteReq.BucketNo); err != nil {
 		phase.fail("streaming-target-sync", err.Error(), map[string]any{"blog_id": blogID, "bucket_no": siteReq.BucketNo})
 		return phase.finish()
@@ -1570,6 +1658,10 @@ func (a apiClient) get(ctx context.Context, path string, out any) error {
 
 func (a apiClient) post(ctx context.Context, path string, body any, out any, headers map[string]string) error {
 	return a.do(ctx, http.MethodPost, path, body, out, headers)
+}
+
+func (a apiClient) patch(ctx context.Context, path string, body any, out any, headers map[string]string) error {
+	return a.do(ctx, http.MethodPatch, path, body, out, headers)
 }
 
 func (a apiClient) delete(ctx context.Context, path string) error {
