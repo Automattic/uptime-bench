@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -181,6 +182,24 @@ type apiSiteCreateRequest struct {
 	CustomHeaders        map[string]string `json:"custom_headers,omitempty"`
 	AlertCooldownMinutes *int              `json:"alert_cooldown_minutes"`
 	CheckInterval        int               `json:"check_interval"`
+}
+
+type rolloutSeedRequest struct {
+	RunID     string `json:"run_id,omitempty"`
+	BucketMin int    `json:"bucket_min"`
+	BucketMax int    `json:"bucket_max"`
+	DryRun    bool   `json:"dry_run,omitempty"`
+	Execute   bool   `json:"execute,omitempty"`
+	Confirm   string `json:"confirm,omitempty"`
+}
+
+type rolloutSeedResponse struct {
+	Status            string         `json:"status"`
+	Operation         string         `json:"operation"`
+	Summary           string         `json:"summary,omitempty"`
+	ConfirmationToken string         `json:"confirmation_token,omitempty"`
+	Result            map[string]any `json:"result,omitempty"`
+	Blockers          []string       `json:"blockers,omitempty"`
 }
 
 type apiSiteResponse struct {
@@ -1215,7 +1234,7 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 		BlogID:               blogID,
 		MonitorURL:           siteURL,
 		MonitorActive:        true,
-		BucketNo:             0,
+		BucketNo:             997,
 		CheckKeyword:         cfg.CheckKeyword,
 		ForbiddenKeyword:     cfg.ForbiddenKeyword,
 		ForbiddenKeywords:    cfg.ForbiddenKeywords,
@@ -1238,6 +1257,18 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 			log.Printf("cleanup site %d: %v", blogID, err)
 		}
 	}()
+	if syncResult, err := syncStreamingTargetsForBucket(ctx, api, siteReq.BucketNo); err != nil {
+		phase.fail("streaming-target-sync", err.Error(), map[string]any{"blog_id": blogID, "bucket_no": siteReq.BucketNo})
+		return phase.finish()
+	} else {
+		phase.pass("streaming-target-sync", "synced streaming scheduler side tables for temporary site", map[string]any{
+			"blog_id":   blogID,
+			"bucket_no": siteReq.BucketNo,
+			"status":    syncResult.Status,
+			"summary":   syncResult.Summary,
+			"result":    syncResult.Result,
+		})
+	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
@@ -1543,6 +1574,45 @@ func (a apiClient) post(ctx context.Context, path string, body any, out any, hea
 
 func (a apiClient) delete(ctx context.Context, path string) error {
 	return a.do(ctx, http.MethodDelete, path, nil, nil, nil)
+}
+
+func syncStreamingTargetsForBucket(ctx context.Context, api apiClient, bucket int) (rolloutSeedResponse, error) {
+	runID := "uptime-bench-pr105-sync-" + newID()
+	planReq := rolloutSeedRequest{
+		RunID:     runID,
+		BucketMin: bucket,
+		BucketMax: bucket,
+		DryRun:    true,
+	}
+	var plan rolloutSeedResponse
+	if err := api.post(ctx, "/rollout/seed", planReq, &plan, map[string]string{"Idempotency-Key": runID + "-plan"}); err != nil {
+		return rolloutSeedResponse{}, fmt.Errorf("rollout seed plan: %w", err)
+	}
+	if len(plan.Blockers) > 0 {
+		return rolloutSeedResponse{}, fmt.Errorf("rollout seed plan blocked: %s", strings.Join(plan.Blockers, "; "))
+	}
+	if strings.TrimSpace(plan.ConfirmationToken) == "" {
+		return rolloutSeedResponse{}, errors.New("rollout seed plan did not return a confirmation token")
+	}
+
+	execReq := rolloutSeedRequest{
+		RunID:     runID,
+		BucketMin: bucket,
+		BucketMax: bucket,
+		Execute:   true,
+		Confirm:   plan.ConfirmationToken,
+	}
+	var executed rolloutSeedResponse
+	if err := api.post(ctx, "/rollout/seed", execReq, &executed, map[string]string{"Idempotency-Key": runID + "-execute"}); err != nil {
+		return rolloutSeedResponse{}, fmt.Errorf("rollout seed execute: %w", err)
+	}
+	if len(executed.Blockers) > 0 {
+		return rolloutSeedResponse{}, fmt.Errorf("rollout seed execute blocked: %s", strings.Join(executed.Blockers, "; "))
+	}
+	if executed.Status != "" && executed.Status != "ok" {
+		return rolloutSeedResponse{}, fmt.Errorf("rollout seed execute status=%s summary=%s", executed.Status, executed.Summary)
+	}
+	return executed, nil
 }
 
 func (a apiClient) listEvents(ctx context.Context, blogID int64, active bool) ([]apiEventListRecord, error) {
