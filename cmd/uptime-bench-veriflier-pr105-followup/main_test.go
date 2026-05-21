@@ -27,6 +27,44 @@ func TestNotificationExpectedAttempts(t *testing.T) {
 	}
 }
 
+func TestValidateDirectMatrixResult(t *testing.T) {
+	err := validateDirectMatrixResult(directMatrixCase{
+		WantSuccess:    true,
+		WantHTTPCode:   200,
+		AcceptOutcomes: []string{"up"},
+		MinRTTMS:       100,
+	}, &v2CheckResult{Success: true, HTTPCode: 200, Outcome: "up", RTTMs: 125})
+	if err != nil {
+		t.Fatalf("valid success result failed: %v", err)
+	}
+
+	err = validateDirectMatrixResult(directMatrixCase{
+		WantErrorCodeNonZero: true,
+		AcceptOutcomes:       []string{"down"},
+	}, &v2CheckResult{Success: false, Outcome: "down", ErrorCode: 7})
+	if err != nil {
+		t.Fatalf("valid down result failed: %v", err)
+	}
+
+	err = validateDirectMatrixResult(directMatrixCase{
+		WantSuccess:    true,
+		WantHTTPCode:   200,
+		AcceptOutcomes: []string{"up"},
+	}, &v2CheckResult{Success: true, HTTPCode: 500, Outcome: "down"})
+	if err == nil {
+		t.Fatal("mismatched HTTP code should fail")
+	}
+}
+
+func TestSanitizeIDPart(t *testing.T) {
+	if got := sanitizeIDPart("GET/full redirect policy"); got != "get-full-redirect-policy" {
+		t.Fatalf("sanitizeIDPart = %q", got)
+	}
+	if got := sanitizeIDPart("!!!"); got != "case" {
+		t.Fatalf("empty sanitizeIDPart = %q", got)
+	}
+}
+
 func TestEventDetailDataIncludesLifecycleAndVoteEvidence(t *testing.T) {
 	stateSeemsDown := "Seems Down"
 	stateDown := "Down"

@@ -285,6 +285,7 @@ func main() {
 		expectedCommit    = flag.String("expected-jetmon-commit", "", "expected Jetmon/Veriflier commit SHA or prefix to assert from /v2/status when available")
 		notificationClass = flag.String("wpcom-notification-classification", "disabled_by_test_plan", "WPCOM notification expectation: disabled_by_test_plan, enabled_no_relevant_events, enabled_expected_attempts_seen, or enabled_expected_attempts_missing")
 		quickSmoke        = flag.Bool("quick-reporting-smoke", false, "run only preflight, transport contract, notification posture, and the three requested lifecycle reporting cases")
+		skipOverload      = flag.Bool("skip-overload", false, "omit direct overload phase for functional/degradation-only runs")
 		skipMonitor       = flag.Bool("skip-monitor", false, "skip monitor lifecycle phase")
 	)
 	flag.Parse()
@@ -382,9 +383,26 @@ func main() {
 	runPhase("staged-check-policy", func(ctx context.Context) phaseResult {
 		return runStagedPolicy(ctx, target, *v2Addr, *v2Token, strings.TrimRight(*targetURL, "/"), *targetHost)
 	})
-	runPhase("sustained-overload-recovery", func(ctx context.Context) phaseResult {
-		return runOverload(ctx, target, *v2Addr, *v2Token, status, strings.TrimRight(*targetURL, "/"), *targetHost, *overloadCycles)
+	runPhase("direct-degradation-matrix", func(ctx context.Context) phaseResult {
+		return runDirectDegradationMatrix(ctx, target, *v2Addr, *v2Token, strings.TrimRight(*targetURL, "/"), *targetHost)
 	})
+	if *skipOverload {
+		rep.Phases = append(rep.Phases, phaseResult{
+			Name:       "sustained-overload-recovery",
+			Status:     "pass",
+			StartedAt:  time.Now().UTC(),
+			FinishedAt: time.Now().UTC(),
+			Checks: []checkResult{{
+				Name:   "overload",
+				Status: "pass",
+				Detail: "omitted by test plan for this functional/degradation matrix",
+			}},
+		})
+	} else {
+		runPhase("sustained-overload-recovery", func(ctx context.Context) phaseResult {
+			return runOverload(ctx, target, *v2Addr, *v2Token, status, strings.TrimRight(*targetURL, "/"), *targetHost, *overloadCycles)
+		})
+	}
 	if *monitorNonVote {
 		runPhase("monitor-overload-nonvote", func(ctx context.Context) phaseResult {
 			return runMonitorOverloadNonVote(ctx, api, target, *v2Addr, *v2Token, status, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *nonVoteSites, *nonVoteFlood, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
@@ -402,11 +420,32 @@ func main() {
 		runPhase("monitor-lifecycle", func(ctx context.Context) phaseResult {
 			return runMonitorLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
 		})
+		runPhase("monitor-get-simple-http-503-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorGETSimpleHTTP503Lifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
 		runPhase("monitor-get-simple-http-403-lifecycle", func(ctx context.Context) phaseResult {
 			return runMonitorGETSimpleHTTP403Lifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
 		})
+		runPhase("monitor-get-simple-http-404-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorGETSimpleHTTP404Lifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
+		runPhase("monitor-get-simple-http-500-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorGETSimpleHTTP500Lifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
 		runPhase("monitor-timeout-lifecycle", func(ctx context.Context) phaseResult {
 			return runMonitorTimeoutLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
+		runPhase("monitor-get-full-body-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorGETFullBodyLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
+		runPhase("monitor-get-full-required-keyword-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorGETFullRequiredKeywordLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
+		runPhase("monitor-get-full-redirect-fail-lifecycle", func(ctx context.Context) phaseResult {
+			return runMonitorGETFullRedirectFailLifecycle(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
+		})
+		runPhase("monitor-get-full-slow-latency-no-event", func(ctx context.Context) phaseResult {
+			return runMonitorGETFullSlowLatencyNoEvent(ctx, api, target, strings.TrimRight(*targetURL, "/"), *targetHost, *monitorTimeout, *notificationClass, *auditSSHHost, *auditJetmonDir, *auditEnvFile)
 		})
 	}
 
@@ -734,6 +773,271 @@ func runStagedPolicy(ctx context.Context, target *control.Client, v2Addr, token,
 		}
 	}
 	return phase.finish()
+}
+
+type directMatrixCase struct {
+	Name                 string
+	URL                  string
+	Method               string
+	DetectionProfile     string
+	FailureType          string
+	FailureHost          string
+	FailurePath          string
+	FailureParams        map[string]any
+	FailureDuration      time.Duration
+	BodyRules            bodyRules
+	RedirectPolicy       string
+	TimeoutMS            int64
+	WantSuccess          bool
+	WantHTTPCode         int32
+	WantErrorCodeNonZero bool
+	AcceptOutcomes       []string
+	MinRTTMS             int64
+}
+
+func runDirectDegradationMatrix(ctx context.Context, target *control.Client, v2Addr, token, targetURL, targetHost string) phaseResult {
+	phase := newPhase("direct-degradation-matrix")
+	phase.Notes = append(phase.Notes,
+		"Direct v2 /v2/check coverage for internal-only fixture behavior; Monitor lifecycle evidence is captured in the monitor-* phases.",
+		"Connection refused is covered with the internal target host on a closed port; connection reset and local DNS/NXDOMAIN are not covered because the current fixture exposes no path-scoped reset or DNS control endpoint to the Veriflier.",
+	)
+	cases := []directMatrixCase{
+		{
+			Name:             "healthy-head-legacy-200",
+			Method:           "HEAD",
+			DetectionProfile: "legacy",
+			WantSuccess:      true,
+			WantHTTPCode:     200,
+			AcceptOutcomes:   []string{"up"},
+		},
+		{
+			Name:             "healthy-get-simple-http-200",
+			Method:           "GET",
+			DetectionProfile: "simple_http",
+			WantSuccess:      true,
+			WantHTTPCode:     200,
+			AcceptOutcomes:   []string{"up"},
+		},
+		{
+			Name:             "healthy-get-full-required-present",
+			Method:           "GET",
+			DetectionProfile: "full",
+			BodyRules:        bodyRules{Required: []string{"uptime-bench-canary"}},
+			WantSuccess:      true,
+			WantHTTPCode:     200,
+			AcceptOutcomes:   []string{"up"},
+		},
+		{
+			Name:             "healthy-get-full-forbidden-absent",
+			Method:           "GET",
+			DetectionProfile: "full",
+			BodyRules:        bodyRules{Forbidden: []string{"forbidden-marker-" + newID()}},
+			WantSuccess:      true,
+			WantHTTPCode:     200,
+			AcceptOutcomes:   []string{"up"},
+		},
+		{
+			Name:             "get-simple-http-403",
+			Method:           "GET",
+			DetectionProfile: "simple_http",
+			FailureType:      "http_method_status",
+			FailureParams:    map[string]any{"method": "GET", "status_code": 403},
+			WantHTTPCode:     403,
+			AcceptOutcomes:   []string{"down"},
+		},
+		{
+			Name:             "get-simple-http-404",
+			Method:           "GET",
+			DetectionProfile: "simple_http",
+			FailureType:      "http_method_status",
+			FailureParams:    map[string]any{"method": "GET", "status_code": 404},
+			WantHTTPCode:     404,
+			AcceptOutcomes:   []string{"down"},
+		},
+		{
+			Name:             "get-simple-http-500",
+			Method:           "GET",
+			DetectionProfile: "simple_http",
+			FailureType:      "http_method_status",
+			FailureParams:    map[string]any{"method": "GET", "status_code": 500},
+			WantHTTPCode:     500,
+			AcceptOutcomes:   []string{"down"},
+		},
+		{
+			Name:             "head-legacy-ignores-get-503",
+			Method:           "HEAD",
+			DetectionProfile: "legacy",
+			FailureType:      "http_method_status",
+			FailureParams:    map[string]any{"method": "GET", "status_code": 503},
+			WantSuccess:      true,
+			WantHTTPCode:     200,
+			AcceptOutcomes:   []string{"up"},
+		},
+		{
+			Name:             "head-legacy-timeout",
+			Method:           "HEAD",
+			DetectionProfile: "legacy",
+			FailureType:      "http_timeout",
+			FailureParams:    map[string]any{"method": "HEAD", "delay": "4s"},
+			TimeoutMS:        1000,
+			AcceptOutcomes:   []string{"timeout", "probe_error", "transport_error"},
+		},
+		{
+			Name:             "get-full-slow-near-timeout-stays-up",
+			Method:           "GET",
+			DetectionProfile: "full",
+			FailureType:      "http_latency",
+			FailureParams:    map[string]any{"method": "GET", "delay": "1200ms"},
+			TimeoutMS:        5000,
+			WantSuccess:      true,
+			WantHTTPCode:     200,
+			AcceptOutcomes:   []string{"up"},
+			MinRTTMS:         900,
+		},
+		{
+			Name:                 "get-full-required-keyword-missing",
+			Method:               "GET",
+			DetectionProfile:     "full",
+			BodyRules:            bodyRules{Required: []string{"required-marker-" + newID()}},
+			WantErrorCodeNonZero: true,
+			AcceptOutcomes:       []string{"probe_error"},
+		},
+		{
+			Name:                 "get-full-forbidden-keyword-present",
+			Method:               "GET",
+			DetectionProfile:     "full",
+			BodyRules:            bodyRules{Forbidden: []string{"uptime-bench-canary"}},
+			WantErrorCodeNonZero: true,
+			AcceptOutcomes:       []string{"probe_error"},
+		},
+		{
+			Name:                 "get-full-redirect-policy-fail",
+			Method:               "GET",
+			DetectionProfile:     "full",
+			FailureType:          "http_redirect",
+			FailureParams:        map[string]any{"method": "GET", "variant": "loop"},
+			RedirectPolicy:       "fail",
+			WantErrorCodeNonZero: true,
+			AcceptOutcomes:       []string{"down", "probe_error", "transport_error"},
+		},
+		{
+			Name:                 "target-port-connection-refused",
+			URL:                  "http://" + targetHost + ":1/",
+			Method:               "GET",
+			DetectionProfile:     "simple_http",
+			TimeoutMS:            2000,
+			WantErrorCodeNonZero: true,
+			AcceptOutcomes:       []string{"probe_error", "transport_error", "timeout"},
+		},
+	}
+	for i, tc := range cases {
+		runDirectMatrixCase(ctx, &phase, target, v2Addr, token, targetURL, targetHost, tc, int64(910420000+i))
+	}
+	return phase.finish()
+}
+
+func runDirectMatrixCase(ctx context.Context, phase *phaseBuilder, target *control.Client, v2Addr, token, targetURL, targetHost string, tc directMatrixCase, blogID int64) {
+	path := "/pr105-direct-" + sanitizeIDPart(tc.Name) + "-" + newID()
+	failurePath := tc.FailurePath
+	if failurePath == "" && tc.FailureType != "tcp_refused" {
+		failurePath = path
+	}
+	failureHost := tc.FailureHost
+	if failureHost == "" && tc.FailureType != "tcp_refused" {
+		failureHost = targetHost
+	}
+	runID := "pr105-direct-" + sanitizeIDPart(tc.Name) + "-" + newID()
+	if tc.FailureType != "" {
+		duration := tc.FailureDuration
+		if duration <= 0 {
+			duration = 2 * time.Minute
+		}
+		if err := target.Activate(ctx, control.ActivateRequest{
+			RunID: runID,
+			Seed:  blogID,
+			Failure: control.FailureSpec{
+				Type:     tc.FailureType,
+				Host:     failureHost,
+				Path:     failurePath,
+				Duration: duration,
+				Rate:     1,
+				Params:   tc.FailureParams,
+			},
+		}); err != nil {
+			phase.fail(tc.Name, "activate failure: "+err.Error(), nil)
+			return
+		}
+		defer deactivateFailure(target, runID, tc.FailureType, failureHost, failurePath)
+		time.Sleep(300 * time.Millisecond)
+	}
+	timeoutMS := tc.TimeoutMS
+	if timeoutMS <= 0 {
+		timeoutMS = 5000
+	}
+	req := v2CheckRequest{
+		RequestID:        "direct-" + sanitizeIDPart(tc.Name) + "-" + newID(),
+		BlogID:           blogID,
+		URL:              targetURL + path,
+		Method:           tc.Method,
+		DetectionProfile: tc.DetectionProfile,
+		TimeoutMS:        timeoutMS,
+		BodyRules:        tc.BodyRules,
+		RedirectPolicy:   tc.RedirectPolicy,
+	}
+	if tc.URL != "" {
+		req.URL = tc.URL
+	}
+	res, err := sendV2Check(ctx, v2Addr, token, req)
+	if err != nil {
+		phase.fail(tc.Name, err.Error(), nil)
+		return
+	}
+	if err := validateDirectMatrixResult(tc, res); err != nil {
+		phase.fail(tc.Name, err.Error(), resultData(res))
+		return
+	}
+	phase.pass(tc.Name, "direct v2 check returned expected result", resultData(res))
+}
+
+func validateDirectMatrixResult(tc directMatrixCase, res *v2CheckResult) error {
+	if res == nil {
+		return errors.New("missing v2 result")
+	}
+	if res.Success != tc.WantSuccess {
+		return fmt.Errorf("success=%t want=%t", res.Success, tc.WantSuccess)
+	}
+	if tc.WantHTTPCode > 0 && res.HTTPCode != tc.WantHTTPCode {
+		return fmt.Errorf("http_code=%d want=%d", res.HTTPCode, tc.WantHTTPCode)
+	}
+	if tc.WantErrorCodeNonZero && res.ErrorCode == 0 {
+		return errors.New("error_code=0, want non-zero")
+	}
+	if len(tc.AcceptOutcomes) > 0 && !containsString(tc.AcceptOutcomes, res.Outcome) {
+		return fmt.Errorf("outcome=%q want one of %s", res.Outcome, strings.Join(tc.AcceptOutcomes, ","))
+	}
+	if tc.MinRTTMS > 0 && res.RTTMs < tc.MinRTTMS {
+		return fmt.Errorf("rtt_ms=%d want >=%d", res.RTTMs, tc.MinRTTMS)
+	}
+	return nil
+}
+
+func sanitizeIDPart(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			continue
+		}
+		if b.Len() > 0 && b.String()[b.Len()-1] != '-' {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "case"
+	}
+	return out
 }
 
 func runOverload(ctx context.Context, target *control.Client, v2Addr, token string, status v2Status, targetURL, targetHost string, cycles int) phaseResult {
@@ -1210,6 +1514,56 @@ func runMonitorGETSimpleHTTP403Lifecycle(ctx context.Context, api apiClient, tar
 	})
 }
 
+func runMonitorGETSimpleHTTP404Lifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
+	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
+		PhaseName:                  "monitor-get-simple-http-404-lifecycle",
+		BlogIDBase:                 910414000000,
+		PathPrefix:                 "/pr105-simple-http-404-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               5,
+		RequestMethod:              "GET",
+		DetectionProfile:           "simple_http",
+		FailureType:                "http_method_status",
+		FailureParams:              map[string]any{"method": "GET", "status_code": 404},
+		FailurePass:                "activate-get-404",
+		FailureDetail:              "target GET 404 activated",
+		CleanupPass:                "deactivate-get-404",
+		CleanupDetail:              "target GET 404 deactivated",
+		CustomHeaderID:             "veriflier-pr105-simple-http-404-lifecycle",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
+	})
+}
+
+func runMonitorGETSimpleHTTP500Lifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
+	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
+		PhaseName:                  "monitor-get-simple-http-500-lifecycle",
+		BlogIDBase:                 910415000000,
+		PathPrefix:                 "/pr105-simple-http-500-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               5,
+		RequestMethod:              "GET",
+		DetectionProfile:           "simple_http",
+		FailureType:                "http_method_status",
+		FailureParams:              map[string]any{"method": "GET", "status_code": 500},
+		FailurePass:                "activate-get-500",
+		FailureDetail:              "target GET 500 activated",
+		CleanupPass:                "deactivate-get-500",
+		CleanupDetail:              "target GET 500 deactivated",
+		CustomHeaderID:             "veriflier-pr105-simple-http-500-lifecycle",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
+	})
+}
+
 func runMonitorGETFullBodyLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
 	forbidden := "DARKLOCK RANSOMWARE"
 	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
@@ -1235,6 +1589,211 @@ func runMonitorGETFullBodyLifecycle(ctx context.Context, api apiClient, target *
 		AuditJetmonDir:             auditJetmonDir,
 		AuditEnvFile:               auditEnvFile,
 	})
+}
+
+func runMonitorGETFullRequiredKeywordLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
+	required := "uptime-bench-canary"
+	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
+		PhaseName:                  "monitor-get-full-required-keyword-lifecycle",
+		BlogIDBase:                 910416000000,
+		PathPrefix:                 "/pr105-full-required-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               5,
+		RequestMethod:              "GET",
+		DetectionProfile:           "full",
+		CheckKeyword:               &required,
+		FailureType:                "http_body",
+		FailureParams:              map[string]any{"method": "GET", "content": "keyword_missing", "keyword": required},
+		FailurePass:                "activate-required-keyword-missing",
+		FailureDetail:              "target response with required keyword removed activated",
+		CleanupPass:                "deactivate-required-keyword-missing",
+		CleanupDetail:              "target required-keyword failure deactivated",
+		CustomHeaderID:             "veriflier-pr105-full-required-lifecycle",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
+	})
+}
+
+func runMonitorGETFullRedirectFailLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
+	return runMonitorLifecycleCase(ctx, api, target, monitorLifecycleCase{
+		PhaseName:                  "monitor-get-full-redirect-fail-lifecycle",
+		BlogIDBase:                 910417000000,
+		PathPrefix:                 "/pr105-full-redirect-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               5,
+		RequestMethod:              "GET",
+		DetectionProfile:           "full",
+		RedirectPolicy:             "fail",
+		FailureType:                "http_redirect",
+		FailureParams:              map[string]any{"method": "GET", "variant": "loop"},
+		FailurePass:                "activate-redirect-loop",
+		FailureDetail:              "target GET redirect loop activated",
+		CleanupPass:                "deactivate-redirect-loop",
+		CleanupDetail:              "target redirect failure deactivated",
+		CustomHeaderID:             "veriflier-pr105-full-redirect-lifecycle",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
+	})
+}
+
+func runMonitorGETFullSlowLatencyNoEvent(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
+	cfg := monitorLifecycleCase{
+		PhaseName:                  "monitor-get-full-slow-latency-no-event",
+		BlogIDBase:                 910418000000,
+		PathPrefix:                 "/pr105-full-slow-",
+		TargetURL:                  targetURL,
+		TargetHost:                 targetHost,
+		Timeout:                    timeout,
+		CheckTimeout:               5,
+		RequestMethod:              "GET",
+		DetectionProfile:           "full",
+		FailureType:                "http_latency",
+		FailureParams:              map[string]any{"method": "GET", "delay": "2s"},
+		FailurePass:                "activate-slow-latency",
+		FailureDetail:              "target GET latency below timeout activated",
+		CleanupPass:                "deactivate-slow-latency",
+		CleanupDetail:              "target latency failure deactivated",
+		CustomHeaderID:             "veriflier-pr105-full-slow-latency",
+		NotificationClassification: notificationClassification,
+		AuditSSHHost:               auditSSHHost,
+		AuditJetmonDir:             auditJetmonDir,
+		AuditEnvFile:               auditEnvFile,
+	}
+	phase := newPhase(cfg.PhaseName)
+	blogID := cfg.BlogIDBase + time.Now().UTC().UnixNano()%1000000
+	path := cfg.PathPrefix + newID()
+	siteURL := cfg.TargetURL + path
+	cooldown := 0
+	siteReq := apiSiteCreateRequest{
+		BlogID:               blogID,
+		MonitorURL:           siteURL,
+		MonitorActive:        true,
+		BucketNo:             997,
+		RedirectPolicy:       "follow",
+		RequestMethod:        cfg.RequestMethod,
+		DetectionProfile:     cfg.DetectionProfile,
+		TimeoutSeconds:       &cfg.CheckTimeout,
+		CustomHeaders:        map[string]string{"X-Uptime-Bench-Test": cfg.CustomHeaderID},
+		AlertCooldownMinutes: &cooldown,
+		CheckInterval:        1,
+	}
+	var site apiSiteResponse
+	if err := api.post(ctx, "/sites", siteReq, &site, map[string]string{"Idempotency-Key": "pr105-followup-create-" + newID()}); err != nil {
+		phase.fail("create-site", err.Error(), map[string]any{"blog_id": blogID, "url": siteURL})
+		return phase.finish()
+	}
+	phase.pass("create-site", "created temporary Jetmon site", map[string]any{"blog_id": blogID, "url": siteURL})
+	defer func() {
+		if err := api.delete(context.Background(), fmt.Sprintf("/sites/%d", blogID)); err != nil {
+			log.Printf("cleanup site %d: %v", blogID, err)
+		}
+	}()
+	if syncResult, err := syncStreamingTargetsForBucket(ctx, api, siteReq.BucketNo); err != nil {
+		phase.fail("streaming-target-sync", err.Error(), map[string]any{"blog_id": blogID, "bucket_no": siteReq.BucketNo})
+		return phase.finish()
+	} else {
+		phase.pass("streaming-target-sync", "synced streaming scheduler side tables for temporary site", map[string]any{
+			"blog_id":   blogID,
+			"bucket_no": siteReq.BucketNo,
+			"status":    syncResult.Status,
+			"summary":   syncResult.Summary,
+			"result":    syncResult.Result,
+		})
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+	defer cancel()
+	if s, err := waitForSiteChecked(waitCtx, api, blogID, time.Now().UTC()); err != nil {
+		phase.fail("initial-check", err.Error(), nil)
+		return phase.finish()
+	} else {
+		phase.pass("initial-check", "temporary site entered scheduler and checked healthy", siteData(s))
+	}
+	runID := "pr105-slow-latency-" + newID()
+	activatedAt := time.Now().UTC()
+	if err := target.Activate(ctx, control.ActivateRequest{
+		RunID: runID,
+		Seed:  blogID,
+		Failure: control.FailureSpec{
+			Type:     cfg.FailureType,
+			Host:     cfg.TargetHost,
+			Path:     path,
+			Duration: cfg.Timeout + time.Minute,
+			Rate:     1,
+			Params:   cfg.FailureParams,
+		},
+	}); err != nil {
+		phase.fail(cfg.FailurePass, err.Error(), nil)
+		return phase.finish()
+	}
+	defer deactivateFailure(target, runID, cfg.FailureType, cfg.TargetHost, path)
+	phase.pass(cfg.FailurePass, cfg.FailureDetail, map[string]any{"path": path, "activated_at": activatedAt.Format(time.RFC3339)})
+	observeFor := 2 * time.Minute
+	observeUntil := time.Now().UTC().Add(observeFor)
+	var latest apiSiteResponse
+	observedPostActivationCheck := false
+	for {
+		if err := api.get(ctx, fmt.Sprintf("/sites/%d", blogID), &latest); err != nil {
+			phase.fail("slow-window-remained-up", err.Error(), nil)
+			return phase.finish()
+		}
+		if latest.CurrentState != "Up" || latest.CurrentSeverity != 0 {
+			phase.fail("slow-window-remained-up", "slow response below timeout changed site projection away from Up", siteData(latest))
+			return phase.finish()
+		}
+		events, err := api.listEvents(ctx, blogID, true)
+		if err != nil {
+			phase.fail("slow-window-no-active-event", err.Error(), nil)
+			return phase.finish()
+		}
+		if len(events) != 0 {
+			phase.fail("slow-window-no-active-event", "slow response below timeout should not open an active event", map[string]any{"events": events})
+			return phase.finish()
+		}
+		if latest.LastCheckedAt != nil && *latest.LastCheckedAt != "" {
+			if checked, err := time.Parse(time.RFC3339Nano, *latest.LastCheckedAt); err == nil && checked.After(activatedAt) {
+				observedPostActivationCheck = true
+			}
+		}
+		if time.Now().UTC().After(observeUntil) {
+			break
+		}
+		select {
+		case <-waitCtx.Done():
+			phase.fail("slow-window-remained-up", waitCtx.Err().Error(), nil)
+			return phase.finish()
+		case <-time.After(10 * time.Second):
+		}
+	}
+	data := siteData(latest)
+	data["observed_post_activation_check"] = observedPostActivationCheck
+	data["observation_window"] = observeFor.String()
+	if observedPostActivationCheck {
+		phase.pass("slow-window-remained-up", "slow response below timeout was checked after activation and stayed Up", data)
+	} else {
+		phase.pass("slow-window-remained-up", "site projection stayed Up during bounded slow-response observation; direct matrix covers the slow Veriflier check", data)
+	}
+	if events, err := api.listEvents(ctx, blogID, true); err != nil {
+		phase.fail("no-active-event", err.Error(), nil)
+	} else if len(events) != 0 {
+		phase.fail("no-active-event", "slow response below timeout should not open an active event", map[string]any{"events": events})
+	} else {
+		phase.pass("no-active-event", "slow response below timeout opened no active event", nil)
+	}
+	if err := target.Deactivate(ctx, control.DeactivateRequest{RunID: runID, FailureType: cfg.FailureType, Host: cfg.TargetHost, Path: path}); err != nil {
+		phase.fail(cfg.CleanupPass, err.Error(), nil)
+		return phase.finish()
+	}
+	phase.pass(cfg.CleanupPass, cfg.CleanupDetail, nil)
+	classifyWPCOMForLifecycle(ctx, &phase, cfg, blogID, activatedAt.Add(-time.Minute), time.Now().UTC().Add(time.Minute))
+	return phase.finish()
 }
 
 func runMonitorTimeoutLifecycle(ctx context.Context, api apiClient, target *control.Client, targetURL, targetHost string, timeout time.Duration, notificationClassification, auditSSHHost, auditJetmonDir, auditEnvFile string) phaseResult {
@@ -1275,6 +1834,7 @@ type monitorLifecycleCase struct {
 	CheckKeyword               *string
 	ForbiddenKeyword           *string
 	ForbiddenKeywords          []string
+	RedirectPolicy             string
 	FailureType                string
 	FailureParams              map[string]any
 	FailurePass                string
@@ -1296,6 +1856,9 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 	if cfg.DetectionProfile == "" {
 		cfg.DetectionProfile = "legacy"
 	}
+	if cfg.RedirectPolicy == "" {
+		cfg.RedirectPolicy = "follow"
+	}
 	blogID := cfg.BlogIDBase + time.Now().UTC().UnixNano()%1000000
 	path := cfg.PathPrefix + newID()
 	siteURL := cfg.TargetURL + path
@@ -1308,7 +1871,7 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 		CheckKeyword:         cfg.CheckKeyword,
 		ForbiddenKeyword:     cfg.ForbiddenKeyword,
 		ForbiddenKeywords:    cfg.ForbiddenKeywords,
-		RedirectPolicy:       "follow",
+		RedirectPolicy:       cfg.RedirectPolicy,
 		RequestMethod:        cfg.RequestMethod,
 		DetectionProfile:     cfg.DetectionProfile,
 		TimeoutSeconds:       &cfg.CheckTimeout,
