@@ -1165,6 +1165,7 @@ func runMonitorOverloadNonVote(ctx context.Context, api apiClient, target *contr
 
 	type tempSite struct {
 		BlogID int64
+		SiteID int64
 		Path   string
 		RunID  string
 		URL    string
@@ -1196,18 +1197,18 @@ func runMonitorOverloadNonVote(ctx context.Context, api apiClient, target *contr
 			phase.fail(fmt.Sprintf("create-site-%d", i), err.Error(), map[string]any{"blog_id": blogID, "url": siteURL})
 			return phase.finish()
 		}
-		phase.pass(fmt.Sprintf("create-site-%d", i), "created temporary Jetmon site", map[string]any{"blog_id": blogID, "url": siteURL})
-		sites = append(sites, tempSite{BlogID: blogID, Path: path, URL: siteURL})
-		defer func(blogID int64) {
-			if err := api.delete(context.Background(), fmt.Sprintf("/sites/%d", blogID)); err != nil {
-				log.Printf("cleanup site %d: %v", blogID, err)
+		phase.pass(fmt.Sprintf("create-site-%d", i), "created temporary Jetmon site", map[string]any{"blog_id": blogID, "site_id": site.ID, "url": siteURL})
+		sites = append(sites, tempSite{BlogID: blogID, SiteID: site.ID, Path: path, URL: siteURL})
+		defer func(siteID, blogID int64) {
+			if err := api.delete(context.Background(), fmt.Sprintf("/sites/%d", siteID)); err != nil {
+				log.Printf("cleanup site %d (blog_id=%d): %v", siteID, blogID, err)
 			}
-		}(blogID)
+		}(site.ID, blogID)
 	}
 
 	for i := range sites {
-		if s, err := waitForSiteChecked(waitCtx, api, sites[i].BlogID, startedAt); err != nil {
-			phase.fail(fmt.Sprintf("initial-check-%d", i), err.Error(), map[string]any{"blog_id": sites[i].BlogID})
+		if s, err := waitForSiteChecked(waitCtx, api, sites[i].SiteID, startedAt); err != nil {
+			phase.fail(fmt.Sprintf("initial-check-%d", i), err.Error(), map[string]any{"blog_id": sites[i].BlogID, "site_id": sites[i].SiteID})
 			return phase.finish()
 		} else {
 			phase.pass(fmt.Sprintf("initial-check-%d", i), "temporary site entered scheduler and checked healthy", siteData(s))
@@ -1690,10 +1691,11 @@ func runMonitorGETFullSlowLatencyNoEvent(ctx context.Context, api apiClient, tar
 		phase.fail("create-site", err.Error(), map[string]any{"blog_id": blogID, "url": siteURL})
 		return phase.finish()
 	}
-	phase.pass("create-site", "created temporary Jetmon site", map[string]any{"blog_id": blogID, "url": siteURL})
+	phase.pass("create-site", "created temporary Jetmon site", map[string]any{"blog_id": blogID, "site_id": site.ID, "url": siteURL})
+	siteID := site.ID
 	defer func() {
-		if err := api.delete(context.Background(), fmt.Sprintf("/sites/%d", blogID)); err != nil {
-			log.Printf("cleanup site %d: %v", blogID, err)
+		if err := api.delete(context.Background(), fmt.Sprintf("/sites/%d", siteID)); err != nil {
+			log.Printf("cleanup site %d (blog_id=%d): %v", siteID, blogID, err)
 		}
 	}()
 	if syncResult, err := syncStreamingTargetsForBucket(ctx, api, siteReq.BucketNo); err != nil {
@@ -1710,7 +1712,7 @@ func runMonitorGETFullSlowLatencyNoEvent(ctx context.Context, api apiClient, tar
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	if s, err := waitForSiteChecked(waitCtx, api, blogID, time.Now().UTC()); err != nil {
+	if s, err := waitForSiteChecked(waitCtx, api, siteID, time.Now().UTC()); err != nil {
 		phase.fail("initial-check", err.Error(), nil)
 		return phase.finish()
 	} else {
@@ -1740,7 +1742,7 @@ func runMonitorGETFullSlowLatencyNoEvent(ctx context.Context, api apiClient, tar
 	var latest apiSiteResponse
 	observedPostActivationCheck := false
 	for {
-		if err := api.get(ctx, fmt.Sprintf("/sites/%d", blogID), &latest); err != nil {
+		if err := api.get(ctx, fmt.Sprintf("/sites/%d", siteID), &latest); err != nil {
 			phase.fail("slow-window-remained-up", err.Error(), nil)
 			return phase.finish()
 		}
@@ -1748,7 +1750,7 @@ func runMonitorGETFullSlowLatencyNoEvent(ctx context.Context, api apiClient, tar
 			phase.fail("slow-window-remained-up", "slow response below timeout changed site projection away from Up", siteData(latest))
 			return phase.finish()
 		}
-		events, err := api.listEvents(ctx, blogID, true)
+		events, err := api.listEvents(ctx, siteID, true)
 		if err != nil {
 			phase.fail("slow-window-no-active-event", err.Error(), nil)
 			return phase.finish()
@@ -1780,7 +1782,7 @@ func runMonitorGETFullSlowLatencyNoEvent(ctx context.Context, api apiClient, tar
 	} else {
 		phase.pass("slow-window-remained-up", "site projection stayed Up during bounded slow-response observation; direct matrix covers the slow Veriflier check", data)
 	}
-	if events, err := api.listEvents(ctx, blogID, true); err != nil {
+	if events, err := api.listEvents(ctx, siteID, true); err != nil {
 		phase.fail("no-active-event", err.Error(), nil)
 	} else if len(events) != 0 {
 		phase.fail("no-active-event", "slow response below timeout should not open an active event", map[string]any{"events": events})
@@ -1884,10 +1886,11 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 		phase.fail("create-site", err.Error(), map[string]any{"blog_id": blogID, "url": siteURL})
 		return phase.finish()
 	}
-	phase.pass("create-site", "created temporary Jetmon site", map[string]any{"blog_id": blogID, "url": siteURL})
+	phase.pass("create-site", "created temporary Jetmon site", map[string]any{"blog_id": blogID, "site_id": site.ID, "url": siteURL})
+	siteID := site.ID
 	defer func() {
-		if err := api.delete(context.Background(), fmt.Sprintf("/sites/%d", blogID)); err != nil {
-			log.Printf("cleanup site %d: %v", blogID, err)
+		if err := api.delete(context.Background(), fmt.Sprintf("/sites/%d", siteID)); err != nil {
+			log.Printf("cleanup site %d (blog_id=%d): %v", siteID, blogID, err)
 		}
 	}()
 
@@ -1899,7 +1902,7 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 		CheckInterval:        &updateInterval,
 	}
 	var updated apiSiteResponse
-	if err := api.patch(ctx, fmt.Sprintf("/sites/%d", blogID), updateReq, &updated, map[string]string{"Idempotency-Key": "pr105-followup-update-" + newID()}); err != nil {
+	if err := api.patch(ctx, fmt.Sprintf("/sites/%d", siteID), updateReq, &updated, map[string]string{"Idempotency-Key": "pr105-followup-update-" + newID()}); err != nil {
 		phase.fail("update-site", err.Error(), map[string]any{"blog_id": blogID, "url": siteURL})
 		return phase.finish()
 	} else if updated.MonitorURL != siteURL || !updated.MonitorActive {
@@ -1923,7 +1926,7 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 
 	waitCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	if s, err := waitForSiteChecked(waitCtx, api, blogID, time.Now().UTC()); err != nil {
+	if s, err := waitForSiteChecked(waitCtx, api, siteID, time.Now().UTC()); err != nil {
 		phase.fail("initial-check", err.Error(), nil)
 		return phase.finish()
 	} else {
@@ -1950,7 +1953,7 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 	defer deactivateFailure(target, runID, cfg.FailureType, cfg.TargetHost, path)
 	phase.pass(cfg.FailurePass, cfg.FailureDetail, map[string]any{"path": path, "activated_at": activatedAt.Format(time.RFC3339)})
 
-	seemsDownEvent, err := waitForActiveEventAnyState(waitCtx, api, blogID, []string{"Seems Down", "Down"})
+	seemsDownEvent, err := waitForActiveEventAnyState(waitCtx, api, siteID, []string{"Seems Down", "Down"})
 	if err != nil {
 		phase.fail("seems-down-opened", err.Error(), nil)
 		return phase.finish()
@@ -1961,12 +1964,12 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 		phase.pass("seems-down-opened", "controlled failure event was already Down when polled; transition counts verify whether it opened as Seems Down", eventData(seemsDownEvent))
 	}
 
-	downEvent, err := waitForEventState(waitCtx, api, blogID, "Down")
+	downEvent, err := waitForEventState(waitCtx, api, siteID, "Down")
 	if err != nil {
 		phase.fail("wait-down", err.Error(), nil)
 		return phase.finish()
 	}
-	downDetail, err := api.getEvent(ctx, blogID, downEvent.ID)
+	downDetail, err := api.getEvent(ctx, siteID, downEvent.ID)
 	if err != nil {
 		phase.fail("down-event-detail", err.Error(), eventData(downEvent))
 		return phase.finish()
@@ -1987,7 +1990,7 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 	}
 	phase.pass(cfg.CleanupPass, cfg.CleanupDetail, nil)
 
-	closed, err := waitForEventClosed(waitCtx, api, blogID, downEvent.ID)
+	closed, err := waitForEventClosed(waitCtx, api, siteID, downEvent.ID)
 	if err != nil {
 		phase.fail("wait-resolved", err.Error(), eventData(downEvent))
 		return phase.finish()
@@ -2005,7 +2008,7 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 	classifyWPCOMForLifecycle(ctx, &phase, cfg, blogID, activatedAt.Add(-time.Minute), time.Now().UTC().Add(time.Minute))
 
 	var projection apiSiteResponse
-	if err := api.get(ctx, fmt.Sprintf("/sites/%d", blogID), &projection); err != nil {
+	if err := api.get(ctx, fmt.Sprintf("/sites/%d", siteID), &projection); err != nil {
 		phase.fail("projection-state", err.Error(), nil)
 	} else if projection.CurrentState != "Up" || projection.CurrentSeverity != 0 {
 		phase.fail("projection-state", "site projection did not return to Up", siteData(projection))
@@ -2015,8 +2018,8 @@ func runMonitorLifecycleCase(ctx context.Context, api apiClient, target *control
 	return phase.finish()
 }
 
-func waitForSiteChecked(ctx context.Context, api apiClient, blogID int64, after time.Time) (apiSiteResponse, error) {
-	return waitForSiteCondition(ctx, api, blogID, 10*time.Second, func(site apiSiteResponse) (bool, error) {
+func waitForSiteChecked(ctx context.Context, api apiClient, siteID int64, after time.Time) (apiSiteResponse, error) {
+	return waitForSiteCondition(ctx, api, siteID, 10*time.Second, func(site apiSiteResponse) (bool, error) {
 		if site.LastCheckedAt == nil || *site.LastCheckedAt == "" {
 			return false, nil
 		}
@@ -2028,11 +2031,11 @@ func waitForSiteChecked(ctx context.Context, api apiClient, blogID int64, after 
 	})
 }
 
-func waitForEventState(ctx context.Context, api apiClient, blogID int64, state string) (apiEventListRecord, error) {
+func waitForEventState(ctx context.Context, api apiClient, siteID int64, state string) (apiEventListRecord, error) {
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 	for {
-		events, err := api.listEvents(ctx, blogID, true)
+		events, err := api.listEvents(ctx, siteID, true)
 		if err != nil {
 			return apiEventListRecord{}, err
 		}
@@ -2049,7 +2052,7 @@ func waitForEventState(ctx context.Context, api apiClient, blogID int64, state s
 	}
 }
 
-func waitForActiveEventAnyState(ctx context.Context, api apiClient, blogID int64, states []string) (apiEventListRecord, error) {
+func waitForActiveEventAnyState(ctx context.Context, api apiClient, siteID int64, states []string) (apiEventListRecord, error) {
 	want := make(map[string]struct{}, len(states))
 	for _, state := range states {
 		want[state] = struct{}{}
@@ -2057,7 +2060,7 @@ func waitForActiveEventAnyState(ctx context.Context, api apiClient, blogID int64
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 	for {
-		events, err := api.listEvents(ctx, blogID, true)
+		events, err := api.listEvents(ctx, siteID, true)
 		if err != nil {
 			return apiEventListRecord{}, err
 		}
@@ -2074,11 +2077,11 @@ func waitForActiveEventAnyState(ctx context.Context, api apiClient, blogID int64
 	}
 }
 
-func waitForEventClosed(ctx context.Context, api apiClient, blogID, eventID int64) (apiEventResponse, error) {
+func waitForEventClosed(ctx context.Context, api apiClient, siteID, eventID int64) (apiEventResponse, error) {
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 	for {
-		event, err := api.getEvent(ctx, blogID, eventID)
+		event, err := api.getEvent(ctx, siteID, eventID)
 		if err != nil {
 			return apiEventResponse{}, err
 		}
@@ -2107,12 +2110,12 @@ func transitionReasonTime(transitions []apiTransition, reason string) (time.Time
 	return time.Time{}, false
 }
 
-func waitForSiteCondition(ctx context.Context, api apiClient, blogID int64, interval time.Duration, pred func(apiSiteResponse) (bool, error)) (apiSiteResponse, error) {
+func waitForSiteCondition(ctx context.Context, api apiClient, siteID int64, interval time.Duration, pred func(apiSiteResponse) (bool, error)) (apiSiteResponse, error) {
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
 		var site apiSiteResponse
-		if err := api.get(ctx, fmt.Sprintf("/sites/%d", blogID), &site); err != nil {
+		if err := api.get(ctx, fmt.Sprintf("/sites/%d", siteID), &site); err != nil {
 			return apiSiteResponse{}, err
 		}
 		ok, err := pred(site)
@@ -2124,7 +2127,7 @@ func waitForSiteCondition(ctx context.Context, api apiClient, blogID int64, inte
 		}
 		select {
 		case <-ctx.Done():
-			return apiSiteResponse{}, fmt.Errorf("timed out waiting for site %d condition", blogID)
+			return apiSiteResponse{}, fmt.Errorf("timed out waiting for site %d condition", siteID)
 		case <-tick.C:
 		}
 	}
