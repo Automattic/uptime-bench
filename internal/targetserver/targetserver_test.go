@@ -260,6 +260,60 @@ func TestVHH_HTTPMethodStatus_HeadFailsGetHealthy(t *testing.T) {
 	}
 }
 
+func TestVHH_HTTPBodySemanticVariants(t *testing.T) {
+	cases := map[string][]string{
+		"error_page":                 {"Error establishing a database connection"},
+		"empty":                      {"<html></html>"},
+		"wp_missing_mysql_extension": {"missing the MySQL extension which is required by WordPress"},
+		"wp_php_fatal":               {"Fatal error", "wp-content/plugins/broken/plugin.php", "on line"},
+		"wp_allowed_memory":          {"Allowed memory size", "wp-includes/functions.php", "on line"},
+		"wp_max_execution":           {"Maximum execution time", "wp-content/themes/example/functions.php", "on line"},
+		"wp_parse_error":             {"Parse error", "syntax error", "wp-content/plugins/broken/plugin.php", "on line"},
+		"wp_setup_config":            {"Welcome to WordPress. Before getting started"},
+		"wp_db_repair":               {"database tables are unavailable", "wp-config.php"},
+		"wp_db_missing_tables":       {"Database tables are missing", "wp_options", "wp-config.php"},
+		"wp_db_table_crashed":        {"WordPress database error", "marked as crashed", "should be repaired"},
+		"wp_missing_config":          {"There doesn't seem to be a", "wp-config.php", "before we can get started"},
+		"wp_db_update_required":      {"Database Update Required", "update your database to the newest version"},
+		"wp_maintenance":             {"Briefly unavailable for scheduled maintenance", "Check back in a minute"},
+		"wp_unsupported_php":         {"WordPress requires at least"},
+		"wp_unsupported_database":    {"Error: WordPress 6.5.5 requires MySQL 5.7 or higher", "You are running 5.5.62"},
+		"wp_unsupported_mariadb":     {"Error: WordPress 6.5.5 requires MariaDB 10.4 or higher", "You are running 10.1.48"},
+		"wp_critical_this_website":   {"critical error on this website"},
+		"wp_critical_your_website":   {"critical error on your website"},
+		"wp_technical_this_site":     {"The site is experiencing technical difficulties"},
+		"wp_technical_the_site":      {"the site admin email inbox"},
+		"apache_default":             {"Apache2 Ubuntu Default Page", "It works"},
+		"nginx_default":              {"Welcome to nginx!", "nginx web server is successfully installed"},
+		"hosting_suspended":          {"This account has been suspended", "Contact your hosting provider", "cgi-sys/suspendedpage.cgi"},
+		"jetpack_probe":              {"Hi Jetpack! All Systems go"},
+		"jetpack_probe_compact":      {"Hi Jetpack!All Systems go"},
+		"xmlrpc_endpoint_echo":       {"XML-RPC server accepts POST requests only"},
+		"wp_directory_listing":       {"Index of /", "wp-admin/", "wp-content/", "wp-includes/"},
+		"healthy_fatal_article":      {"fatal error", "uptime-bench-canary"},
+	}
+
+	for content, markers := range cases {
+		t.Run(content, func(t *testing.T) {
+			h, reg := newHandler()
+			reg.Set(control.FailureSpec{
+				Type: "http_body", Host: "site.local", Duration: time.Minute, Rate: 1.0,
+				Params: map[string]any{"content": content, "method": "GET"},
+			}, 0)
+			w := get(t, h, "site.local", "/")
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			body := w.Body.String()
+			for _, marker := range markers {
+				if !strings.Contains(body, marker) {
+					t.Fatalf("body missing marker %q:\n%s", marker, body)
+				}
+			}
+		})
+	}
+}
+
 func TestVHH_CapacityObserverRecordsResponseStatus(t *testing.T) {
 	reg := control.NewRegistry()
 	observer := NewCapacityObserver()

@@ -294,6 +294,60 @@ func (h *VirtualHostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			body = "<html></html>"
 		case "error_page":
 			body = errorPageHTML
+		case "wp_missing_mysql_extension":
+			body = wpMissingMySQLExtensionHTML
+		case "wp_php_fatal":
+			body = wpPHPFatalHTML
+		case "wp_allowed_memory":
+			body = wpAllowedMemoryHTML
+		case "wp_max_execution":
+			body = wpMaxExecutionHTML
+		case "wp_parse_error":
+			body = wpParseErrorHTML
+		case "wp_setup_config":
+			body = wpSetupConfigHTML
+		case "wp_db_repair":
+			body = wpDBRepairHTML
+		case "wp_db_missing_tables":
+			body = wpDBMissingTablesHTML
+		case "wp_db_table_crashed":
+			body = wpDBTableCrashedHTML
+		case "wp_missing_config":
+			body = wpMissingConfigHTML
+		case "wp_db_update_required":
+			body = wpDBUpdateRequiredHTML
+		case "wp_maintenance":
+			body = wpMaintenanceHTML
+		case "wp_unsupported_php":
+			body = wpUnsupportedPHPHTML
+		case "wp_unsupported_database":
+			body = wpUnsupportedDatabaseHTML
+		case "wp_unsupported_mariadb":
+			body = wpUnsupportedMariaDBHTML
+		case "wp_critical_this_website":
+			body = wpCriticalThisWebsiteHTML
+		case "wp_critical_your_website":
+			body = wpCriticalYourWebsiteHTML
+		case "wp_technical_this_site":
+			body = wpTechnicalThisSiteHTML
+		case "wp_technical_the_site":
+			body = wpTechnicalTheSiteHTML
+		case "apache_default":
+			body = apacheDefaultHTML
+		case "nginx_default":
+			body = nginxDefaultHTML
+		case "hosting_suspended":
+			body = hostingSuspendedHTML
+		case "jetpack_probe":
+			body = jetpackProbeHTML
+		case "jetpack_probe_compact":
+			body = jetpackProbeCompactHTML
+		case "xmlrpc_endpoint_echo":
+			body = xmlrpcEndpointEchoHTML
+		case "wp_directory_listing":
+			body = wpDirectoryListingHTML
+		case "healthy_fatal_article":
+			body = healthyFatalArticleHTML
 		case "keyword_missing":
 			body = normalPageHTML(host, path, keyword, false)
 		case "keyword_injected":
