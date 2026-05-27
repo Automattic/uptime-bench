@@ -183,6 +183,16 @@ func nftBucketScript(table string, host NetworkBucketHostConfig) (string, error)
 	if host.MySQLIP != "" {
 		fmt.Fprintf(&b, "\t\tip daddr %s tcp dport %d counter name mysql_tx\n", host.MySQLIP, host.MySQLPort)
 	}
+	if host.StatsDPort > 0 {
+		fmt.Fprintf(&b, "\t\tudp dport %d counter name statsd_tx\n", host.StatsDPort)
+	}
+	if host.WPCOMHTTPSPort > 0 {
+		if host.TargetIP != "" {
+			fmt.Fprintf(&b, "\t\tip daddr != %s tcp dport %d counter name wpcom_https_tx\n", host.TargetIP, host.WPCOMHTTPSPort)
+		} else {
+			fmt.Fprintf(&b, "\t\ttcp dport %d counter name wpcom_https_tx\n", host.WPCOMHTTPSPort)
+		}
+	}
 	fmt.Fprintln(&b, "\t\tudp dport 53 counter name dns_tx")
 	fmt.Fprintln(&b, "\t\ttcp dport 53 counter name dns_tx")
 	if host.MonitoringIP != "" {
@@ -207,6 +217,16 @@ func nftBucketScript(table string, host NetworkBucketHostConfig) (string, error)
 	}
 	if host.MySQLIP != "" {
 		fmt.Fprintf(&b, "\t\tip saddr %s tcp sport %d counter name mysql_rx\n", host.MySQLIP, host.MySQLPort)
+	}
+	if host.StatsDPort > 0 {
+		fmt.Fprintf(&b, "\t\tudp sport %d counter name statsd_rx\n", host.StatsDPort)
+	}
+	if host.WPCOMHTTPSPort > 0 {
+		if host.TargetIP != "" {
+			fmt.Fprintf(&b, "\t\tip saddr != %s tcp sport %d counter name wpcom_https_rx\n", host.TargetIP, host.WPCOMHTTPSPort)
+		} else {
+			fmt.Fprintf(&b, "\t\ttcp sport %d counter name wpcom_https_rx\n", host.WPCOMHTTPSPort)
+		}
 	}
 	fmt.Fprintln(&b, "\t\tudp sport 53 counter name dns_rx")
 	fmt.Fprintln(&b, "\t\ttcp sport 53 counter name dns_rx")
@@ -235,6 +255,12 @@ func networkCounterNames(host NetworkBucketHostConfig) []string {
 	}
 	if host.MySQLIP != "" {
 		names = append(names, "mysql_tx", "mysql_rx")
+	}
+	if host.StatsDPort > 0 {
+		names = append(names, "statsd_tx", "statsd_rx")
+	}
+	if host.WPCOMHTTPSPort > 0 {
+		names = append(names, "wpcom_https_tx", "wpcom_https_rx")
 	}
 	if host.MonitoringIP != "" {
 		names = append(names, "monitoring_tx", "monitoring_rx")

@@ -156,6 +156,7 @@ func (DefaultStreamingTelemetryCollector) Collect(ctx context.Context, cfg Strea
 	}
 	hosts := selectedStreamingTelemetryHosts(cfg, services)
 	var errs []error
+	hasPartial := false
 	for _, host := range hosts {
 		snapshot := StreamingTelemetryHostSnapshot{
 			Service: host.Service,
@@ -182,9 +183,11 @@ func (DefaultStreamingTelemetryCollector) Collect(ctx context.Context, cfg Strea
 			snapshot.Samples = samples
 			snapshot.Aggregate = aggregateStreamingSummarySamples(samples)
 			if len(samples) == 0 {
-				snapshot.Status = "fail"
-				snapshot.Error = appendReason(snapshot.Error, "no streaming summary log lines found in window")
-				errs = append(errs, fmt.Errorf("%s journal: no streaming summary log lines found in window", host.Service))
+				if markMissingStreamingSummarySamples(&snapshot) {
+					hasPartial = true
+				} else {
+					errs = append(errs, fmt.Errorf("%s journal: no streaming summary log lines found in window", host.Service))
+				}
 			}
 		}
 		run.Hosts = append(run.Hosts, snapshot)
@@ -194,7 +197,21 @@ func (DefaultStreamingTelemetryCollector) Collect(ctx context.Context, cfg Strea
 		run.Error = err.Error()
 		return run, err
 	}
+	if hasPartial {
+		run.Status = "partial"
+	}
 	return run, nil
+}
+
+func markMissingStreamingSummarySamples(snapshot *StreamingTelemetryHostSnapshot) bool {
+	if snapshot.DashboardState != nil {
+		snapshot.Status = "partial"
+		snapshot.Error = appendReason(snapshot.Error, "journal: no streaming summary log lines found in window; dashboard state captured")
+		return true
+	}
+	snapshot.Status = "fail"
+	snapshot.Error = appendReason(snapshot.Error, "no streaming summary log lines found in window")
+	return false
 }
 
 func normalizeStreamingTelemetryConfig(cfg StreamingTelemetryConfig) StreamingTelemetryConfig {

@@ -165,6 +165,8 @@ type RunManifest struct {
 	CapacityReplayError      string                                `json:"capacity_replay_error,omitempty"`
 	ReplayDetectionStatus    string                                `json:"replay_detection_status,omitempty"`
 	ReplayDetectionError     string                                `json:"replay_detection_error,omitempty"`
+	DBOperationalStatus      string                                `json:"db_operational_status,omitempty"`
+	DBOperationalError       string                                `json:"db_operational_error,omitempty"`
 	NetworkBucketStatus      string                                `json:"network_bucket_status,omitempty"`
 	NetworkBucketError       string                                `json:"network_bucket_error,omitempty"`
 	DiskIOAttributionStatus  string                                `json:"disk_io_attribution_status,omitempty"`
@@ -182,6 +184,7 @@ type RunManifest struct {
 	TargetObservations       []targetserver.CapacityObserveSummary `json:"target_observations,omitempty"`
 	CapacityReplays          []CapacityReplayRun                   `json:"capacity_replays,omitempty"`
 	ReplayDetections         []ReplayDetectionRun                  `json:"replay_detections,omitempty"`
+	DBOperational            []DBOperationalRun                    `json:"db_operational,omitempty"`
 	NetworkBuckets           []NetworkBucketHostSnapshot           `json:"network_buckets,omitempty"`
 	DiskIOAttribution        []DiskIOAttributionRun                `json:"disk_io_attribution,omitempty"`
 	StreamingTelemetry       []StreamingTelemetryRun               `json:"streaming_telemetry,omitempty"`
@@ -684,6 +687,12 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 
 	start := r.Clock.Now().UTC()
 	m.WindowStart = &start
+	dbStart, err := r.captureDBOperationalMetrics(ctx, dir, services, cfg, "start", m)
+	if err != nil {
+		m.DBOperationalStatus = "partial"
+		m.DBOperationalError = err.Error()
+		m.Notes = append(m.Notes, "DB operational start capture failed: "+err.Error())
+	}
 	diskIOHandle, err := r.startDiskIOAttribution(ctx, dir, services, cfg, start, duration, m)
 	if err != nil {
 		m.DiskIOAttributionStatus = "partial"
@@ -712,6 +721,19 @@ func (r Runner) runBatch(ctx context.Context, dir string, services []ServiceLife
 	}
 	end := r.Clock.Now().UTC()
 	m.WindowEnd = &end
+	dbEnd, err := r.captureDBOperationalMetrics(ctx, dir, services, cfg, "end", m)
+	if err != nil {
+		m.DBOperationalStatus = "partial"
+		m.DBOperationalError = err.Error()
+		m.Notes = append(m.Notes, "DB operational end capture failed: "+err.Error())
+	}
+	if dbStart != nil && dbEnd != nil {
+		if err := r.writeDBOperationalWindow(ctx, dir, *dbStart, *dbEnd, m); err != nil {
+			m.DBOperationalStatus = "partial"
+			m.DBOperationalError = err.Error()
+			m.Notes = append(m.Notes, "DB operational delta failed: "+err.Error())
+		}
+	}
 	if diskIOHandle != nil {
 		if err := r.finishDiskIOAttribution(ctx, dir, diskIOHandle, end, m); err != nil {
 			m.DiskIOAttributionStatus = "partial"
@@ -1574,6 +1596,12 @@ func WriteSummary(dir string, m RunManifest) error {
 	if m.ReplayDetectionError != "" {
 		fmt.Fprintf(&b, "Replay Detection Error: %s\n", m.ReplayDetectionError)
 	}
+	if m.DBOperationalStatus != "" {
+		fmt.Fprintf(&b, "DB Operational Status: %s\n", m.DBOperationalStatus)
+	}
+	if m.DBOperationalError != "" {
+		fmt.Fprintf(&b, "DB Operational Error: %s\n", m.DBOperationalError)
+	}
 	if m.NetworkBucketStatus != "" {
 		fmt.Fprintf(&b, "Network Bucket Status: %s\n", m.NetworkBucketStatus)
 	}
@@ -1741,6 +1769,27 @@ func WriteSummary(dir string, m RunManifest) error {
 					service.Error,
 				)
 			}
+		}
+		_ = tw.Flush()
+	}
+	if latest := latestDBOperationalWindow(m.DBOperational); latest != nil {
+		fmt.Fprintln(&b, "\nDB Operational:")
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SERVICE\tSTATUS\tQUERIES\tWRITES\tROWS_READ\tROWS_INSERTED\tROWS_UPDATED\tROWS_DELETED\tTABLE_ROWS_ADDED\tTABLE_ROWS_REMOVED\tERROR")
+		for _, service := range latest.Services {
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+				service.ID,
+				service.Status,
+				service.DatabaseQueries,
+				service.DatabaseWrites,
+				service.RowsRead,
+				service.RowsAdded,
+				service.RowsUpdated,
+				service.RowsDeleted,
+				sumPositiveDeltas(service.TableRowDelta),
+				sumNegativeDeltas(service.TableRowDelta),
+				service.Error,
+			)
 		}
 		_ = tw.Flush()
 	}
@@ -2103,15 +2152,24 @@ func lowThresholdFindings(report *capacitybench.Report, query string, limit floa
 			continue
 		}
 		status := "pass"
-		if s.Min < limit {
+		value := s.Min
+		reason := ""
+		if query == "scrape_up" {
+			value = s.Last
+			if s.Min < limit && s.Last >= limit {
+				reason = fmt.Sprintf("minimum sample was %.0f but final scrape was healthy; treating as transient Prometheus scrape miss", s.Min)
+			}
+		}
+		if value < limit {
 			status = "fail"
 		}
 		out = append(out, ThresholdFinding{
 			Name:   query,
 			Status: status,
 			Series: capacitybench.SeriesLabel(s.Labels),
-			Value:  s.Min,
+			Value:  value,
 			Limit:  limit,
+			Reason: reason,
 		})
 	}
 	if len(out) == 0 {

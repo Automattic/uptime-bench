@@ -26,11 +26,12 @@ type ReplayDetectionRun struct {
 
 // ReplayDetectionEvent summarizes detection for one replay event.
 type ReplayDetectionEvent struct {
-	ID            string                          `json:"id"`
-	Type          string                          `json:"type"`
-	ActivatedAt   *time.Time                      `json:"activated_at,omitempty"`
-	DeactivatedAt *time.Time                      `json:"deactivated_at,omitempty"`
-	Services      []ReplayDetectionServiceSummary `json:"services"`
+	ID              string                          `json:"id"`
+	Type            string                          `json:"type"`
+	ExpectedOutcome string                          `json:"expected_outcome,omitempty"`
+	ActivatedAt     *time.Time                      `json:"activated_at,omitempty"`
+	DeactivatedAt   *time.Time                      `json:"deactivated_at,omitempty"`
+	Services        []ReplayDetectionServiceSummary `json:"services"`
 }
 
 // ReplayDetectionServiceSummary summarizes detection for one service and replay
@@ -38,6 +39,7 @@ type ReplayDetectionEvent struct {
 type ReplayDetectionServiceSummary struct {
 	Service                          string                `json:"service"`
 	Status                           string                `json:"status"`
+	ExpectedOutcome                  string                `json:"expected_outcome,omitempty"`
 	Error                            string                `json:"error,omitempty"`
 	Hosts                            int                   `json:"hosts"`
 	EligibleHosts                    int                   `json:"eligible_hosts"`
@@ -135,10 +137,11 @@ func (r Runner) collectReplayDetections(ctx context.Context, dir string, service
 			continue
 		}
 		eventSummary := ReplayDetectionEvent{
-			ID:            eventResult.ID,
-			Type:          planEvent.Type,
-			ActivatedAt:   eventResult.ActivatedAt,
-			DeactivatedAt: eventResult.DeactivatedAt,
+			ID:              eventResult.ID,
+			Type:            planEvent.Type,
+			ExpectedOutcome: planEvent.ExpectedOutcome,
+			ActivatedAt:     eventResult.ActivatedAt,
+			DeactivatedAt:   eventResult.DeactivatedAt,
 		}
 		for _, serviceHosts := range planEvent.Services {
 			service, ok := serviceByID[serviceHosts.Service]
@@ -146,7 +149,7 @@ func (r Runner) collectReplayDetections(ctx context.Context, dir string, service
 				continue
 			}
 			specs := replayDetectionHostSpecs(service, serviceHosts, cfg.Targets.HostPattern)
-			serviceSummary, err := r.collectReplayDetectionService(ctx, service, cfg, timeout, padding, eventResult, specs, result.CollectedAt)
+			serviceSummary, err := r.collectReplayDetectionService(ctx, service, cfg, timeout, padding, eventResult, planEvent.ExpectedOutcome, specs, result.CollectedAt)
 			if err != nil {
 				serviceSummary.Service = service.ID
 				serviceSummary.Status = "fail"
@@ -180,10 +183,15 @@ func (r Runner) collectReplayDetections(ctx context.Context, dir string, service
 	return nil
 }
 
-func (r Runner) collectReplayDetectionService(ctx context.Context, service ServiceLifecycle, cfg RunConfig, timeout, padding time.Duration, event CapacityReplayEventResult, specs []replayDetectionHostSpec, collectedAt time.Time) (ReplayDetectionServiceSummary, error) {
+func (r Runner) collectReplayDetectionService(ctx context.Context, service ServiceLifecycle, cfg RunConfig, timeout, padding time.Duration, event CapacityReplayEventResult, expectedOutcome string, specs []replayDetectionHostSpec, collectedAt time.Time) (ReplayDetectionServiceSummary, error) {
+	expectedOutcome = strings.ToLower(strings.TrimSpace(expectedOutcome))
+	if expectedOutcome == "" {
+		expectedOutcome = "down_recovery"
+	}
 	summary := ReplayDetectionServiceSummary{
 		Service:                  service.ID,
 		Status:                   "pass",
+		ExpectedOutcome:          expectedOutcome,
 		Hosts:                    len(specs),
 		ExpectedCheckIntervalSec: service.Config.CheckIntervalMinutes * 60,
 	}
@@ -216,6 +224,20 @@ func (r Runner) collectReplayDetectionService(ctx context.Context, service Servi
 	var recoveryLatencies []float64
 	for _, spec := range specs {
 		host := analyzeReplayDetectionHost(spec, eventsByBlogID[spec.BlogID], *event.ActivatedAt, *event.DeactivatedAt)
+		if expectedOutcome == "up" {
+			summary.EligibleHosts++
+			if host.PreexistingDownOverlappedFailure || host.DownDetectedDuring {
+				summary.DownDetected++
+			}
+			if host.LateDownDetected {
+				summary.LateDownDetected++
+			}
+			if host.RecoveryDetected {
+				summary.RecoveryDetected++
+			}
+			summary.HostResults = append(summary.HostResults, host)
+			continue
+		}
 		if host.PreexistingDownOverlappedFailure {
 			summary.PreexistingDownOverlappedFailure++
 		} else {
@@ -254,7 +276,22 @@ func (r Runner) collectReplayDetectionService(ctx context.Context, service Servi
 	summary.NextCheckIntervalMinSec = intervals.nextMin
 	summary.NextCheckIntervalMaxSec = intervals.nextMax
 	summary.CheckIntervalMismatchEvents = intervals.mismatchEvents
-	if summary.MissingDown > 0 || summary.MissingRecovery > 0 || summary.LateDownDetected > 0 || summary.PreexistingDownOverlappedFailure > 0 {
+	if expectedOutcome == "up" {
+		if summary.DownDetected > 0 || summary.LateDownDetected > 0 || summary.RecoveryDetected > 0 {
+			summary.Status = "fail"
+			var parts []string
+			if summary.DownDetected > 0 {
+				parts = append(parts, fmt.Sprintf("%d hosts had unexpected down detection", summary.DownDetected))
+			}
+			if summary.LateDownDetected > 0 {
+				parts = append(parts, fmt.Sprintf("%d hosts had unexpected late down detection", summary.LateDownDetected))
+			}
+			if summary.RecoveryDetected > 0 {
+				parts = append(parts, fmt.Sprintf("%d hosts had unexpected recovery events", summary.RecoveryDetected))
+			}
+			summary.Error = strings.Join(parts, "; ")
+		}
+	} else if summary.MissingDown > 0 || summary.MissingRecovery > 0 || summary.LateDownDetected > 0 || summary.PreexistingDownOverlappedFailure > 0 {
 		summary.Status = "fail"
 		var parts []string
 		if summary.PreexistingDownOverlappedFailure > 0 {

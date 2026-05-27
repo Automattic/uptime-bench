@@ -44,3 +44,34 @@ func TestAggregateStreamingSummarySamples(t *testing.T) {
 		t.Fatalf("maxima = %+v", agg)
 	}
 }
+
+func TestMissingStreamingSummarySamplesWithDashboardIsPartial(t *testing.T) {
+	snapshot := StreamingTelemetryHostSnapshot{
+		Status:         "pass",
+		DashboardState: &StreamingDashboardState{WorkerCount: 12, QueueDepth: 3},
+	}
+
+	if partial := markMissingStreamingSummarySamples(&snapshot); !partial {
+		t.Fatal("partial = false, want true when dashboard state was captured")
+	}
+	if snapshot.Status != "partial" {
+		t.Fatalf("Status = %q, want partial", snapshot.Status)
+	}
+	if snapshot.Error == "" {
+		t.Fatal("Error is empty, want explanatory warning")
+	}
+}
+
+func TestMissingStreamingSummarySamplesWithoutDashboardFails(t *testing.T) {
+	snapshot := StreamingTelemetryHostSnapshot{Status: "pass"}
+
+	if partial := markMissingStreamingSummarySamples(&snapshot); partial {
+		t.Fatal("partial = true, want false without dashboard state")
+	}
+	if snapshot.Status != "fail" {
+		t.Fatalf("Status = %q, want fail", snapshot.Status)
+	}
+	if snapshot.Error == "" {
+		t.Fatal("Error is empty, want explanatory failure")
+	}
+}

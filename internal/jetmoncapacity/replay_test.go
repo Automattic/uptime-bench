@@ -20,14 +20,15 @@ func TestBuildCapacityReplayPlanMapsExplicitHostStartToService(t *testing.T) {
 			Enabled: true,
 			Seed:    100,
 			Events: []CapacityReplayEvent{{
-				ID:          "v2-explicit-range",
-				Offset:      "1m",
-				Duration:    "2m",
-				Type:        "http_status",
-				StatusCode:  503,
-				HostStart:   500001,
-				HostCount:   5,
-				SampleCount: 5,
+				ID:              "v2-explicit-range",
+				Offset:          "1m",
+				Duration:        "2m",
+				Type:            "http_status",
+				StatusCode:      503,
+				ExpectedOutcome: "up",
+				HostStart:       500001,
+				HostCount:       5,
+				SampleCount:     5,
 			}},
 		},
 	}
@@ -50,6 +51,9 @@ func TestBuildCapacityReplayPlanMapsExplicitHostStartToService(t *testing.T) {
 	}
 	if len(event.Services) != 1 || event.Services[0].Service != "jetmon-v2" {
 		t.Fatalf("Services = %#v, want only jetmon-v2 mapping", event.Services)
+	}
+	if event.ExpectedOutcome != "up" {
+		t.Fatalf("ExpectedOutcome = %q, want up", event.ExpectedOutcome)
 	}
 	if !reflect.DeepEqual(event.Services[0].HostNumbers, wantNumbers) {
 		t.Fatalf("service HostNumbers = %#v, want %#v", event.Services[0].HostNumbers, wantNumbers)
@@ -124,6 +128,29 @@ func TestBuildCapacityReplayPlanSupportsMethodScopedServiceEvents(t *testing.T) 
 	}
 	if params := replayFailureParams(v2); params["method"] != "GET" || params["status_code"] != 503 {
 		t.Fatalf("v2 replay params = %#v, want method GET and status 503", params)
+	}
+}
+
+func TestReplayFailureParamsIncludesExtendedTargetOptions(t *testing.T) {
+	params := replayFailureParams(CapacityReplayEventPlan{
+		Type:               "http_redirect",
+		Method:             "GET",
+		Variant:            "loop",
+		Delay:              "750ms",
+		Content:            "keyword_missing",
+		Keyword:            "needle",
+		TruncateAfterBytes: 128,
+	})
+	want := map[string]any{
+		"method":               "GET",
+		"variant":              "loop",
+		"delay":                "750ms",
+		"content":              "keyword_missing",
+		"keyword":              "needle",
+		"truncate_after_bytes": 128,
+	}
+	if !reflect.DeepEqual(params, want) {
+		t.Fatalf("replay params = %#v, want %#v", params, want)
 	}
 }
 

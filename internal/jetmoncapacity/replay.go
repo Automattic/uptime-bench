@@ -29,18 +29,24 @@ type CapacityReplayPlan struct {
 
 // CapacityReplayEventPlan is one replay event after host sampling.
 type CapacityReplayEventPlan struct {
-	ID          string                       `json:"id"`
-	Offset      string                       `json:"offset"`
-	Duration    string                       `json:"duration"`
-	Type        string                       `json:"type"`
-	StatusCode  int                          `json:"status_code,omitempty"`
-	Rate        float64                      `json:"rate"`
-	Path        string                       `json:"path,omitempty"`
-	Method      string                       `json:"method,omitempty"`
-	Seed        int64                        `json:"seed"`
-	HostNumbers []int64                      `json:"host_numbers"`
-	Hosts       []string                     `json:"hosts"`
-	Services    []CapacityReplayServiceHosts `json:"services,omitempty"`
+	ID                 string                       `json:"id"`
+	Offset             string                       `json:"offset"`
+	Duration           string                       `json:"duration"`
+	Type               string                       `json:"type"`
+	StatusCode         int                          `json:"status_code,omitempty"`
+	Rate               float64                      `json:"rate"`
+	Path               string                       `json:"path,omitempty"`
+	Method             string                       `json:"method,omitempty"`
+	Variant            string                       `json:"variant,omitempty"`
+	Delay              string                       `json:"delay,omitempty"`
+	Content            string                       `json:"content,omitempty"`
+	Keyword            string                       `json:"keyword,omitempty"`
+	ExpectedOutcome    string                       `json:"expected_outcome,omitempty"`
+	TruncateAfterBytes int                          `json:"truncate_after_bytes,omitempty"`
+	Seed               int64                        `json:"seed"`
+	HostNumbers        []int64                      `json:"host_numbers"`
+	Hosts              []string                     `json:"hosts"`
+	Services           []CapacityReplayServiceHosts `json:"services,omitempty"`
 }
 
 // CapacityReplayServiceHosts records the sampled hosts for one service. When
@@ -261,15 +267,21 @@ func buildCapacityReplayPlan(cfg RunConfig, services []ServiceLifecycle, activeC
 			eventSeed = cfg.CapacityReplay.Seed + int64(i+1)*7919 + int64(activeCount)
 		}
 		eventPlan := CapacityReplayEventPlan{
-			ID:         event.ID,
-			Offset:     offset.String(),
-			Duration:   duration.String(),
-			Type:       event.Type,
-			StatusCode: event.StatusCode,
-			Rate:       event.Rate,
-			Path:       event.Path,
-			Method:     event.Method,
-			Seed:       eventSeed,
+			ID:                 event.ID,
+			Offset:             offset.String(),
+			Duration:           duration.String(),
+			Type:               event.Type,
+			StatusCode:         event.StatusCode,
+			Rate:               event.Rate,
+			Path:               event.Path,
+			Method:             event.Method,
+			Variant:            event.Variant,
+			Delay:              event.Delay,
+			Content:            event.Content,
+			Keyword:            event.Keyword,
+			ExpectedOutcome:    event.ExpectedOutcome,
+			TruncateAfterBytes: event.TruncateAfterBytes,
+			Seed:               eventSeed,
 		}
 		hostSeen := map[string]bool{}
 		if event.HostStart > 0 || len(services) == 0 {
@@ -382,6 +394,21 @@ func replayFailureParams(event CapacityReplayEventPlan) map[string]any {
 	}
 	if strings.TrimSpace(event.Method) != "" {
 		params["method"] = event.Method
+	}
+	if strings.TrimSpace(event.Variant) != "" {
+		params["variant"] = event.Variant
+	}
+	if strings.TrimSpace(event.Delay) != "" {
+		params["delay"] = event.Delay
+	}
+	if strings.TrimSpace(event.Content) != "" {
+		params["content"] = event.Content
+	}
+	if strings.TrimSpace(event.Keyword) != "" {
+		params["keyword"] = event.Keyword
+	}
+	if event.TruncateAfterBytes > 0 {
+		params["truncate_after_bytes"] = event.TruncateAfterBytes
 	}
 	return params
 }

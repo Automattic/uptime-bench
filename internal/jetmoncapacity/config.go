@@ -22,6 +22,7 @@ type RunConfig struct {
 	CapacityReplay     CapacityReplayConfig     `toml:"capacity_replay"`
 	ReplayDetection    ReplayDetectionConfig    `toml:"replay_detection"`
 	NetworkBuckets     NetworkBucketsConfig     `toml:"network_buckets"`
+	DBOperational      DBOperationalConfig      `toml:"db_operational"`
 	DiskIOAttribution  DiskIOAttributionConfig  `toml:"disk_io_attribution"`
 	StreamingTelemetry StreamingTelemetryConfig `toml:"streaming_telemetry"`
 	Checks             ChecksConfig             `toml:"checks"`
@@ -88,18 +89,24 @@ type CapacityReplayConfig struct {
 // CapacityReplayEvent describes one deterministic failure window to apply to a
 // generated host sample.
 type CapacityReplayEvent struct {
-	ID          string  `toml:"id"`
-	Offset      string  `toml:"offset"`
-	Duration    string  `toml:"duration"`
-	Type        string  `toml:"type"`
-	StatusCode  int     `toml:"status_code"`
-	Rate        float64 `toml:"rate"`
-	Path        string  `toml:"path"`
-	Method      string  `toml:"method"`
-	HostStart   int64   `toml:"host_start"`
-	HostCount   int     `toml:"host_count"`
-	SampleCount int     `toml:"sample_count"`
-	Seed        int64   `toml:"seed"`
+	ID                 string  `toml:"id"`
+	Offset             string  `toml:"offset"`
+	Duration           string  `toml:"duration"`
+	Type               string  `toml:"type"`
+	StatusCode         int     `toml:"status_code"`
+	Rate               float64 `toml:"rate"`
+	Path               string  `toml:"path"`
+	Method             string  `toml:"method"`
+	Variant            string  `toml:"variant"`
+	Delay              string  `toml:"delay"`
+	Content            string  `toml:"content"`
+	Keyword            string  `toml:"keyword"`
+	ExpectedOutcome    string  `toml:"expected_outcome"`
+	TruncateAfterBytes int     `toml:"truncate_after_bytes"`
+	HostStart          int64   `toml:"host_start"`
+	HostCount          int     `toml:"host_count"`
+	SampleCount        int     `toml:"sample_count"`
+	Seed               int64   `toml:"seed"`
 }
 
 // ReplayDetectionConfig controls event-history correlation for capacity replay
@@ -129,16 +136,25 @@ type NetworkBucketsConfig struct {
 // NetworkBucketHostConfig describes one service host where nftables counters
 // should be installed and captured.
 type NetworkBucketHostConfig struct {
-	ID            string `toml:"id"`
-	Instance      string `toml:"instance"`
-	SSHHost       string `toml:"ssh_host"`
-	TargetIP      string `toml:"target_ip"`
-	MySQLIP       string `toml:"mysql_ip"`
-	MySQLPort     int    `toml:"mysql_port"`
-	MonitoringIP  string `toml:"monitoring_ip"`
-	BridgeAPIPort int    `toml:"bridge_api_port"`
-	APIPort       int    `toml:"api_port"`
-	PeerPort      int    `toml:"peer_port"`
+	ID             string `toml:"id"`
+	Instance       string `toml:"instance"`
+	SSHHost        string `toml:"ssh_host"`
+	TargetIP       string `toml:"target_ip"`
+	MySQLIP        string `toml:"mysql_ip"`
+	MySQLPort      int    `toml:"mysql_port"`
+	StatsDPort     int    `toml:"statsd_port"`
+	WPCOMHTTPSPort int    `toml:"wpcom_https_port"`
+	MonitoringIP   string `toml:"monitoring_ip"`
+	BridgeAPIPort  int    `toml:"bridge_api_port"`
+	APIPort        int    `toml:"api_port"`
+	PeerPort       int    `toml:"peer_port"`
+}
+
+// DBOperationalConfig controls database operation and table-row snapshots
+// captured at the start and end of a live capacity window.
+type DBOperationalConfig struct {
+	Enabled bool     `toml:"enabled"`
+	Tables  []string `toml:"tables"`
 }
 
 // DiskIOAttributionConfig controls read-only process, device, and mount
@@ -328,6 +344,7 @@ func (c RunConfig) Normalize() RunConfig {
 	for i := range c.NetworkBuckets.Hosts {
 		c.NetworkBuckets.Hosts[i] = normalizeNetworkBucketHost(c.NetworkBuckets.Hosts[i])
 	}
+	c.DBOperational.Tables = normalizeStringListWithDefault(c.DBOperational.Tables, defaultDBOperationalTables())
 	c.DiskIOAttribution.SSHConfig = strings.TrimSpace(firstNonEmpty(c.DiskIOAttribution.SSHConfig, c.NetworkBuckets.SSHConfig))
 	if c.DiskIOAttribution.Timeout == "" {
 		c.DiskIOAttribution.Timeout = firstNonEmpty(c.NetworkBuckets.Timeout, "20s")
@@ -439,6 +456,10 @@ func normalizeCapacityReplayEvent(event CapacityReplayEvent, index int) Capacity
 	}
 	event.Path = strings.TrimSpace(event.Path)
 	event.Method = strings.ToUpper(strings.TrimSpace(event.Method))
+	event.ExpectedOutcome = strings.ToLower(strings.TrimSpace(event.ExpectedOutcome))
+	if event.ExpectedOutcome == "" {
+		event.ExpectedOutcome = "down_recovery"
+	}
 	if event.Rate == 0 {
 		event.Rate = 1
 	}
@@ -460,6 +481,9 @@ func normalizeNetworkBucketHost(host NetworkBucketHostConfig) NetworkBucketHostC
 	host.MonitoringIP = strings.TrimSpace(host.MonitoringIP)
 	if host.MySQLPort == 0 {
 		host.MySQLPort = 3306
+	}
+	if host.StatsDPort == 0 {
+		host.StatsDPort = 8125
 	}
 	return host
 }
@@ -585,6 +609,19 @@ func (c RunConfig) Validate() error {
 			}
 			if event.StatusCode < 0 || event.StatusCode > 999 {
 				return fmt.Errorf("capacity_replay.events[%d].status_code must be between 0 and 999", i)
+			}
+			if event.TruncateAfterBytes < 0 {
+				return fmt.Errorf("capacity_replay.events[%d].truncate_after_bytes must be non-negative", i)
+			}
+			switch event.ExpectedOutcome {
+			case "", "down_recovery", "up":
+			default:
+				return fmt.Errorf("capacity_replay.events[%d].expected_outcome must be down_recovery or up", i)
+			}
+			if strings.TrimSpace(event.Delay) != "" {
+				if _, err := time.ParseDuration(event.Delay); err != nil {
+					return fmt.Errorf("capacity_replay.events[%d].delay: %w", i, err)
+				}
 			}
 		}
 	}

@@ -797,6 +797,47 @@ func TestEvaluateThresholdsStopsOnResourceFailure(t *testing.T) {
 	}
 }
 
+func TestEvaluateThresholdsTreatsRecoveredScrapeUpAsTransient(t *testing.T) {
+	report := &capacitybench.Report{
+		Summaries: []capacitybench.SeriesSummary{{
+			Query:  "scrape_up",
+			Labels: map[string]string{"instance": "jetmon-v2.example.com", "job": "dockerstats"},
+			Min:    0,
+			Avg:    0.998,
+			P95:    1,
+			Last:   1,
+		}},
+	}
+	findings := EvaluateThresholds(nil, "http://prometheus", StopThresholds{ScrapeUpMin: 1}, report)
+	if len(findings) != 1 {
+		t.Fatalf("findings = %#v, want one scrape_up finding", findings)
+	}
+	if findings[0].Status != "pass" {
+		t.Fatalf("scrape_up status = %q, want pass; finding: %#v", findings[0].Status, findings[0])
+	}
+	if !strings.Contains(findings[0].Reason, "transient Prometheus scrape miss") {
+		t.Fatalf("scrape_up reason = %q, want transient scrape miss note", findings[0].Reason)
+	}
+}
+
+func TestEvaluateThresholdsFailsWhenScrapeUpEndsDown(t *testing.T) {
+	report := &capacitybench.Report{
+		Summaries: []capacitybench.SeriesSummary{{
+			Query:  "scrape_up",
+			Labels: map[string]string{"instance": "jetmon-v2.example.com", "job": "dockerstats"},
+			Min:    0,
+			Last:   0,
+		}},
+	}
+	findings := EvaluateThresholds(nil, "http://prometheus", StopThresholds{ScrapeUpMin: 1}, report)
+	if len(findings) != 1 {
+		t.Fatalf("findings = %#v, want one scrape_up finding", findings)
+	}
+	if findings[0].Status != "fail" {
+		t.Fatalf("scrape_up status = %q, want fail; finding: %#v", findings[0].Status, findings[0])
+	}
+}
+
 func TestRunWritesOperatorSummary(t *testing.T) {
 	cfgPath := writeRunnerConfig(t)
 	outDir := filepath.Join(t.TempDir(), "out")
