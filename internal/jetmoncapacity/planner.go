@@ -633,19 +633,15 @@ DEALLOCATE PREPARE uptime_bench_stmt;
 func renderV2CheckConfigInsertSQL(c Config, start, end int64) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "INSERT INTO %s\n", v2TableSiteCheckConfig)
-	fmt.Fprintln(&b, "  (blog_id, request_method, detection_profile)")
-	fmt.Fprintln(&b, "VALUES")
-	for blogID := start; blogID <= end; blogID++ {
-		terminator := ","
-		if blogID == end {
-			terminator = ""
-		}
-		fmt.Fprintf(&b, "  (%d, %s, %s)%s\n",
-			blogID,
-			sqlNullableString(c.RequestMethod),
-			sqlNullableString(c.DetectionProfile),
-			terminator)
-	}
+	fmt.Fprintln(&b, "  (source_site_id, blog_id, request_method, detection_profile)")
+	fmt.Fprintf(&b, `SELECT s.jetpack_monitor_site_id, s.blog_id, %s, %s
+  FROM jetpack_monitor_sites s
+ WHERE s.blog_id BETWEEN %d AND %d
+`,
+		sqlNullableString(c.RequestMethod),
+		sqlNullableString(c.DetectionProfile),
+		start,
+		end)
 	fmt.Fprint(&b, "ON DUPLICATE KEY UPDATE request_method = VALUES(request_method), detection_profile = VALUES(detection_profile)")
 	return b.String()
 }
@@ -693,8 +689,8 @@ func writeInsertOptionalV2RuntimeRangeSQL(w io.Writer, start, end int64) {
 	if start > end {
 		return
 	}
-	insertSQL := fmt.Sprintf(`INSERT IGNORE INTO %s (blog_id)
-SELECT s.blog_id
+	insertSQL := fmt.Sprintf(`INSERT IGNORE INTO %s (source_site_id, blog_id)
+SELECT s.jetpack_monitor_site_id, s.blog_id
   FROM jetpack_monitor_sites s
  WHERE s.monitor_active = 1
    AND s.blog_id BETWEEN %d AND %d`, v2TableSiteRuntime, start, end)
@@ -728,7 +724,7 @@ SELECT
     ELSE 0
   END AS is_stale
 FROM jetpack_monitor_sites s
-LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 WHERE s.blog_id BETWEEN %d AND %d
   AND s.monitor_active = 1`, c.BlogIDStart, c.BlogIDEnd())
 	legacySelect := fmt.Sprintf(`CREATE TEMPORARY TABLE uptime_bench_active_freshness AS

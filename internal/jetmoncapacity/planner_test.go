@@ -115,7 +115,7 @@ func TestWriteActivateSQL(t *testing.T) {
 	assertContains(t, sql, "(blog_id, source_site_id, bucket_no, monitor_url, monitor_active, check_interval_sec, phase_slot_sec, config_hash)")
 	assertContains(t, sql, "FROM jetpack_monitor_sites s")
 	assertContains(t, sql, "AND s.blog_id BETWEEN 100 AND 102")
-	assertContains(t, sql, "INSERT IGNORE INTO jetpack_monitor_site_runtime (blog_id)")
+	assertContains(t, sql, "INSERT IGNORE INTO jetpack_monitor_site_runtime (source_site_id, blog_id)")
 }
 
 func TestWriteActivateSQLV2AppliesExplicitCheckPolicy(t *testing.T) {
@@ -139,10 +139,10 @@ func TestWriteActivateSQLV2AppliesExplicitCheckPolicy(t *testing.T) {
 	}
 	sql := out.String()
 	assertContains(t, sql, "INSERT INTO jetpack_monitor_site_check_config")
-	assertContains(t, sql, "(blog_id, request_method, detection_profile)")
-	assertContains(t, sql, "(100, ''GET'', ''full''),")
-	assertContains(t, sql, "(101, ''GET'', ''full'')")
-	assertContains(t, sql, "(102, ''GET'', ''full'')")
+	assertContains(t, sql, "(source_site_id, blog_id, request_method, detection_profile)")
+	assertContains(t, sql, "SELECT s.jetpack_monitor_site_id, s.blog_id, ''GET'', ''full''")
+	assertContains(t, sql, "WHERE s.blog_id BETWEEN 100 AND 101")
+	assertContains(t, sql, "WHERE s.blog_id BETWEEN 102 AND 102")
 	assertContains(t, sql, "ON DUPLICATE KEY UPDATE request_method = VALUES(request_method), detection_profile = VALUES(detection_profile)")
 	if got := strings.Count(sql, "INSERT INTO jetpack_monitor_site_check_config"); got != 2 {
 		t.Fatalf("check config insert batches = %d, want 2", got)
@@ -216,7 +216,7 @@ func TestWriteVerifySQLV2UsesStableFreshnessSnapshot(t *testing.T) {
 	assertContains(t, sql, "SET @uptime_bench_now := UTC_TIMESTAMP();")
 	assertContains(t, sql, "SET @uptime_bench_freshness_cutoff := @uptime_bench_now - INTERVAL 7 MINUTE;")
 	assertContains(t, sql, "CREATE TEMPORARY TABLE uptime_bench_active_freshness AS")
-	assertContains(t, sql, "LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id")
+	assertContains(t, sql, "LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id")
 	assertContains(t, sql, "CASE\n    WHEN r.last_checked_at IS NULL OR r.last_checked_at < @uptime_bench_freshness_cutoff THEN 1")
 	assertContains(t, sql, "COALESCE(SUM(is_stale), 0) AS stale_active_sites")
 	assertContains(t, sql, "FROM uptime_bench_active_freshness")
