@@ -41,7 +41,7 @@ jobs:
           This PR intentionally does not edit `services.example.toml` or any deployment config because vendor feeds can rename regions, add IPv6-only ranges, or drop probes in ways that need operator review.
           EOF
 
-      - uses: peter-evans/create-pull-request@v6
+      - uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6.1.0
         with:
           branch: automation/probe-ip-refresh
           delete-branch: true
